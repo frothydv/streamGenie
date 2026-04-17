@@ -1,0 +1,27 @@
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Node (if we ever add tooling)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Test captures (PNGs the user downloads while testing go in their Downloads folder normally,
+# but if they get moved into the repo for staging, ignore by default)
+captures/
+*.tmp.png
+
+# Build output (for future use)
+dist/
+build/
+*.zip

@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "Stream Overlay (dev)",
+  "version": "0.3.0",
+  "description": "Hover-to-reveal overlays for Twitch streams. Development build.",
+  "permissions": [
+    "activeTab",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://*.twitch.tv/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*.twitch.tv/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Stream Overlay",
+    "default_popup": "popup.html"
+  },
+  "commands": {
+    "capture-trigger": {
+      "suggested_key": {
+        "default": "Alt+Shift+C",
+        "mac": "Alt+Shift+C"
+      },
+      "description": "Capture a new trigger (reserved for contribution flow)"
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["references/*.png"],
+      "matches": ["https://*.twitch.tv/*"]
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

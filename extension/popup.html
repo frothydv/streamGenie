@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Stream Overlay</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        width: 280px;
+        padding: 12px;
+        margin: 0;
+        background: #18181b;
+        color: #efeff1;
+      }
+      h1 {
+        font-size: 14px;
+        margin: 0 0 8px 0;
+        color: #bf94ff;
+      }
+      .status {
+        font-size: 12px;
+        padding: 8px;
+        background: #1f1f23;
+        border-radius: 4px;
+        margin-bottom: 8px;
+      }
+      .status.ok { border-left: 3px solid #00f593; }
+      .status.wait { border-left: 3px solid #f5b000; }
+      .status.off { border-left: 3px solid #666; }
+      .hint {
+        font-size: 11px;
+        color: #adadb8;
+        margin-top: 8px;
+      }
+      code {
+        background: #0e0e10;
+        padding: 1px 4px;
+        border-radius: 2px;
+        font-size: 11px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Stream Overlay (dev)</h1>
+    <div id="status" class="status wait">Checking current tab...</div>
+    <div class="hint">
+      Open the DevTools console on a Twitch page to see extension logs.
+      Filter by <code>[overlay</code> to see only our messages.
+    </div>
+    <script src="popup.js"></script>
+  </body>
+</html>
