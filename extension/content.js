@@ -27,6 +27,7 @@
   const PROFILE_URL = "https://cdn.jsdelivr.net/gh/frothydv/streamGenieProfiles@v1/games/slay-the-spire-2/profiles/community/profile.json";
   const PROFILE_CACHE_KEY = "streamGenie_profile_v1";
   const PROFILE_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+  const USER_TRIGGERS_KEY = "streamGenie_user_triggers_v1";
 
   // Triggers populated from the loaded profile. Each entry mirrors the profile
   // schema trigger shape, augmented with runtime fields (sourceImg, refHash, w, h).
@@ -366,6 +367,313 @@
       for (const ref of t.references) rehashRef(ref);
     }
     updateDebugPanelStatus();
+  }
+
+  // --- User triggers (locally saved) ---------------------------------------
+
+  async function loadUserTriggers() {
+    try {
+      const result = await chrome.storage.local.get(USER_TRIGGERS_KEY);
+      const saved = result[USER_TRIGGERS_KEY] || [];
+      for (const trigger of saved) {
+        TRIGGERS.push(trigger);
+        loadRefImages(trigger);
+      }
+      if (saved.length) console.log(`[overlay/content] user triggers loaded: ${saved.length}`);
+    } catch (e) {
+      console.warn("[overlay/content] failed to load user triggers:", e.message);
+    }
+  }
+
+  function loadRefImages(trigger) {
+    if (!trigger.references) return;
+    for (const ref of trigger.references) {
+      if (!ref.dataUrl) continue;
+      const img = new Image();
+      img.onload = () => {
+        ref.sourceImg = img;
+        ref.origW = img.naturalWidth;
+        ref.origH = img.naturalHeight;
+        rehashRef(ref);
+        updateDebugPanelStatus();
+      };
+      img.src = ref.dataUrl;
+    }
+  }
+
+  async function saveUserTrigger(trigger) {
+    try {
+      const result = await chrome.storage.local.get(USER_TRIGGERS_KEY);
+      const saved = result[USER_TRIGGERS_KEY] || [];
+      saved.push(trigger);
+      await chrome.storage.local.set({ [USER_TRIGGERS_KEY]: saved });
+    } catch (e) {
+      console.warn("[overlay/content] failed to save user trigger:", e.message);
+      showToast("Could not save trigger — storage may be full.", "error");
+    }
+  }
+
+  // --- Trigger editor -------------------------------------------------------
+
+  function openTriggerEditor(dataUrl, meta) {
+    const backdrop = document.createElement("div");
+    Object.assign(backdrop.style, {
+      position: "fixed", inset: "0", background: "rgba(0,0,0,0.82)",
+      zIndex: "2147483646", display: "flex", alignItems: "center", justifyContent: "center",
+      fontFamily: "sans-serif",
+    });
+    document.body.appendChild(backdrop);
+    backdrop.addEventListener("click", (e) => {
+      if (e.target === backdrop) { backdrop.remove(); showToast("Cancelled.", "info"); }
+    });
+
+    const modal = document.createElement("div");
+    Object.assign(modal.style, {
+      background: "#18181b", border: "1px solid #9146ff", borderRadius: "8px",
+      padding: "20px", width: "500px", maxHeight: "85vh", overflowY: "auto",
+      color: "#efeff1", fontSize: "13px", boxShadow: "0 8px 32px rgba(0,0,0,0.7)",
+      boxSizing: "border-box",
+    });
+    backdrop.appendChild(modal);
+
+    // Header
+    const header = document.createElement("div");
+    header.style.cssText = "display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;";
+    const titleEl = document.createElement("span");
+    titleEl.style.cssText = "font-size:15px;font-weight:bold;color:#bf94ff;";
+    titleEl.textContent = "New Trigger";
+    const xBtn = document.createElement("button");
+    xBtn.innerHTML = "&#10005;";
+    xBtn.style.cssText = "background:none;border:none;color:#adadb8;font-size:16px;cursor:pointer;padding:0;line-height:1;";
+    xBtn.onclick = () => { backdrop.remove(); showToast("Cancelled.", "info"); };
+    header.appendChild(titleEl); header.appendChild(xBtn);
+    modal.appendChild(header);
+
+    // Reference preview
+    const refSec = document.createElement("div");
+    refSec.style.cssText = "margin-bottom:16px;";
+    refSec.appendChild(editorLabel("Reference Image"));
+    const refImg = document.createElement("img");
+    refImg.src = dataUrl;
+    refImg.style.cssText = "max-width:120px;max-height:80px;border:1px solid #444;border-radius:4px;display:block;";
+    refSec.appendChild(refImg);
+    const refMetaEl = document.createElement("div");
+    refMetaEl.style.cssText = "color:#adadb8;font-size:10px;margin-top:4px;";
+    refMetaEl.textContent = `${meta.cropW}×${meta.cropH} px · from ${meta.videoW}×${meta.videoH} source`;
+    refSec.appendChild(refMetaEl);
+    modal.appendChild(refSec);
+
+    // Payloads
+    modal.appendChild(editorLabel("Payloads"));
+    const payloadsContainer = document.createElement("div");
+    modal.appendChild(payloadsContainer);
+
+    const payloadStates = [{ title: "", text: "", ox: 14, oy: 22 }];
+
+    function renderPayloads() {
+      payloadsContainer.innerHTML = "";
+      payloadStates.forEach((state, idx) => payloadsContainer.appendChild(buildPayloadRow(state, idx)));
+    }
+
+    function buildPayloadRow(state, idx) {
+      const row = document.createElement("div");
+      row.style.cssText = "background:#0e0e10;border:1px solid #333;border-radius:6px;padding:12px;margin-bottom:10px;";
+
+      const rowHead = document.createElement("div");
+      rowHead.style.cssText = "display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;";
+      const rowNum = document.createElement("span");
+      rowNum.style.cssText = "font-size:11px;color:#adadb8;font-weight:bold;letter-spacing:.05em;";
+      rowNum.textContent = `PAYLOAD ${idx + 1}`;
+      rowHead.appendChild(rowNum);
+      if (payloadStates.length > 1) {
+        const removeBtn = editorBtn("Remove", false);
+        removeBtn.style.fontSize = "11px";
+        removeBtn.onclick = () => { payloadStates.splice(idx, 1); renderPayloads(); };
+        rowHead.appendChild(removeBtn);
+      }
+      row.appendChild(rowHead);
+
+      row.appendChild(editorLabel("Title"));
+      const titleInput = document.createElement("input");
+      Object.assign(titleInput.style, {
+        width: "100%", boxSizing: "border-box", background: "#18181b", border: "1px solid #555",
+        borderRadius: "4px", color: "#efeff1", padding: "6px 8px", fontSize: "13px",
+        marginBottom: "10px", display: "block",
+      });
+      titleInput.type = "text";
+      titleInput.value = state.title;
+      titleInput.placeholder = "e.g. Ice Cream";
+      titleInput.oninput = () => { state.title = titleInput.value; updatePreview(); };
+      row.appendChild(titleInput);
+
+      row.appendChild(editorLabel("Text"));
+      const textArea = document.createElement("textarea");
+      Object.assign(textArea.style, {
+        width: "100%", boxSizing: "border-box", background: "#18181b", border: "1px solid #555",
+        borderRadius: "4px", color: "#efeff1", padding: "6px 8px", fontSize: "13px",
+        resize: "vertical", minHeight: "56px", marginBottom: "10px", display: "block",
+      });
+      textArea.value = state.text;
+      textArea.placeholder = "e.g. Relic — Ice Cream. Gain 3 Energy at the start of each turn.";
+      textArea.oninput = () => { state.text = textArea.value; updatePreview(); };
+      row.appendChild(textArea);
+
+      row.appendChild(editorLabel("Popup Position — drag to adjust"));
+      const { el: dragEl, updatePreview } = buildOffsetDragArea(state, refImg);
+      row.appendChild(dragEl);
+
+      return row;
+    }
+
+    renderPayloads();
+
+    const addBtn = document.createElement("button");
+    addBtn.textContent = "+ Add Payload";
+    addBtn.style.cssText =
+      "width:100%;background:none;border:1px dashed #555;border-radius:4px;" +
+      "color:#adadb8;font-size:13px;cursor:pointer;padding:8px;margin-bottom:16px;";
+    addBtn.onmouseenter = () => { addBtn.style.borderColor = "#9146ff"; addBtn.style.color = "#9146ff"; };
+    addBtn.onmouseleave = () => { addBtn.style.borderColor = "#555"; addBtn.style.color = "#adadb8"; };
+    addBtn.onclick = () => { payloadStates.push({ title: "", text: "", ox: 14, oy: 22 }); renderPayloads(); };
+    modal.appendChild(addBtn);
+
+    // Footer
+    const footer = document.createElement("div");
+    footer.style.cssText = "display:flex;gap:10px;";
+    const cancelBtn = editorBtn("Cancel", false);
+    cancelBtn.style.flex = "1";
+    cancelBtn.onclick = () => { backdrop.remove(); showToast("Cancelled.", "info"); };
+    const saveBtn = editorBtn("Save Trigger", true);
+    saveBtn.style.flex = "2";
+    saveBtn.onclick = async () => {
+      if (payloadStates.every(p => !p.title.trim() && !p.text.trim())) {
+        showToast("Add a title or text to at least one payload.", "warn");
+        return;
+      }
+      const trigger = {
+        id: "user-" + Date.now(),
+        payloads: payloadStates.map(p => ({
+          title: p.title.trim(),
+          text: p.text.trim(),
+          image: null,
+          popupOffset: { x: p.ox, y: p.oy },
+        })),
+        references: [{ dataUrl, srcW: meta.videoW, srcH: meta.videoH }],
+      };
+      TRIGGERS.push(trigger);
+      loadRefImages(trigger);
+      await saveUserTrigger(trigger);
+      backdrop.remove();
+      showToast("Trigger saved!", "ok");
+    };
+    footer.appendChild(cancelBtn); footer.appendChild(saveBtn);
+    modal.appendChild(footer);
+  }
+
+  function buildOffsetDragArea(state, refImg) {
+    const AREA_H = 130;
+    const CX = 70, CY = 65; // cursor anchor within the drag area
+
+    const area = document.createElement("div");
+    Object.assign(area.style, {
+      position: "relative", width: "100%", height: AREA_H + "px",
+      background: "#111", border: "1px solid #333", borderRadius: "4px",
+      marginBottom: "10px", overflow: "hidden", userSelect: "none", boxSizing: "border-box",
+    });
+
+    // Reference thumbnail centered on anchor
+    const thumb = document.createElement("img");
+    thumb.src = refImg.src;
+    Object.assign(thumb.style, {
+      position: "absolute", maxWidth: "56px", maxHeight: "48px",
+      left: (CX - 28) + "px", top: (CY - 24) + "px",
+      border: "1px solid #9146ff", borderRadius: "2px", pointerEvents: "none",
+    });
+    area.appendChild(thumb);
+
+    // Cursor dot at anchor
+    const dot = document.createElement("div");
+    Object.assign(dot.style, {
+      position: "absolute", width: "8px", height: "8px", borderRadius: "50%",
+      background: "#ff3860", left: (CX - 4) + "px", top: (CY - 4) + "px",
+      pointerEvents: "none", zIndex: "2",
+    });
+    area.appendChild(dot);
+
+    // Offset readout
+    const readout = document.createElement("div");
+    Object.assign(readout.style, {
+      position: "absolute", bottom: "4px", left: "6px",
+      color: "#adadb8", fontSize: "10px", pointerEvents: "none", zIndex: "2",
+    });
+    area.appendChild(readout);
+
+    // Draggable popup preview
+    const popupEl = document.createElement("div");
+    Object.assign(popupEl.style, {
+      position: "absolute", background: "rgba(24,24,27,0.95)", color: "#efeff1",
+      border: "1px solid #9146ff", borderRadius: "6px", padding: "5px 9px",
+      fontSize: "11px", lineHeight: "1.4", maxWidth: "180px",
+      cursor: "grab", zIndex: "3",
+      left: (CX + state.ox) + "px", top: (CY + state.oy) + "px",
+    });
+    area.appendChild(popupEl);
+
+    function updatePreview() {
+      const t = state.title || "(title)";
+      const b = state.text  || "(body text)";
+      popupEl.innerHTML =
+        `<div style="font-weight:bold;color:#bf94ff;margin-bottom:2px">${t}</div>` +
+        `<div style="color:#ccc;">${b.length > 60 ? b.slice(0, 60) + "…" : b}</div>`;
+      readout.textContent = `x: ${state.ox}  y: ${state.oy}`;
+    }
+    updatePreview();
+
+    popupEl.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const startCX = e.clientX, startCY = e.clientY;
+      const startLeft = CX + state.ox, startTop = CY + state.oy;
+      popupEl.style.cursor = "grabbing";
+
+      // Measure the area at drag-start to clamp correctly
+      const areaRect = area.getBoundingClientRect();
+
+      function onMove(e) {
+        const newLeft = Math.max(0, Math.min(areaRect.width  - 20, startLeft + e.clientX - startCX));
+        const newTop  = Math.max(0, Math.min(AREA_H - 20,          startTop  + e.clientY - startCY));
+        popupEl.style.left = newLeft + "px";
+        popupEl.style.top  = newTop  + "px";
+        state.ox = Math.round(newLeft - CX);
+        state.oy = Math.round(newTop  - CY);
+        readout.textContent = `x: ${state.ox}  y: ${state.oy}`;
+      }
+      function onUp() {
+        popupEl.style.cursor = "grab";
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup",   onUp);
+      }
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup",   onUp);
+    });
+
+    return { el: area, updatePreview };
+  }
+
+  function editorLabel(text) {
+    const el = document.createElement("div");
+    el.style.cssText = "font-size:11px;color:#adadb8;text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px;";
+    el.textContent = text;
+    return el;
+  }
+
+  function editorBtn(text, primary) {
+    const btn = document.createElement("button");
+    btn.textContent = text;
+    btn.style.cssText = primary
+      ? "background:#9146ff;border:none;border-radius:4px;color:#fff;font-size:13px;font-weight:bold;cursor:pointer;padding:9px 16px;"
+      : "background:none;border:1px solid #555;border-radius:4px;color:#adadb8;font-size:13px;cursor:pointer;padding:9px 16px;";
+    return btn;
   }
 
   // --- Popup ----------------------------------------------------------------
@@ -713,18 +1021,10 @@
     crop.width = sw; crop.height = sh;
     crop.getContext("2d").drawImage(snapshot, sx, sy, sw, sh, 0, 0, sw, sh);
 
-    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    const filename = `capture-${ts}-${sw}x${sh}-of-${snapshot.width}x${snapshot.height}.png`;
-    crop.toBlob((blob) => {
-      if (!blob) { showToast("Failed to encode PNG.", "error"); return; }
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = filename; a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      showToast(`Saved ${filename} (${sw}×${sh})`, "ok");
-    }, "image/png");
-
     cancelCaptureMode();
+    openTriggerEditor(crop.toDataURL("image/png"), {
+      videoW: snapshot.width, videoH: snapshot.height, cropW: sw, cropH: sh,
+    });
   }
 
   // --- Toast ----------------------------------------------------------------
@@ -850,6 +1150,7 @@
   }
 
   loadProfile();
+  loadUserTriggers();
   ensureDebugPanel();
   document.addEventListener("mousemove", onDocumentMouseMove, { passive: true });
   document.addEventListener("mousedown", onDocumentClick, true);
