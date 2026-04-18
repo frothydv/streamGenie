@@ -16,14 +16,14 @@
   const HEARTBEAT_MS = 500;
   const MIN_VIDEO_SIZE = 100;
   const MATCH_THRESHOLD = 10;          // max Hamming distance (out of 64)
-  const SLIDE_STEP = 8;                // px between sliding-window positions
+  const SLIDE_STEP = 2;                // px between sliding-window positions
 
   // --- Hardcoded triggers (M3) ----------------------------------------------
 
   const TRIGGERS = [
     { file: "ice-cream-relic.png", w: 64, h: 65, title: "Ice Cream", text: "Relic — Ice Cream." },
     { file: "map-icon.png",        w: 79, h: 65, title: "Map",       text: "Map — Click to view the act map." },
-    { file: "coin-gold.png",       w: 57, h: 55, title: "Gold",      text: "Gold — Your current gold count." },
+    { file: "coin-gold.png",       w: 52, h: 57, title: "Gold",      text: "Gold — Your current gold count." },
   ];
 
   // --- State ----------------------------------------------------------------
