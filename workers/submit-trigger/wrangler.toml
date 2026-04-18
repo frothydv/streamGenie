@@ -1,0 +1,10 @@
+name = "streamgenie-submit"
+main = "index.js"
+compatibility_date = "2024-09-23"
+
+# Secrets are NOT stored here — set them with:
+#   wrangler secret put GITHUB_TOKEN
+#   wrangler secret put SUBMIT_SECRET
+#
+# GITHUB_TOKEN  — GitHub PAT with Contents + Pull requests write on streamGenieProfiles
+# SUBMIT_SECRET — any strong random string; must match SUBMIT_SECRET in extension/content.js

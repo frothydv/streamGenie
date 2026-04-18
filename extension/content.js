@@ -36,6 +36,14 @@
   const profileCacheKey   = (gId, pId) => `streamGenie_profile_${gId}_${pId}`;
   const userTriggersKey   = (gId, pId) => `streamGenie_triggers_${gId}_${pId}`;
 
+  // --- Worker config --------------------------------------------------------
+  // Set WORKER_URL after deploying the Cloudflare Worker (`wrangler deploy`).
+  // SUBMIT_SECRET must match the SUBMIT_SECRET secret set on the Worker.
+  // NOTE: this secret is readable by anyone who unpacks the extension — acceptable
+  // for a dev build; use proper OAuth for a production release.
+  const WORKER_URL    = ""; // e.g. "https://streamgenie-submit.your-subdomain.workers.dev"
+  const SUBMIT_SECRET = ""; // match the value you set via `wrangler secret put SUBMIT_SECRET`
+
   // Triggers populated from the loaded profile. Each entry mirrors the profile
   // schema trigger shape, augmented with runtime fields (sourceImg, refHash, w, h).
   let TRIGGERS = [];
@@ -432,7 +440,7 @@
       const storable = {
         id: trigger.id,
         payloads: trigger.payloads,
-        references: trigger.references.map(({ dataUrl, srcW, srcH }) => ({ dataUrl, srcW, srcH })),
+        references: trigger.references.map(({ dataUrl, w, h, srcW, srcH }) => ({ dataUrl, w, h, srcW, srcH })),
       };
       const result = await chrome.storage.local.get(key);
       const saved = result[key] || [];
@@ -443,6 +451,32 @@
       console.warn("[overlay/content] failed to save user trigger:", e.message);
       showToast("Could not save trigger — storage may be full.", "error");
     }
+  }
+
+  async function submitToProfile(trigger) {
+    if (!WORKER_URL) throw new Error("Worker URL not configured");
+    const ap = activeProfile || DEFAULT_PROFILE;
+    const res = await fetch(WORKER_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type":    "application/json",
+        "X-Submit-Secret": SUBMIT_SECRET,
+      },
+      body: JSON.stringify({
+        gameId:    ap.gameId,
+        profileId: ap.profileId,
+        trigger: {
+          id:        trigger.id,
+          payloads:  trigger.payloads,
+          references: trigger.references.map(
+            ({ dataUrl, w, h, srcW, srcH }) => ({ dataUrl, w, h, srcW, srcH })
+          ),
+        },
+      }),
+    });
+    const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
+    if (!data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data; // { ok, prUrl }
   }
 
   // --- Trigger editor -------------------------------------------------------
@@ -569,36 +603,89 @@
     addBtn.onclick = () => { payloadStates.push({ title: "", text: "", ox: 14, oy: 22 }); renderPayloads(); };
     modal.appendChild(addBtn);
 
-    // Footer
-    const footer = document.createElement("div");
-    footer.style.cssText = "display:flex;gap:10px;";
-    const cancelBtn = editorBtn("Cancel", false);
-    cancelBtn.style.flex = "1";
-    cancelBtn.onclick = () => { backdrop.remove(); showToast("Cancelled.", "info"); };
-    const saveBtn = editorBtn("Save Trigger", true);
-    saveBtn.style.flex = "2";
-    saveBtn.onclick = async () => {
+    function validate() {
       if (payloadStates.every(p => !p.title.trim() && !p.text.trim())) {
         showToast("Add a title or text to at least one payload.", "warn");
-        return;
+        return false;
       }
-      const trigger = {
+      return true;
+    }
+
+    function buildTrigger() {
+      return {
         id: "user-" + Date.now(),
         payloads: payloadStates.map(p => ({
           title: p.title.trim(),
-          text: p.text.trim(),
+          text:  p.text.trim(),
           image: null,
           popupOffset: { x: p.ox, y: p.oy },
         })),
-        references: [{ dataUrl, srcW: meta.videoW, srcH: meta.videoH }],
+        references: [{ dataUrl, w: meta.cropW, h: meta.cropH, srcW: meta.videoW, srcH: meta.videoH }],
       };
+    }
+
+    async function saveLocally(trigger) {
       TRIGGERS.push(trigger);
       loadRefImages(trigger);
       await saveUserTrigger(trigger);
-      backdrop.remove();
-      showToast("Trigger saved!", "ok");
+    }
+
+    // Footer
+    const footer = document.createElement("div");
+    footer.style.cssText = "display:flex;gap:10px;align-items:center;";
+
+    const cancelBtn = editorBtn("Cancel", false);
+    cancelBtn.onclick = () => { backdrop.remove(); showToast("Cancelled.", "info"); };
+
+    const submitBtn = editorBtn(WORKER_URL ? "Submit to Profile" : "Save Trigger", true);
+    submitBtn.style.flex = "1";
+    submitBtn.onclick = async () => {
+      if (!validate()) return;
+      const trigger = buildTrigger();
+      await saveLocally(trigger);
+
+      if (!WORKER_URL) {
+        backdrop.remove();
+        showToast("Trigger saved!", "ok");
+        return;
+      }
+
+      submitBtn.textContent = "Submitting…";
+      submitBtn.disabled = true;
+      cancelBtn.disabled = true;
+
+      try {
+        const result = await submitToProfile(trigger);
+        backdrop.remove();
+        showToast("Submitted! PR opened.", "ok");
+        console.log("[overlay/content] PR opened:", result.prUrl);
+      } catch (err) {
+        console.warn("[overlay/content] submit failed:", err.message);
+        submitBtn.textContent = "Submit to Profile";
+        submitBtn.disabled = false;
+        cancelBtn.disabled = false;
+        showToast("Saved locally. Submit failed: " + err.message, "warn");
+      }
     };
-    footer.appendChild(cancelBtn); footer.appendChild(saveBtn);
+
+    footer.appendChild(cancelBtn);
+    footer.appendChild(submitBtn);
+
+    if (WORKER_URL) {
+      const localLink = document.createElement("a");
+      localLink.href = "#";
+      localLink.textContent = "local only";
+      localLink.style.cssText = "font-size:11px;color:#adadb8;white-space:nowrap;cursor:pointer;";
+      localLink.onclick = async (e) => {
+        e.preventDefault();
+        if (!validate()) return;
+        await saveLocally(buildTrigger());
+        backdrop.remove();
+        showToast("Saved locally.", "ok");
+      };
+      footer.appendChild(localLink);
+    }
+
     modal.appendChild(footer);
   }
 

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Stream Overlay (dev)",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Hover-to-reveal overlays for Twitch streams. Development build.",
   "permissions": [
     "activeTab",
@@ -9,7 +9,8 @@
   ],
   "host_permissions": [
     "https://*.twitch.tv/*",
-    "https://cdn.jsdelivr.net/*"
+    "https://cdn.jsdelivr.net/*",
+    "https://*.workers.dev/*"
   ],
   "background": {
     "service_worker": "background.js"
