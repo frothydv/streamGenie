@@ -16,14 +16,22 @@
   const HEARTBEAT_MS = 500;
   const MIN_VIDEO_SIZE = 100;
   const MATCH_THRESHOLD = 10;          // max Hamming distance (out of 64)
-  const SLIDE_STEP = 2;                // px between sliding-window positions
+  // px between sliding-window positions. We use 1px for small (low-res) refs
+  // because dHash sampling becomes coarse and sub-pixel alignment matters more.
+  const SLIDE_STEP_SMALL = 1;
+  const SLIDE_STEP_LARGE = 2;
+  const SMALL_REF_THRESHOLD = 40;      // refs shorter than this get the fine step
 
   // --- Hardcoded triggers (M3) ----------------------------------------------
 
+  // Each trigger declares the native video dimensions (srcW/srcH) at which its
+  // reference image was captured. At match time we rescale the reference to
+  // the current stream's native video dimensions so the sliding-window search
+  // looks for the right number of pixels regardless of streamer resolution.
   const TRIGGERS = [
-    { file: "ice-cream-relic.png", w: 64, h: 65, title: "Ice Cream", text: "Relic — Ice Cream." },
-    { file: "map-icon.png",        w: 79, h: 65, title: "Map",       text: "Map — Click to view the act map." },
-    { file: "coin-gold.png",       w: 52, h: 57, title: "Gold",      text: "Gold — Your current gold count." },
+    { file: "ice-cream-relic.png", srcW: 1920, srcH: 1080, title: "Ice Cream", text: "Relic — Ice Cream." },
+    { file: "map-icon.png",        srcW: 1920, srcH: 1080, title: "Map",       text: "Map — Click to view the act map." },
+    { file: "coin-gold.png",       srcW: 1920, srcH: 1080, title: "Gold",      text: "Gold — Your current gold count." },
   ];
 
   // --- State ----------------------------------------------------------------
@@ -66,8 +74,10 @@
     if (video.videoWidth === 0) {
       video.addEventListener("loadedmetadata", () => {
         console.log("[overlay/content] video metadata loaded:", `${video.videoWidth}x${video.videoHeight}`);
-        updateDebugPanelStatus();
+        rehashAllTriggers();
       }, { once: true });
+    } else {
+      rehashAllTriggers();
     }
     updateDebugPanelStatus();
   }
@@ -78,6 +88,7 @@
     updateDebugPanelStatus();
   }
 
+  let lastKnownVideoDims = "";
   function heartbeat() {
     const { video, total, visible } = findBestVideo();
     window.__streamOverlayStats = { total, visible, attached: !!currentVideo };
@@ -86,6 +97,13 @@
         detachFromVideo();
       } else if (video && video !== currentVideo) {
         attachToVideo(video);
+      } else if (currentVideo.videoWidth) {
+        const dims = `${currentVideo.videoWidth}x${currentVideo.videoHeight}`;
+        if (dims !== lastKnownVideoDims) {
+          lastKnownVideoDims = dims;
+          console.log("[overlay/content] video dims changed:", dims);
+          rehashAllTriggers();
+        }
       }
     } else if (video) {
       attachToVideo(video);
@@ -223,9 +241,10 @@
   function slidingWindowMatch(trigger, capturePixels) {
     const { refHash, w, h } = trigger;
     if (!refHash || w > CAPTURE_SIZE || h > CAPTURE_SIZE) return { dist: 64, x: 0, y: 0 };
+    const step = (Math.min(w, h) < SMALL_REF_THRESHOLD) ? SLIDE_STEP_SMALL : SLIDE_STEP_LARGE;
     let bestDist = 64, bestX = 0, bestY = 0;
-    for (let y = 0; y <= CAPTURE_SIZE - h; y += SLIDE_STEP) {
-      for (let x = 0; x <= CAPTURE_SIZE - w; x += SLIDE_STEP) {
+    for (let y = 0; y <= CAPTURE_SIZE - h; y += step) {
+      for (let x = 0; x <= CAPTURE_SIZE - w; x += step) {
         const dist = dHashDistFromPixels(capturePixels, CAPTURE_SIZE, x, y, w, h, refHash);
         if (dist < bestDist) { bestDist = dist; bestX = x; bestY = y; }
       }
@@ -245,24 +264,55 @@
     return best; // may be null if no refs loaded
   }
 
-  // Load reference images and pre-compute their hashes.
+  // Load reference images. Hashing is deferred until a video is attached
+  // (or until the video dimensions change) — see rehashTrigger.
   function loadReferences() {
     for (const trigger of TRIGGERS) {
       const img = new Image();
       img.onload = () => {
-        const tmp = document.createElement("canvas");
-        tmp.width = trigger.w;
-        tmp.height = trigger.h;
-        const ctx = tmp.getContext("2d");
-        ctx.drawImage(img, 0, 0);
-        const px = ctx.getImageData(0, 0, trigger.w, trigger.h).data;
-        trigger.refHash = dHashFromPixels(px, trigger.w, 0, 0, trigger.w, trigger.h);
-        console.log(`[overlay/content] reference loaded: ${trigger.file}`);
+        trigger.sourceImg = img;
+        trigger.origW = img.naturalWidth;
+        trigger.origH = img.naturalHeight;
+        rehashTrigger(trigger);
+        console.log(`[overlay/content] reference loaded: ${trigger.file} (${trigger.origW}x${trigger.origH})`);
         updateDebugPanelStatus();
       };
       img.onerror = () => console.warn(`[overlay/content] failed to load reference: ${trigger.file}`);
       img.src = chrome.runtime.getURL("references/" + trigger.file);
     }
+  }
+
+  // Rescale a reference to the current stream's native video dimensions and
+  // recompute its hash. If no video is attached yet, hash at native size as a
+  // fallback. Triggers whose scaled size falls outside usable bounds get
+  // refHash=null and are skipped by matching.
+  function rehashTrigger(trigger) {
+    if (!trigger.sourceImg) return;
+    let w = trigger.origW, h = trigger.origH;
+    if (currentVideo && currentVideo.videoWidth && trigger.srcW) {
+      const scale = currentVideo.videoWidth / trigger.srcW;
+      w = Math.max(1, Math.round(trigger.origW * scale));
+      h = Math.max(1, Math.round(trigger.origH * scale));
+    }
+    trigger.w = w;
+    trigger.h = h;
+    if (w < SMALL_REF_THRESHOLD || h < SMALL_REF_THRESHOLD || w > CAPTURE_SIZE || h > CAPTURE_SIZE) {
+      trigger.refHash = null;
+      return;
+    }
+    const tmp = document.createElement("canvas");
+    tmp.width = w; tmp.height = h;
+    const ctx = tmp.getContext("2d");
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(trigger.sourceImg, 0, 0, w, h);
+    const px = ctx.getImageData(0, 0, w, h).data;
+    trigger.refHash = dHashFromPixels(px, w, 0, 0, w, h);
+  }
+
+  function rehashAllTriggers() {
+    for (const t of TRIGGERS) rehashTrigger(t);
+    updateDebugPanelStatus();
   }
 
   // --- Popup ----------------------------------------------------------------
@@ -597,7 +647,7 @@
     crop.getContext("2d").drawImage(snapshot, sx, sy, sw, sh, 0, 0, sw, sh);
 
     const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    const filename = `capture-${ts}-${sw}x${sh}.png`;
+    const filename = `capture-${ts}-${sw}x${sh}-of-${snapshot.width}x${snapshot.height}.png`;
     crop.toBlob((blob) => {
       if (!blob) { showToast("Failed to encode PNG.", "error"); return; }
       const url = URL.createObjectURL(blob);

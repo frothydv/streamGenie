@@ -123,10 +123,25 @@ When a change is small, make it. When a change is large or architectural, surfac
 
 Commits should be semantic and descriptive. The user wants git history to be useful.
 
-## Planned milestones after M3
+## Known limitations (as of M3)
+
+### Low-resolution matching
+dHash at 9×8 bits on a small reference (< ~40px) loses discriminative power — many different game UI elements hash similarly. Current behavior: refs that scale below `SMALL_REF_THRESHOLD` (40px) at the current stream resolution get their hash silently disabled and produce no matches. In practice:
+- **1080p native:** all refs match well.
+- **720p:** larger refs (map icon ~51px) match; smaller refs (coin ~35px) are near the threshold and may miss.
+- **480p and below:** most small refs are disabled entirely.
+
+This is acceptable for M3/M4/M5 since profiles will be anchored to streamers who broadcast at source resolution. Address in a dedicated milestone if sub-720p support becomes a real need.
+
+**Candidate approaches when we get there:**
+- Canonical-size hashing: resize both reference and each capture window to a fixed size (e.g. 32×32) before hashing, so comparison quality is resolution-independent.
+- pHash (DCT-based): captures low-frequency structure, more robust to compression artifacts and small scaling differences.
+- Color histogram confirmation: as a cheap second-pass on dHash candidates.
+
+## Planned milestones
 
 - **M4:** Profile loading from GitHub via jsDelivr. Profile schema. Caching.
 - **M5:** Game detection via Twitch category (and YouTube channel-based equivalent). Streamer/creator config lookup.
 - **M6:** First real profile. Seeded with Slay the Spire 2 content since Calpey streams it.
 - **M7:** Real contribution flow — refine M2.3 with payload entry, offset specification, preview-before-submit, and upload via a Cloudflare Worker that opens PRs.
-- **Later:** YouTube support, Firefox support, profile management UI for owners, NSFW scanning, etc.
+- **Later:** YouTube support, Firefox support, profile management UI for owners, NSFW scanning, sub-720p matching improvements, etc.
