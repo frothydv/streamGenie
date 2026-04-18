@@ -16,11 +16,11 @@
   const HEARTBEAT_MS = 500;
   const MIN_VIDEO_SIZE = 100;
   const MATCH_THRESHOLD = 10;          // max Hamming distance (out of 64)
-  // px between sliding-window positions. We use 1px for small (low-res) refs
-  // because dHash sampling becomes coarse and sub-pixel alignment matters more.
-  const SLIDE_STEP_SMALL = 1;
-  const SLIDE_STEP_LARGE = 2;
-  const SMALL_REF_THRESHOLD = 40;      // refs shorter than this get the fine step
+  const SLIDE_STEP = 1;                // 1px step — ensures no alignment misses
+  const MIN_REF_PX = 8;               // only skip truly microscopic refs
+  // Both reference and each capture window are normalised through this virtual
+  // size before hashing, so small refs produce equally discriminative hashes.
+  const CANONICAL_SIZE = 32;
 
   // --- Profile config -------------------------------------------------------
 
@@ -190,12 +190,15 @@
   const _gray = new Float32Array(72); // 9×8
 
   // Compute 64-bit dHash for a region of a flat RGBA pixel array.
-  // Nearest-neighbor resize to 9×8, then compare adjacent horizontal pixels.
+  // Samples 9×8 positions mapped through CANONICAL_SIZE so that small and large
+  // windows are compared at the same effective density as the reference hash.
   function dHashFromPixels(pixels, srcW, sx, sy, sw, sh) {
     for (let dy = 0; dy < 8; dy++) {
       for (let dx = 0; dx < 9; dx++) {
-        const px = sx + Math.floor((dx * sw) / 9);
-        const py = sy + Math.floor((dy * sh) / 8);
+        const cx = Math.floor((dx * CANONICAL_SIZE) / 9);
+        const cy = Math.floor((dy * CANONICAL_SIZE) / 8);
+        const px = sx + Math.floor((cx * sw) / CANONICAL_SIZE);
+        const py = sy + Math.floor((cy * sh) / CANONICAL_SIZE);
         const i = (py * srcW + px) * 4;
         _gray[dy * 9 + dx] = 0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2];
       }
@@ -214,8 +217,10 @@
   function dHashDistFromPixels(pixels, srcW, sx, sy, sw, sh, refHash) {
     for (let dy = 0; dy < 8; dy++) {
       for (let dx = 0; dx < 9; dx++) {
-        const px = sx + Math.floor((dx * sw) / 9);
-        const py = sy + Math.floor((dy * sh) / 8);
+        const cx = Math.floor((dx * CANONICAL_SIZE) / 9);
+        const cy = Math.floor((dy * CANONICAL_SIZE) / 8);
+        const px = sx + Math.floor((cx * sw) / CANONICAL_SIZE);
+        const py = sy + Math.floor((cy * sh) / CANONICAL_SIZE);
         const i = (py * srcW + px) * 4;
         _gray[dy * 9 + dx] = 0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2];
       }
@@ -240,10 +245,9 @@
   function slidingWindowMatch(ref, capturePixels) {
     const { refHash, w, h } = ref;
     if (!refHash || w > CAPTURE_SIZE || h > CAPTURE_SIZE) return { dist: 64, x: 0, y: 0 };
-    const step = (Math.min(w, h) < SMALL_REF_THRESHOLD) ? SLIDE_STEP_SMALL : SLIDE_STEP_LARGE;
     let bestDist = 64, bestX = 0, bestY = 0;
-    for (let y = 0; y <= CAPTURE_SIZE - h; y += step) {
-      for (let x = 0; x <= CAPTURE_SIZE - w; x += step) {
+    for (let y = 0; y <= CAPTURE_SIZE - h; y += SLIDE_STEP) {
+      for (let x = 0; x <= CAPTURE_SIZE - w; x += SLIDE_STEP) {
         const dist = dHashDistFromPixels(capturePixels, CAPTURE_SIZE, x, y, w, h, refHash);
         if (dist < bestDist) { bestDist = dist; bestX = x; bestY = y; }
       }
@@ -335,8 +339,9 @@
   }
 
   // Rescale a reference entry to the current stream resolution and recompute its hash.
-  // Falls back to native size if no video is attached. Sets refHash=null if the
-  // scaled size is outside usable bounds — those refs are skipped by matching.
+  // The reference is always drawn to a CANONICAL_SIZE×CANONICAL_SIZE intermediate
+  // canvas so the hash quality is resolution-independent. The sliding-window search
+  // still uses the native w×h for spatial positioning.
   function rehashRef(ref) {
     if (!ref.sourceImg) return;
     let w = ref.origW, h = ref.origH;
@@ -347,18 +352,19 @@
     }
     ref.w = w;
     ref.h = h;
-    if (w < SMALL_REF_THRESHOLD || h < SMALL_REF_THRESHOLD || w > CAPTURE_SIZE || h > CAPTURE_SIZE) {
+    if (w < MIN_REF_PX || h < MIN_REF_PX || w > CAPTURE_SIZE || h > CAPTURE_SIZE) {
       ref.refHash = null;
       return;
     }
+    // Draw reference at canonical size for consistent hash quality at all resolutions.
     const tmp = document.createElement("canvas");
-    tmp.width = w; tmp.height = h;
+    tmp.width = CANONICAL_SIZE; tmp.height = CANONICAL_SIZE;
     const ctx = tmp.getContext("2d");
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(ref.sourceImg, 0, 0, w, h);
-    const px = ctx.getImageData(0, 0, w, h).data;
-    ref.refHash = dHashFromPixels(px, w, 0, 0, w, h);
+    ctx.drawImage(ref.sourceImg, 0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
+    const px = ctx.getImageData(0, 0, CANONICAL_SIZE, CANONICAL_SIZE).data;
+    ref.refHash = dHashFromPixels(px, CANONICAL_SIZE, 0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
   }
 
   function rehashAllTriggers() {
