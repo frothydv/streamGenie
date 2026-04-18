@@ -403,9 +403,16 @@
 
   async function saveUserTrigger(trigger) {
     try {
+      // Strip runtime-only fields (sourceImg, refHash, w, h, origW, origH) —
+      // DOM Image elements are not structured-cloneable and would cause DataCloneError.
+      const storable = {
+        id: trigger.id,
+        payloads: trigger.payloads,
+        references: trigger.references.map(({ dataUrl, srcW, srcH }) => ({ dataUrl, srcW, srcH })),
+      };
       const result = await chrome.storage.local.get(USER_TRIGGERS_KEY);
       const saved = result[USER_TRIGGERS_KEY] || [];
-      saved.push(trigger);
+      saved.push(storable);
       await chrome.storage.local.set({ [USER_TRIGGERS_KEY]: saved });
     } catch (e) {
       console.warn("[overlay/content] failed to save user trigger:", e.message);
@@ -455,7 +462,7 @@
     refSec.appendChild(editorLabel("Reference Image"));
     const refImg = document.createElement("img");
     refImg.src = dataUrl;
-    refImg.style.cssText = "max-width:120px;max-height:80px;border:1px solid #444;border-radius:4px;display:block;";
+    refImg.style.cssText = "max-width:120px;max-height:80px;border:1px solid #444;border-radius:4px;display:block;padding:8px;background:#0e0e10;box-sizing:border-box;";
     refSec.appendChild(refImg);
     const refMetaEl = document.createElement("div");
     refMetaEl.style.cssText = "color:#adadb8;font-size:10px;margin-top:4px;";
