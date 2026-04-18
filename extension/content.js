@@ -296,8 +296,10 @@
   }
 
   function applyProfile(profile, sourceUrl) {
-    TRIGGERS = profile.triggers.map(t => ({ ...t }));
-    console.log(`[overlay/content] profile loaded: ${profile.name} v${profile.version} (${TRIGGERS.length} triggers)`);
+    // Preserve in-memory user triggers so background CDN refreshes don't wipe them.
+    const userTriggers = TRIGGERS.filter(t => t.id && t.id.startsWith("user-"));
+    TRIGGERS = [...profile.triggers.map(t => ({ ...t })), ...userTriggers];
+    console.log(`[overlay/content] profile loaded: ${profile.name} v${profile.version} (${profile.triggers.length} profile + ${userTriggers.length} user)`);
     loadReferencesForTriggers(profileBaseUrl(sourceUrl));
     updateDebugPanelStatus();
   }
@@ -420,6 +422,7 @@
       const saved = result[USER_TRIGGERS_KEY] || [];
       saved.push(storable);
       await chrome.storage.local.set({ [USER_TRIGGERS_KEY]: saved });
+      console.log(`[overlay/content] user trigger saved (${saved.length} total)`);
     } catch (e) {
       console.warn("[overlay/content] failed to save user trigger:", e.message);
       showToast("Could not save trigger — storage may be full.", "error");
