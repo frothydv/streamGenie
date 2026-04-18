@@ -2,7 +2,7 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>Stream Overlay</title>
+    <title>Stream Genie</title>
     <style>
       body {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -11,90 +11,73 @@
         margin: 0;
         background: #18181b;
         color: #efeff1;
+        font-size: 13px;
       }
-      h1 {
-        font-size: 14px;
-        margin: 0 0 8px 0;
-        color: #bf94ff;
-      }
+      h1 { font-size: 14px; margin: 0 0 10px; color: #bf94ff; }
       .status {
-        font-size: 12px;
-        padding: 8px;
-        background: #1f1f23;
-        border-radius: 4px;
-        margin-bottom: 8px;
+        font-size: 12px; padding: 8px; background: #1f1f23;
+        border-radius: 4px; margin-bottom: 12px;
       }
       .status.ok   { border-left: 3px solid #00f593; }
       .status.wait { border-left: 3px solid #f5b000; }
       .status.off  { border-left: 3px solid #666; }
-      .hint {
-        font-size: 11px;
-        color: #adadb8;
-        margin-top: 8px;
-      }
-      code {
-        background: #0e0e10;
-        padding: 1px 4px;
-        border-radius: 2px;
-        font-size: 11px;
-      }
       .section-title {
-        font-size: 11px;
-        color: #adadb8;
-        text-transform: uppercase;
-        letter-spacing: .05em;
-        margin: 12px 0 6px;
+        font-size: 10px; color: #adadb8; text-transform: uppercase;
+        letter-spacing: .06em; margin: 12px 0 6px;
       }
-      .trigger-row {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        background: #1f1f23;
-        border-radius: 4px;
-        padding: 6px 8px;
-        margin-bottom: 4px;
-        font-size: 12px;
+      .field-label {
+        display: block; font-size: 10px; color: #adadb8;
+        text-transform: uppercase; letter-spacing: .05em; margin-bottom: 4px;
       }
-      .trigger-label {
-        flex: 1;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        color: #efeff1;
-      }
-      .trigger-label small {
-        color: #adadb8;
-        margin-left: 4px;
-        font-size: 10px;
-      }
-      .delete-btn {
-        background: none;
-        border: 1px solid #555;
-        border-radius: 3px;
-        color: #adadb8;
-        font-size: 10px;
+      select {
+        width: 100%; background: #0e0e10; border: 1px solid #555;
+        border-radius: 4px; color: #efeff1; padding: 5px 8px;
+        font-size: 12px; margin-bottom: 8px; box-sizing: border-box;
         cursor: pointer;
-        padding: 2px 6px;
-        margin-left: 8px;
-        flex-shrink: 0;
+      }
+      select:focus { outline: none; border-color: #9146ff; }
+      .apply-btn {
+        width: 100%; background: #9146ff; border: none; border-radius: 4px;
+        color: #fff; font-size: 12px; font-weight: bold; cursor: pointer;
+        padding: 7px; margin-bottom: 6px;
+      }
+      .apply-btn:hover { background: #772ce8; }
+      .note { font-size: 10px; color: #adadb8; margin-bottom: 4px; }
+      .divider { border: none; border-top: 1px solid #333; margin: 12px 0; }
+      .trigger-row {
+        display: flex; align-items: center; justify-content: space-between;
+        background: #1f1f23; border-radius: 4px; padding: 6px 8px; margin-bottom: 4px;
+      }
+      .trigger-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .trigger-label small { color: #adadb8; margin-left: 4px; font-size: 10px; }
+      .delete-btn {
+        background: none; border: 1px solid #555; border-radius: 3px;
+        color: #adadb8; font-size: 10px; cursor: pointer; padding: 2px 6px; margin-left: 8px;
       }
       .delete-btn:hover { border-color: #ff5c5c; color: #ff5c5c; }
-      .empty-note {
-        font-size: 11px;
-        color: #555;
-        font-style: italic;
-      }
+      .empty-note { font-size: 11px; color: #555; font-style: italic; }
+      .hint { font-size: 10px; color: #adadb8; margin-top: 6px; }
+      code { background: #0e0e10; padding: 1px 4px; border-radius: 2px; font-size: 10px; }
     </style>
   </head>
   <body>
     <h1>Stream Genie (dev)</h1>
-    <div id="status" class="status wait">Checking current tab...</div>
-    <div class="hint">
-      Press <code>Alt+Shift+C</code> on a Twitch stream to create a trigger.
-    </div>
+    <div id="status" class="status wait">Checking…</div>
 
-    <div class="section-title">Saved Triggers</div>
+    <div class="section-title">Active Profile</div>
+    <label class="field-label">Game</label>
+    <select id="game-select"></select>
+    <label class="field-label">Profile</label>
+    <select id="profile-select"></select>
+    <button class="apply-btn" id="apply-btn">Apply</button>
+    <div id="apply-note" class="note"></div>
+
+    <hr class="divider" />
+
+    <div class="section-title">Saved Triggers (<span id="profile-label">—</span>)</div>
     <div id="triggers-list"></div>
+
+    <div class="hint">Press <code>Alt+Shift+C</code> on a stream to create a trigger.</div>
 
     <script src="popup.js"></script>
   </body>

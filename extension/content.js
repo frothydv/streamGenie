@@ -24,10 +24,17 @@
 
   // --- Profile config -------------------------------------------------------
 
-  const PROFILE_URL = "https://cdn.jsdelivr.net/gh/frothydv/streamGenieProfiles@v1/games/slay-the-spire-2/profiles/community/profile.json";
-  const PROFILE_CACHE_KEY = "streamGenie_profile_v1";
-  const PROFILE_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
-  const USER_TRIGGERS_KEY = "streamGenie_user_triggers_v1";
+  const PROFILE_CACHE_TTL_MS = 60 * 60 * 1000;
+  const ACTIVE_PROFILE_KEY = "streamGenie_active_profile";
+  const DEFAULT_PROFILE = {
+    gameId:    "slay-the-spire-2",
+    profileId: "community",
+    name:      "STS2 Community",
+    url:       "https://cdn.jsdelivr.net/gh/frothydv/streamGenieProfiles@v1/games/slay-the-spire-2/profiles/community/profile.json",
+  };
+
+  const profileCacheKey   = (gId, pId) => `streamGenie_profile_${gId}_${pId}`;
+  const userTriggersKey   = (gId, pId) => `streamGenie_triggers_${gId}_${pId}`;
 
   // Triggers populated from the loaded profile. Each entry mirrors the profile
   // schema trigger shape, augmented with runtime fields (sourceImg, refHash, w, h).
@@ -42,6 +49,7 @@
   let lastCaptureTime = 0;
   let mouseOverVideo = false;
   let lastMatchInfo = null; // { title, dist, noMatch? } for debug panel
+  let activeProfile = null; // set by loadProfile(); used by editor + saveUserTrigger
 
   // --- Video discovery ------------------------------------------------------
 
@@ -305,13 +313,16 @@
   }
 
   async function loadProfile() {
-    // Try cache first.
+    const r = await chrome.storage.local.get(ACTIVE_PROFILE_KEY);
+    activeProfile = r[ACTIVE_PROFILE_KEY] || DEFAULT_PROFILE;
+    const cKey = profileCacheKey(activeProfile.gameId, activeProfile.profileId);
+
     try {
-      const cached = JSON.parse(localStorage.getItem(PROFILE_CACHE_KEY) || "null");
+      const cached = JSON.parse(localStorage.getItem(cKey) || "null");
       if (cached && Date.now() - cached.ts < PROFILE_CACHE_TTL_MS) {
         console.log("[overlay/content] profile: using cached version");
-        applyProfile(cached.profile, PROFILE_URL);
-        fetchAndCacheProfile(); // refresh in background
+        applyProfile(cached.profile, activeProfile.url);
+        fetchAndCacheProfile(); // background refresh
         return;
       }
     } catch (_) {}
@@ -320,21 +331,22 @@
   }
 
   async function fetchAndCacheProfile() {
+    const ap = activeProfile || DEFAULT_PROFILE;
+    const cKey = profileCacheKey(ap.gameId, ap.profileId);
     try {
-      const res = await fetch(PROFILE_URL);
+      const res = await fetch(ap.url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const profile = await res.json();
-      localStorage.setItem(PROFILE_CACHE_KEY, JSON.stringify({ ts: Date.now(), profile }));
+      localStorage.setItem(cKey, JSON.stringify({ ts: Date.now(), profile }));
       console.log("[overlay/content] profile: fetched from CDN");
-      applyProfile(profile, PROFILE_URL);
+      applyProfile(profile, ap.url);
     } catch (err) {
       console.warn("[overlay/content] profile fetch failed:", err.message);
-      // If we have any stale cache, use it rather than leaving TRIGGERS empty.
       try {
-        const cached = JSON.parse(localStorage.getItem(PROFILE_CACHE_KEY) || "null");
+        const cached = JSON.parse(localStorage.getItem(cKey) || "null");
         if (cached) {
           console.warn("[overlay/content] profile: using stale cache");
-          applyProfile(cached.profile, PROFILE_URL);
+          applyProfile(cached.profile, ap.url);
         }
       } catch (_) {}
     }
@@ -381,13 +393,17 @@
 
   async function loadUserTriggers() {
     try {
-      const result = await chrome.storage.local.get(USER_TRIGGERS_KEY);
-      const saved = result[USER_TRIGGERS_KEY] || [];
+      const ap = activeProfile || DEFAULT_PROFILE;
+      const key = userTriggersKey(ap.gameId, ap.profileId);
+      const result = await chrome.storage.local.get(key);
+      const saved = result[key] || [];
       for (const trigger of saved) {
-        TRIGGERS.push(trigger);
-        loadRefImages(trigger);
+        if (!TRIGGERS.find(t => t.id === trigger.id)) {
+          TRIGGERS.push(trigger);
+          loadRefImages(trigger);
+        }
       }
-      if (saved.length) console.log(`[overlay/content] user triggers loaded: ${saved.length}`);
+      if (saved.length) console.log(`[overlay/content] user triggers loaded: ${saved.length} for ${ap.profileId}`);
     } catch (e) {
       console.warn("[overlay/content] failed to load user triggers:", e.message);
     }
@@ -411,18 +427,18 @@
 
   async function saveUserTrigger(trigger) {
     try {
-      // Strip runtime-only fields (sourceImg, refHash, w, h, origW, origH) —
-      // DOM Image elements are not structured-cloneable and would cause DataCloneError.
+      const ap = activeProfile || DEFAULT_PROFILE;
+      const key = userTriggersKey(ap.gameId, ap.profileId);
       const storable = {
         id: trigger.id,
         payloads: trigger.payloads,
         references: trigger.references.map(({ dataUrl, srcW, srcH }) => ({ dataUrl, srcW, srcH })),
       };
-      const result = await chrome.storage.local.get(USER_TRIGGERS_KEY);
-      const saved = result[USER_TRIGGERS_KEY] || [];
+      const result = await chrome.storage.local.get(key);
+      const saved = result[key] || [];
       saved.push(storable);
-      await chrome.storage.local.set({ [USER_TRIGGERS_KEY]: saved });
-      console.log(`[overlay/content] user trigger saved (${saved.length} total)`);
+      await chrome.storage.local.set({ [key]: saved });
+      console.log(`[overlay/content] user trigger saved to ${ap.profileId} (${saved.length} total)`);
     } catch (e) {
       console.warn("[overlay/content] failed to save user trigger:", e.message);
       showToast("Could not save trigger — storage may be full.", "error");
@@ -457,7 +473,7 @@
     header.style.cssText = "display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;";
     const titleEl = document.createElement("span");
     titleEl.style.cssText = "font-size:15px;font-weight:bold;color:#bf94ff;";
-    titleEl.textContent = "New Trigger";
+    titleEl.textContent = `New Trigger · ${(activeProfile || DEFAULT_PROFILE).name}`;
     const xBtn = document.createElement("button");
     xBtn.innerHTML = "&#10005;";
     xBtn.style.cssText = "background:none;border:none;color:#adadb8;font-size:16px;cursor:pointer;padding:0;line-height:1;";
@@ -1165,8 +1181,7 @@
     showToast(`Click #${window.__streamOverlayClicks.length} logged. window.__streamOverlayClicks to dump.`, "info");
   }
 
-  loadProfile();
-  loadUserTriggers();
+  loadProfile().then(() => loadUserTriggers());
   ensureDebugPanel();
   document.addEventListener("mousemove", onDocumentMouseMove, { passive: true });
   document.addEventListener("mousedown", onDocumentClick, true);
