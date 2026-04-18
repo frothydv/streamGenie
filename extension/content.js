@@ -235,9 +235,9 @@
     return d;
   }
 
-  // Slide reference across the capture pixels, return best position + distance.
-  function slidingWindowMatch(trigger, capturePixels) {
-    const { refHash, w, h } = trigger;
+  // Slide a reference entry across the capture pixels, return best position + distance.
+  function slidingWindowMatch(ref, capturePixels) {
+    const { refHash, w, h } = ref;
     if (!refHash || w > CAPTURE_SIZE || h > CAPTURE_SIZE) return { dist: 64, x: 0, y: 0 };
     const step = (Math.min(w, h) < SMALL_REF_THRESHOLD) ? SLIDE_STEP_SMALL : SLIDE_STEP_LARGE;
     let bestDist = 64, bestX = 0, bestY = 0;
@@ -250,14 +250,16 @@
     return { dist: bestDist, x: bestX, y: bestY };
   }
 
-  // Run all triggers in a single pass. Returns the overall best result
-  // (caller decides whether dist is below threshold).
+  // Run all triggers/references in a single pass. Returns the overall best result.
   function findBestMatch(capturePixels) {
     let best = null;
     for (const trigger of TRIGGERS) {
-      if (!trigger.refHash) continue;
-      const result = slidingWindowMatch(trigger, capturePixels);
-      if (!best || result.dist < best.dist) best = { trigger, ...result };
+      if (!trigger.references) continue;
+      for (const ref of trigger.references) {
+        if (!ref.refHash) continue;
+        const result = slidingWindowMatch(ref, capturePixels);
+        if (!best || result.dist < best.dist) best = { trigger, ref, ...result };
+      }
     }
     return best; // may be null if no refs loaded
   }
@@ -270,18 +272,21 @@
 
   function loadReferencesForTriggers(baseUrl) {
     for (const trigger of TRIGGERS) {
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.onload = () => {
-        trigger.sourceImg = img;
-        trigger.origW = img.naturalWidth;
-        trigger.origH = img.naturalHeight;
-        rehashTrigger(trigger);
-        console.log(`[overlay/content] reference loaded: ${trigger.file} (${trigger.origW}x${trigger.origH})`);
-        updateDebugPanelStatus();
-      };
-      img.onerror = () => console.warn(`[overlay/content] failed to load reference: ${trigger.file}`);
-      img.src = baseUrl + "references/" + trigger.file;
+      if (!trigger.references) continue;
+      for (const ref of trigger.references) {
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.onload = () => {
+          ref.sourceImg = img;
+          ref.origW = img.naturalWidth;
+          ref.origH = img.naturalHeight;
+          rehashRef(ref);
+          console.log(`[overlay/content] reference loaded: ${ref.file} (${ref.origW}x${ref.origH})`);
+          updateDebugPanelStatus();
+        };
+        img.onerror = () => console.warn(`[overlay/content] failed to load reference: ${ref.file}`);
+        img.src = baseUrl + "references/" + ref.file;
+      }
     }
   }
 
@@ -328,22 +333,21 @@
     }
   }
 
-  // Rescale a reference to the current stream's native video dimensions and
-  // recompute its hash. If no video is attached yet, hash at native size as a
-  // fallback. Triggers whose scaled size falls outside usable bounds get
-  // refHash=null and are skipped by matching.
-  function rehashTrigger(trigger) {
-    if (!trigger.sourceImg) return;
-    let w = trigger.origW, h = trigger.origH;
-    if (currentVideo && currentVideo.videoWidth && trigger.srcW) {
-      const scale = currentVideo.videoWidth / trigger.srcW;
-      w = Math.max(1, Math.round(trigger.origW * scale));
-      h = Math.max(1, Math.round(trigger.origH * scale));
+  // Rescale a reference entry to the current stream resolution and recompute its hash.
+  // Falls back to native size if no video is attached. Sets refHash=null if the
+  // scaled size is outside usable bounds — those refs are skipped by matching.
+  function rehashRef(ref) {
+    if (!ref.sourceImg) return;
+    let w = ref.origW, h = ref.origH;
+    if (currentVideo && currentVideo.videoWidth && ref.srcW) {
+      const scale = currentVideo.videoWidth / ref.srcW;
+      w = Math.max(1, Math.round(ref.origW * scale));
+      h = Math.max(1, Math.round(ref.origH * scale));
     }
-    trigger.w = w;
-    trigger.h = h;
+    ref.w = w;
+    ref.h = h;
     if (w < SMALL_REF_THRESHOLD || h < SMALL_REF_THRESHOLD || w > CAPTURE_SIZE || h > CAPTURE_SIZE) {
-      trigger.refHash = null;
+      ref.refHash = null;
       return;
     }
     const tmp = document.createElement("canvas");
@@ -351,13 +355,16 @@
     const ctx = tmp.getContext("2d");
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(trigger.sourceImg, 0, 0, w, h);
+    ctx.drawImage(ref.sourceImg, 0, 0, w, h);
     const px = ctx.getImageData(0, 0, w, h).data;
-    trigger.refHash = dHashFromPixels(px, w, 0, 0, w, h);
+    ref.refHash = dHashFromPixels(px, w, 0, 0, w, h);
   }
 
   function rehashAllTriggers() {
-    for (const t of TRIGGERS) rehashTrigger(t);
+    for (const t of TRIGGERS) {
+      if (!t.references) continue;
+      for (const ref of t.references) rehashRef(ref);
+    }
     updateDebugPanelStatus();
   }
 
@@ -434,7 +441,7 @@
 
     if (!mouseOverVideo || !currentVideo || !currentVideo.videoWidth) {
       renderDebugInfoOnly();
-      hidePopup();
+      hidePopups();
       return;
     }
 
@@ -539,9 +546,10 @@
     const status = document.getElementById("stream-overlay-debug-status");
     if (!status) return;
     const stats = window.__streamOverlayStats || { total: 0, visible: 0 };
-    const refsLoaded = TRIGGERS.filter((t) => t.refHash).length;
+    const refsLoaded = TRIGGERS.reduce((n, t) => n + (t.references ? t.references.filter(r => r.refHash).length : 0), 0);
+    const refsTotal  = TRIGGERS.reduce((n, t) => n + (t.references ? t.references.length : 0), 0);
     const lines = [
-      `<span style="color:#adadb8">videos: ${stats.total}t ${stats.visible}v | refs: ${refsLoaded}/${TRIGGERS.length}</span>`,
+      `<span style="color:#adadb8">videos: ${stats.total}t ${stats.visible}v | refs: ${refsLoaded}/${refsTotal}</span>`,
     ];
     if (!currentVideo) {
       lines.unshift(`<span style="color:#f5b000">no video</span>`);
