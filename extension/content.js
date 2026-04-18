@@ -22,17 +22,15 @@
   const SLIDE_STEP_LARGE = 2;
   const SMALL_REF_THRESHOLD = 40;      // refs shorter than this get the fine step
 
-  // --- Hardcoded triggers (M3) ----------------------------------------------
+  // --- Profile config -------------------------------------------------------
 
-  // Each trigger declares the native video dimensions (srcW/srcH) at which its
-  // reference image was captured. At match time we rescale the reference to
-  // the current stream's native video dimensions so the sliding-window search
-  // looks for the right number of pixels regardless of streamer resolution.
-  const TRIGGERS = [
-    { file: "ice-cream-relic.png", srcW: 1920, srcH: 1080, title: "Ice Cream", text: "Relic — Ice Cream." },
-    { file: "map-icon.png",        srcW: 1920, srcH: 1080, title: "Map",       text: "Map — Click to view the act map." },
-    { file: "coin-gold.png",       srcW: 1920, srcH: 1080, title: "Gold",      text: "Gold — Your current gold count." },
-  ];
+  const PROFILE_URL = "https://cdn.jsdelivr.net/gh/frothydv/streamGenieProfiles@v1/games/slay-the-spire-2/profiles/community/profile.json";
+  const PROFILE_CACHE_KEY = "streamGenie_profile_v1";
+  const PROFILE_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+  // Triggers populated from the loaded profile. Each entry mirrors the profile
+  // schema trigger shape, augmented with runtime fields (sourceImg, refHash, w, h).
+  let TRIGGERS = [];
 
   // --- State ----------------------------------------------------------------
 
@@ -264,11 +262,16 @@
     return best; // may be null if no refs loaded
   }
 
-  // Load reference images. Hashing is deferred until a video is attached
-  // (or until the video dimensions change) — see rehashTrigger.
-  function loadReferences() {
+  // --- Profile loading ------------------------------------------------------
+
+  function profileBaseUrl(profileUrl) {
+    return profileUrl.substring(0, profileUrl.lastIndexOf("/") + 1);
+  }
+
+  function loadReferencesForTriggers(baseUrl) {
     for (const trigger of TRIGGERS) {
       const img = new Image();
+      img.crossOrigin = "anonymous";
       img.onload = () => {
         trigger.sourceImg = img;
         trigger.origW = img.naturalWidth;
@@ -278,7 +281,50 @@
         updateDebugPanelStatus();
       };
       img.onerror = () => console.warn(`[overlay/content] failed to load reference: ${trigger.file}`);
-      img.src = chrome.runtime.getURL("references/" + trigger.file);
+      img.src = baseUrl + "references/" + trigger.file;
+    }
+  }
+
+  function applyProfile(profile, sourceUrl) {
+    TRIGGERS = profile.triggers.map(t => ({ ...t }));
+    console.log(`[overlay/content] profile loaded: ${profile.name} v${profile.version} (${TRIGGERS.length} triggers)`);
+    loadReferencesForTriggers(profileBaseUrl(sourceUrl));
+    updateDebugPanelStatus();
+  }
+
+  async function loadProfile() {
+    // Try cache first.
+    try {
+      const cached = JSON.parse(localStorage.getItem(PROFILE_CACHE_KEY) || "null");
+      if (cached && Date.now() - cached.ts < PROFILE_CACHE_TTL_MS) {
+        console.log("[overlay/content] profile: using cached version");
+        applyProfile(cached.profile, PROFILE_URL);
+        fetchAndCacheProfile(); // refresh in background
+        return;
+      }
+    } catch (_) {}
+
+    await fetchAndCacheProfile();
+  }
+
+  async function fetchAndCacheProfile() {
+    try {
+      const res = await fetch(PROFILE_URL);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const profile = await res.json();
+      localStorage.setItem(PROFILE_CACHE_KEY, JSON.stringify({ ts: Date.now(), profile }));
+      console.log("[overlay/content] profile: fetched from CDN");
+      applyProfile(profile, PROFILE_URL);
+    } catch (err) {
+      console.warn("[overlay/content] profile fetch failed:", err.message);
+      // If we have any stale cache, use it rather than leaving TRIGGERS empty.
+      try {
+        const cached = JSON.parse(localStorage.getItem(PROFILE_CACHE_KEY) || "null");
+        if (cached) {
+          console.warn("[overlay/content] profile: using stale cache");
+          applyProfile(cached.profile, PROFILE_URL);
+        }
+      } catch (_) {}
     }
   }
 
@@ -317,41 +363,52 @@
 
   // --- Popup ----------------------------------------------------------------
 
-  let overlayPopup = null;
+  const activePopups = [];
 
-  function showPopup(title, text, clientX, clientY) {
-    if (!overlayPopup) {
-      overlayPopup = document.createElement("div");
-      overlayPopup.id = "stream-overlay-popup";
-      Object.assign(overlayPopup.style, {
-        position: "fixed",
-        background: "rgba(24,24,27,0.95)",
-        color: "#efeff1",
-        border: "1px solid #9146ff",
-        borderRadius: "6px",
-        padding: "10px 14px",
-        fontFamily: "sans-serif",
-        fontSize: "13px",
-        lineHeight: "1.5",
-        maxWidth: "260px",
-        zIndex: "2147483645",
-        pointerEvents: "none",
-        boxShadow: "0 4px 16px rgba(0,0,0,0.5)",
-      });
-      document.body.appendChild(overlayPopup);
-    }
-    overlayPopup.innerHTML =
-      `<div style="font-weight:bold;color:#bf94ff;margin-bottom:4px;">${title}</div>` +
-      `<div>${text}</div>`;
-    const x = Math.min(clientX + 14, window.innerWidth - 280);
-    const y = Math.min(clientY + 22, window.innerHeight - 100);
-    overlayPopup.style.left = x + "px";
-    overlayPopup.style.top = y + "px";
-    overlayPopup.style.display = "block";
+  function makePopupEl() {
+    const el = document.createElement("div");
+    Object.assign(el.style, {
+      position: "fixed",
+      background: "rgba(24,24,27,0.95)",
+      color: "#efeff1",
+      border: "1px solid #9146ff",
+      borderRadius: "6px",
+      padding: "10px 14px",
+      fontFamily: "sans-serif",
+      fontSize: "13px",
+      lineHeight: "1.5",
+      maxWidth: "260px",
+      zIndex: "2147483645",
+      pointerEvents: "none",
+      boxShadow: "0 4px 16px rgba(0,0,0,0.5)",
+    });
+    document.body.appendChild(el);
+    return el;
   }
 
-  function hidePopup() {
-    if (overlayPopup) overlayPopup.style.display = "none";
+  function showPopups(payloads, clientX, clientY) {
+    // Reuse or create one DOM element per payload.
+    while (activePopups.length < payloads.length) activePopups.push(makePopupEl());
+
+    payloads.forEach((payload, i) => {
+      const el = activePopups[i];
+      el.innerHTML =
+        `<div style="font-weight:bold;color:#bf94ff;margin-bottom:4px;">${payload.title}</div>` +
+        `<div>${payload.text}</div>`;
+      const ox = (payload.popupOffset && payload.popupOffset.x != null) ? payload.popupOffset.x : 14;
+      const oy = (payload.popupOffset && payload.popupOffset.y != null) ? payload.popupOffset.y : 22;
+      el.style.left = Math.min(clientX + ox, window.innerWidth  - 280) + "px";
+      el.style.top  = Math.min(clientY + oy, window.innerHeight - 100) + "px";
+      el.style.display = "block";
+    });
+
+    // Hide any extras from a previous trigger that had more payloads.
+    for (let i = payloads.length; i < activePopups.length; i++)
+      activePopups[i].style.display = "none";
+  }
+
+  function hidePopups() {
+    for (const el of activePopups) el.style.display = "none";
   }
 
   // --- Mouse handler --------------------------------------------------------
@@ -396,11 +453,13 @@
     const best = findBestMatch(capturePixels);
 
     if (best && best.dist <= MATCH_THRESHOLD) {
-      lastMatchInfo = { title: best.trigger.title, dist: best.dist };
-      showPopup(best.trigger.title, best.trigger.text, event.clientX, event.clientY);
+      const label = best.trigger.payloads ? best.trigger.payloads[0].title : best.trigger.id;
+      lastMatchInfo = { title: label, dist: best.dist };
+      showPopups(best.trigger.payloads || [], event.clientX, event.clientY);
     } else {
-      lastMatchInfo = best ? { title: best.trigger.title, dist: best.dist, noMatch: true } : null;
-      hidePopup();
+      const label = best ? (best.trigger.payloads ? best.trigger.payloads[0].title : best.trigger.id) : null;
+      lastMatchInfo = best ? { title: label, dist: best.dist, noMatch: true } : null;
+      hidePopups();
     }
 
     // Cursor position within the 160×160 capture window.
@@ -782,7 +841,7 @@
     showToast(`Click #${window.__streamOverlayClicks.length} logged. window.__streamOverlayClicks to dump.`, "info");
   }
 
-  loadReferences();
+  loadProfile();
   ensureDebugPanel();
   document.addEventListener("mousemove", onDocumentMouseMove, { passive: true });
   document.addEventListener("mousedown", onDocumentClick, true);

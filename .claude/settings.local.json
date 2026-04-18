@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(mkdir -p \"C:\\\\ClaudeCodeProjects\\\\streamGenieProfiles\\\\games\\\\slay-the-spire-2\\\\profiles\\\\community\\\\references\")",
+      "Bash(cp extension/references/map-icon.png \"C:\\\\ClaudeCodeProjects\\\\streamGenieProfiles\\\\games\\\\slay-the-spire-2\\\\profiles\\\\community\\\\references/\")",
+      "Bash(cp extension/references/coin-gold.png \"C:\\\\ClaudeCodeProjects\\\\streamGenieProfiles\\\\games\\\\slay-the-spire-2\\\\profiles\\\\community\\\\references/\")",
+      "Bash(cp extension/references/ice-cream-relic.png \"C:\\\\ClaudeCodeProjects\\\\streamGenieProfiles\\\\games\\\\slay-the-spire-2\\\\profiles\\\\community\\\\references/\")",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
+    ]
+  }
+}
