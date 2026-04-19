@@ -1,14 +1,15 @@
 // Popup script — profile selection + saved trigger management.
 
+const CATALOG_URL     = "https://cdn.jsdelivr.net/gh/frothydv/streamGenieProfiles@main/catalog.json";
 const ACTIVE_PROFILE_KEY = "streamGenie_active_profile";
 const DEFAULT_PROFILE = {
   gameId:    "slay-the-spire-2",
   profileId: "community",
   name:      "STS2 Community",
-  url:       "https://cdn.jsdelivr.net/gh/frothydv/streamGenieProfiles@v1/games/slay-the-spire-2/profiles/community/profile.json",
+  url:       "https://cdn.jsdelivr.net/gh/frothydv/streamGenieProfiles@main/games/slay-the-spire-2/profiles/community/profile.json",
 };
 
-const CATALOG = [
+const FALLBACK_CATALOG = [
   {
     gameId: "slay-the-spire-2",
     gameName: "Slay the Spire 2",
@@ -38,6 +39,22 @@ const userTriggersKey = (gId, pId) => `streamGenie_triggers_${gId}_${pId}`;
   } catch (err) {
     statusEl.className = "status off";
     statusEl.textContent = "Error: " + err.message;
+  }
+
+  // --- Load catalog from CDN (fall back to hardcoded if unavailable) ---
+  let CATALOG = FALLBACK_CATALOG;
+  try {
+    const res = await fetch(CATALOG_URL);
+    if (res.ok) {
+      const raw = await res.json();
+      CATALOG = raw.games.map(g => ({
+        gameId:   g.id,
+        gameName: g.name,
+        profiles: g.profiles.map(p => ({ id: p.id, name: p.name, url: p.url })),
+      }));
+    }
+  } catch (_) {
+    // Network unavailable — fallback catalog still works
   }
 
   // --- Load active profile ---

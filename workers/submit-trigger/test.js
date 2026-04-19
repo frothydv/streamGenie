@@ -71,7 +71,7 @@ await test("missing trigger → 400", async () => {
   assert(status === 400, `status ${status}`);
 });
 
-await test("missing dataUrl → 400", async () => {
+await test("add: missing dataUrl → 400", async () => {
   const { status } = await post({
     gameId: "slay-the-spire-2", profileId: "community",
     trigger: { payloads: [{ title: "X" }], references: [{ w: 1, h: 1 }] },
@@ -79,7 +79,7 @@ await test("missing dataUrl → 400", async () => {
   assert(status === 400, `status ${status}`);
 });
 
-await test("empty references array → 400", async () => {
+await test("add: empty references array → 400", async () => {
   const { status } = await post({
     gameId: "slay-the-spire-2", profileId: "community",
     trigger: { payloads: [{ title: "X" }], references: [] },
@@ -87,11 +87,20 @@ await test("empty references array → 400", async () => {
   assert(status === 400, `status ${status}`);
 });
 
+await test("update: missing trigger id → 400", async () => {
+  const { status } = await post({
+    gameId: "slay-the-spire-2", profileId: "community",
+    mode: "update",
+    trigger: { payloads: [{ title: "X" }] },
+  });
+  assert(status === 400, `status ${status}`);
+});
+
 // ---------------------------------------------------------------------------
-// Happy path — creates a real PR (auto-merges immediately)
+// Happy path — add mode (creates a real PR, auto-merges)
 // ---------------------------------------------------------------------------
 
-console.log("\nHappy path");
+console.log("\nAdd mode");
 
 await test("valid submission → 200 + prUrl", async () => {
   const { status, data } = await post({
@@ -108,6 +117,47 @@ await test("valid submission → 200 + prUrl", async () => {
   assert(data.prUrl?.includes("github.com/frothydv/streamGenieProfiles/pull/"),
     `unexpected prUrl: ${data.prUrl}`);
   console.log(`    → ${data.prUrl}`);
+});
+
+// ---------------------------------------------------------------------------
+// Update mode — patches existing trigger payloads, opens a PR
+// ---------------------------------------------------------------------------
+
+console.log("\nUpdate mode");
+
+await test("update known trigger → 200 + prUrl", async () => {
+  const { status, data } = await post({
+    gameId: "slay-the-spire-2",
+    profileId: "community",
+    mode: "update",
+    trigger: {
+      id: "map-icon",
+      payloads: [{
+        title: "Map",
+        text:  "Click to view the act map. (test update — safe to ignore)",
+        popupOffset: { x: 14, y: 22 },
+      }],
+    },
+  });
+  assert(status === 200, `status ${status}: ${JSON.stringify(data)}`);
+  assert(data.ok, `not ok: ${data.error}`);
+  assert(data.prUrl?.includes("github.com/frothydv/streamGenieProfiles/pull/"),
+    `unexpected prUrl: ${data.prUrl}`);
+  console.log(`    → ${data.prUrl}`);
+});
+
+await test("update unknown trigger id → 500", async () => {
+  const { status, data } = await post({
+    gameId: "slay-the-spire-2",
+    profileId: "community",
+    mode: "update",
+    trigger: {
+      id: "this-trigger-does-not-exist",
+      payloads: [{ title: "X" }],
+    },
+  });
+  assert(status === 500, `status ${status}`);
+  assert(!data.ok);
 });
 
 // ---------------------------------------------------------------------------

@@ -30,7 +30,7 @@
     gameId:    "slay-the-spire-2",
     profileId: "community",
     name:      "STS2 Community",
-    url:       "https://cdn.jsdelivr.net/gh/frothydv/streamGenieProfiles@v1/games/slay-the-spire-2/profiles/community/profile.json",
+    url:       "https://cdn.jsdelivr.net/gh/frothydv/streamGenieProfiles@main/games/slay-the-spire-2/profiles/community/profile.json",
   };
 
   const profileCacheKey   = (gId, pId) => `streamGenie_profile_${gId}_${pId}`;
@@ -58,6 +58,8 @@
   let mouseOverVideo = false;
   let lastMatchInfo = null; // { title, dist, noMatch? } for debug panel
   let activeProfile = null; // set by loadProfile(); used by editor + saveUserTrigger
+  let overPopup = false;   // true while cursor is over an active popup
+  let currentMatchedTrigger = null;
 
   // --- Video discovery ------------------------------------------------------
 
@@ -453,9 +455,20 @@
     }
   }
 
-  async function submitToProfile(trigger) {
+  async function submitToProfile(trigger, mode = "add") {
     if (!WORKER_URL) throw new Error("Worker URL not configured");
     const ap = activeProfile || DEFAULT_PROFILE;
+
+    const triggerPayload = {
+      id:       trigger.id,
+      payloads: trigger.payloads,
+    };
+    if (mode === "add") {
+      triggerPayload.references = trigger.references.map(
+        ({ dataUrl, w, h, srcW, srcH }) => ({ dataUrl, w, h, srcW, srcH })
+      );
+    }
+
     const res = await fetch(WORKER_URL, {
       method: "POST",
       headers: {
@@ -465,13 +478,8 @@
       body: JSON.stringify({
         gameId:    ap.gameId,
         profileId: ap.profileId,
-        trigger: {
-          id:        trigger.id,
-          payloads:  trigger.payloads,
-          references: trigger.references.map(
-            ({ dataUrl, w, h, srcW, srcH }) => ({ dataUrl, w, h, srcW, srcH })
-          ),
-        },
+        mode,
+        trigger:   triggerPayload,
       }),
     });
     const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
@@ -481,7 +489,9 @@
 
   // --- Trigger editor -------------------------------------------------------
 
-  function openTriggerEditor(dataUrl, meta) {
+  // opts = { mode: 'edit', trigger: existingTrigger } for suggest-edit flow.
+  function openTriggerEditor(dataUrl, meta, opts = {}) {
+    const isEdit = opts.mode === "edit";
     const backdrop = document.createElement("div");
     Object.assign(backdrop.style, {
       position: "fixed", inset: "0", background: "rgba(0,0,0,0.82)",
@@ -507,7 +517,7 @@
     header.style.cssText = "display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;";
     const titleEl = document.createElement("span");
     titleEl.style.cssText = "font-size:15px;font-weight:bold;color:#bf94ff;";
-    titleEl.textContent = `New Trigger · ${(activeProfile || DEFAULT_PROFILE).name}`;
+    titleEl.textContent = `${isEdit ? "Edit Trigger" : "New Trigger"} · ${(activeProfile || DEFAULT_PROFILE).name}`;
     const xBtn = document.createElement("button");
     xBtn.innerHTML = "&#10005;";
     xBtn.style.cssText = "background:none;border:none;color:#adadb8;font-size:16px;cursor:pointer;padding:0;line-height:1;";
@@ -534,7 +544,14 @@
     const payloadsContainer = document.createElement("div");
     modal.appendChild(payloadsContainer);
 
-    const payloadStates = [{ title: "", text: "", ox: 14, oy: 22 }];
+    const payloadStates = isEdit && opts.trigger?.payloads?.length
+      ? opts.trigger.payloads.map(p => ({
+          title: p.title || "",
+          text:  p.text  || "",
+          ox:    p.popupOffset?.x ?? 14,
+          oy:    p.popupOffset?.y ?? 22,
+        }))
+      : [{ title: "", text: "", ox: 14, oy: 22 }];
 
     function renderPayloads() {
       payloadsContainer.innerHTML = "";
@@ -613,14 +630,16 @@
 
     function buildTrigger() {
       return {
-        id: "user-" + Date.now(),
+        id: isEdit ? opts.trigger.id : "user-" + Date.now(),
         payloads: payloadStates.map(p => ({
           title: p.title.trim(),
           text:  p.text.trim(),
           image: null,
           popupOffset: { x: p.ox, y: p.oy },
         })),
-        references: [{ dataUrl, w: meta.cropW, h: meta.cropH, srcW: meta.videoW, srcH: meta.videoH }],
+        references: isEdit
+          ? [] // update mode: Worker keeps existing references
+          : [{ dataUrl, w: meta.cropW, h: meta.cropH, srcW: meta.videoW, srcH: meta.videoH }],
       };
     }
 
@@ -637,11 +656,38 @@
     const cancelBtn = editorBtn("Cancel", false);
     cancelBtn.onclick = () => { backdrop.remove(); showToast("Cancelled.", "info"); };
 
-    const submitBtn = editorBtn(WORKER_URL ? "Submit to Profile" : "Save Trigger", true);
+    const submitLabel = isEdit ? "Propose Update" : (WORKER_URL ? "Submit to Profile" : "Save Trigger");
+    const submitBtn = editorBtn(submitLabel, true);
     submitBtn.style.flex = "1";
     submitBtn.onclick = async () => {
       if (!validate()) return;
       const trigger = buildTrigger();
+
+      if (isEdit) {
+        // Edit mode: only submit to profile, no local save
+        if (!WORKER_URL) {
+          showToast("Worker not configured — cannot propose updates.", "warn");
+          return;
+        }
+        submitBtn.textContent = "Submitting…";
+        submitBtn.disabled = true;
+        cancelBtn.disabled = true;
+        try {
+          const result = await submitToProfile(trigger, "update");
+          backdrop.remove();
+          showToast("Update proposed! PR opened.", "ok");
+          console.log("[overlay/content] update PR opened:", result.prUrl);
+        } catch (err) {
+          console.warn("[overlay/content] update submit failed:", err.message);
+          submitBtn.textContent = "Propose Update";
+          submitBtn.disabled = false;
+          cancelBtn.disabled = false;
+          showToast("Submit failed: " + err.message, "warn");
+        }
+        return;
+      }
+
+      // New trigger flow: save locally, then optionally submit
       await saveLocally(trigger);
 
       if (!WORKER_URL) {
@@ -655,7 +701,7 @@
       cancelBtn.disabled = true;
 
       try {
-        const result = await submitToProfile(trigger);
+        const result = await submitToProfile(trigger, "add");
         backdrop.remove();
         showToast("Submitted! PR opened.", "ok");
         console.log("[overlay/content] PR opened:", result.prUrl);
@@ -671,7 +717,7 @@
     footer.appendChild(cancelBtn);
     footer.appendChild(submitBtn);
 
-    if (WORKER_URL) {
+    if (!isEdit && WORKER_URL) {
       const localLink = document.createElement("a");
       localLink.href = "#";
       localLink.textContent = "local only";
@@ -813,27 +859,56 @@
       lineHeight: "1.5",
       maxWidth: "260px",
       zIndex: "2147483645",
-      pointerEvents: "none",
+      pointerEvents: "auto",
       boxShadow: "0 4px 16px rgba(0,0,0,0.5)",
     });
+    el.addEventListener("mouseenter", () => { overPopup = true; });
+    el.addEventListener("mouseleave", () => { overPopup = false; });
     document.body.appendChild(el);
     return el;
   }
 
-  function showPopups(payloads, clientX, clientY) {
+  function showPopups(payloads, clientX, clientY, trigger) {
+    currentMatchedTrigger = trigger || null;
     // Reuse or create one DOM element per payload.
     while (activePopups.length < payloads.length) activePopups.push(makePopupEl());
 
+    const isProfileTrigger = trigger && !trigger.id?.startsWith("user-");
+
     payloads.forEach((payload, i) => {
       const el = activePopups[i];
-      el.innerHTML =
-        `<div style="font-weight:bold;color:#bf94ff;margin-bottom:4px;">${payload.title}</div>` +
-        `<div>${payload.text}</div>`;
       const ox = (payload.popupOffset && payload.popupOffset.x != null) ? payload.popupOffset.x : 14;
       const oy = (payload.popupOffset && payload.popupOffset.y != null) ? payload.popupOffset.y : 22;
+
+      let html =
+        `<div style="font-weight:bold;color:#bf94ff;margin-bottom:4px;">${payload.title}</div>` +
+        `<div>${payload.text}</div>`;
+
+      // Add "Suggest edit" link on the first popup for profile triggers only.
+      if (i === 0 && isProfileTrigger) {
+        html +=
+          `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #333;">` +
+          `<a class="sg-edit-link" href="#" style="font-size:11px;color:#adadb8;text-decoration:none;">` +
+          `✏ Suggest edit</a></div>`;
+      }
+
+      el.innerHTML = html;
       el.style.left = Math.min(clientX + ox, window.innerWidth  - 280) + "px";
       el.style.top  = Math.min(clientY + oy, window.innerHeight - 100) + "px";
       el.style.display = "block";
+
+      if (i === 0 && isProfileTrigger) {
+        const editLink = el.querySelector(".sg-edit-link");
+        if (editLink) {
+          editLink.onmouseenter = () => { editLink.style.color = "#9146ff"; };
+          editLink.onmouseleave = () => { editLink.style.color = "#adadb8"; };
+          editLink.onclick = (e) => {
+            e.preventDefault();
+            hidePopups();
+            openEditTriggerEditor(trigger);
+          };
+        }
+      }
     });
 
     // Hide any extras from a previous trigger that had more payloads.
@@ -842,7 +917,33 @@
   }
 
   function hidePopups() {
+    currentMatchedTrigger = null;
+    overPopup = false;
     for (const el of activePopups) el.style.display = "none";
+  }
+
+  function refToDataUrl(ref) {
+    if (ref.dataUrl) return ref.dataUrl;
+    if (!ref.sourceImg) return null;
+    const c = document.createElement("canvas");
+    c.width  = ref.origW || ref.sourceImg.naturalWidth;
+    c.height = ref.origH || ref.sourceImg.naturalHeight;
+    c.getContext("2d").drawImage(ref.sourceImg, 0, 0);
+    return c.toDataURL("image/png");
+  }
+
+  function openEditTriggerEditor(trigger) {
+    const ref = trigger.references?.[0];
+    if (!ref) { showToast("No reference image for this trigger.", "warn"); return; }
+    const dataUrl = refToDataUrl(ref);
+    if (!dataUrl) { showToast("Reference image not loaded yet — try again.", "warn"); return; }
+    const meta = {
+      videoW: ref.srcW || 1920,
+      videoH: ref.srcH || 1080,
+      cropW:  ref.w    || ref.origW || 0,
+      cropH:  ref.h    || ref.origH || 0,
+    };
+    openTriggerEditor(dataUrl, meta, { mode: "edit", trigger });
   }
 
   // --- Mouse handler --------------------------------------------------------
@@ -853,6 +954,9 @@
   function onDocumentMouseMove(event) {
     lastMouseX = event.clientX;
     lastMouseY = event.clientY;
+
+    // Cursor is hovering over a popup — don't disturb it.
+    if (overPopup) return;
 
     const prevOver = mouseOverVideo;
     let inBounds = false;
@@ -889,7 +993,7 @@
     if (best && best.dist <= MATCH_THRESHOLD) {
       const label = best.trigger.payloads ? best.trigger.payloads[0].title : best.trigger.id;
       lastMatchInfo = { title: label, dist: best.dist };
-      showPopups(best.trigger.payloads || [], event.clientX, event.clientY);
+      showPopups(best.trigger.payloads || [], event.clientX, event.clientY, best.trigger);
     } else {
       const label = best ? (best.trigger.payloads ? best.trigger.payloads[0].title : best.trigger.id) : null;
       lastMatchInfo = best ? { title: label, dist: best.dist, noMatch: true } : null;
