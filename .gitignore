@@ -25,3 +25,9 @@ captures/
 dist/
 build/
 *.zip
+
+# Wrangler / Cloudflare Workers
+workers/**/.wrangler/
+
+# Claude Code local settings
+.claude/settings.local.json
