@@ -105,7 +105,7 @@ console.log("\nAdd mode");
 await test("valid submission → 200 + prUrl", async () => {
   const { status, data } = await post({
     gameId: "slay-the-spire-2",
-    profileId: "community",
+    profileId: "test",
     trigger: {
       id: `test-${Date.now()}`,
       payloads: [{ title: "Test Auto", text: "Automated test trigger — safe to delete", popupOffset: { x: 14, y: 22 } }],
@@ -128,15 +128,11 @@ console.log("\nUpdate mode");
 await test("update known trigger → 200 + prUrl", async () => {
   const { status, data } = await post({
     gameId: "slay-the-spire-2",
-    profileId: "community",
+    profileId: "test",
     mode: "update",
     trigger: {
-      id: "floor",
-      payloads: [{
-        title: "Floor",
-        text:  "The current floor the player has reached. (test update — safe to ignore)",
-        popupOffset: { x: -30, y: 25 },
-      }],
+      id: "test-fixture",
+      payloads: [{ title: "Test Fixture", text: "Updated by automated test.", popupOffset: { x: 14, y: 22 } }],
     },
   });
   assert(status === 200, `status ${status}: ${JSON.stringify(data)}`);
@@ -149,7 +145,7 @@ await test("update known trigger → 200 + prUrl", async () => {
 await test("update unknown trigger id → 500", async () => {
   const { status, data } = await post({
     gameId: "slay-the-spire-2",
-    profileId: "community",
+    profileId: "test",
     mode: "update",
     trigger: {
       id: "this-trigger-does-not-exist",
@@ -198,12 +194,13 @@ await test("b64encode → b64decode round-trip preserves Unicode", () => {
   }
 });
 
-await test("Worker accepts Unicode text in update → 200", async () => {
+await test("Worker encodes Unicode in trigger payloads (add) → 200", async () => {
   const { status, data } = await post({
-    gameId: "slay-the-spire-2", profileId: "community", mode: "update",
+    gameId: "slay-the-spire-2", profileId: "test",
     trigger: {
-      id: "map-icon",
-      payloads: [{ title: "Map", text: "Click to view the act map.", popupOffset: { x: 14, y: 22 } }],
+      id: `unicode-${Date.now()}`,
+      payloads: [{ title: "Unicode ☃ — test", text: "em-dash — bullet • copyright ©", popupOffset: { x: 14, y: 22 } }],
+      references: [{ dataUrl: TINY_PNG, w: 1, h: 1, srcW: 1920, srcH: 1080 }],
     },
   });
   assert(status === 200, `status ${status}: ${JSON.stringify(data)}`);
