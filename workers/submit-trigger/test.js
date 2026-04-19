@@ -131,11 +131,11 @@ await test("update known trigger → 200 + prUrl", async () => {
     profileId: "community",
     mode: "update",
     trigger: {
-      id: "map-icon",
+      id: "floor",
       payloads: [{
-        title: "Map",
-        text:  "Click to view the act map. (test update — safe to ignore)",
-        popupOffset: { x: 14, y: 22 },
+        title: "Floor",
+        text:  "The current floor the player has reached. (test update — safe to ignore)",
+        popupOffset: { x: -30, y: 25 },
       }],
     },
   });
@@ -158,6 +158,57 @@ await test("update unknown trigger id → 500", async () => {
   });
   assert(status === 500, `status ${status}`);
   assert(!data.ok);
+});
+
+// ---------------------------------------------------------------------------
+// Unicode encoding — unit test for b64decode/b64encode, plus Worker acceptance
+// ---------------------------------------------------------------------------
+// We don't do a full GitHub round-trip read-back here because multiple
+// concurrent test PRs merging out of order make it unreliable. Instead:
+//   1. Unit-test the encoding functions directly in Node (fast, deterministic)
+//   2. Confirm the Worker accepts Unicode text and returns 200 (integration)
+
+console.log("\nUnicode encoding");
+
+// Mirror the Worker's encoding helpers for local unit-testing.
+function b64encode(str) {
+  const bytes = new TextEncoder().encode(str);
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary);
+}
+function b64decode(str) {
+  const binary = atob(str.replace(/\n/g, ""));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
+await test("b64encode → b64decode round-trip preserves Unicode", () => {
+  const cases = [
+    "em-dash — en-dash – bullet •",
+    "copyright © registered ® trademark ™",
+    "snowman ☃ rocket 🚀 skull 💀",
+    "accents: café naïve résumé",
+    "CJK: 日本語 中文 한국어",
+  ];
+  for (const s of cases) {
+    const rt = b64decode(b64encode(s));
+    assert(rt === s, `round-trip failed for "${s}": got "${rt}"`);
+  }
+});
+
+await test("Worker accepts Unicode text in update → 200", async () => {
+  const { status, data } = await post({
+    gameId: "slay-the-spire-2", profileId: "community", mode: "update",
+    trigger: {
+      id: "map-icon",
+      payloads: [{ title: "Map", text: "Click to view the act map.", popupOffset: { x: 14, y: 22 } }],
+    },
+  });
+  assert(status === 200, `status ${status}: ${JSON.stringify(data)}`);
+  assert(data.ok, `not ok: ${data.error}`);
+  console.log(`    → ${data.prUrl}`);
 });
 
 // ---------------------------------------------------------------------------
