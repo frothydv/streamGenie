@@ -242,7 +242,10 @@ function githubClient(token) {
 }
 
 function b64decode(str) {
-  return atob(str.replace(/\n/g, ""));
+  const binary = atob(str.replace(/\n/g, ""));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
 }
 
 function b64encode(str) {
