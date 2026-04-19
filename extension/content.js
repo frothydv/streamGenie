@@ -41,8 +41,8 @@
   // SUBMIT_SECRET must match the SUBMIT_SECRET secret set on the Worker.
   // NOTE: this secret is readable by anyone who unpacks the extension — acceptable
   // for a dev build; use proper OAuth for a production release.
-  const WORKER_URL    = ""; // e.g. "https://streamgenie-submit.your-subdomain.workers.dev"
-  const SUBMIT_SECRET = ""; // match the value you set via `wrangler secret put SUBMIT_SECRET`
+  const WORKER_URL    = "https://streamgenie-submit.vbjosh.workers.dev";
+  const SUBMIT_SECRET = "YorkshireTractorFactor";
 
   // Triggers populated from the loaded profile. Each entry mirrors the profile
   // schema trigger shape, augmented with runtime fields (sourceImg, refHash, w, h).
