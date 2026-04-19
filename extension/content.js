@@ -435,7 +435,7 @@
     }
   }
 
-  async function saveUserTrigger(trigger) {
+  async function saveUserTrigger(trigger, update = false) {
     try {
       const ap = activeProfile || DEFAULT_PROFILE;
       const key = userTriggersKey(ap.gameId, ap.profileId);
@@ -446,9 +446,15 @@
       };
       const result = await chrome.storage.local.get(key);
       const saved = result[key] || [];
-      saved.push(storable);
+      if (update) {
+        const idx = saved.findIndex(t => t.id === trigger.id);
+        if (idx >= 0) saved[idx] = storable;
+        else saved.push(storable);
+      } else {
+        saved.push(storable);
+      }
       await chrome.storage.local.set({ [key]: saved });
-      console.log(`[overlay/content] user trigger saved to ${ap.profileId} (${saved.length} total)`);
+      console.log(`[overlay/content] user trigger ${update ? "updated" : "saved"} in ${ap.profileId} (${saved.length} total)`);
     } catch (e) {
       console.warn("[overlay/content] failed to save user trigger:", e.message);
       showToast("Could not save trigger — storage may be full.", "error");
@@ -492,6 +498,8 @@
   // opts = { mode: 'edit', trigger: existingTrigger } for suggest-edit flow.
   function openTriggerEditor(dataUrl, meta, opts = {}) {
     const isEdit = opts.mode === "edit";
+    // Profile triggers → propose update PR. User triggers → re-submit as add.
+    const isProfileEdit = isEdit && !opts.trigger?.id?.startsWith("user-");
     const backdrop = document.createElement("div");
     Object.assign(backdrop.style, {
       position: "fixed", inset: "0", background: "rgba(0,0,0,0.82)",
@@ -517,7 +525,8 @@
     header.style.cssText = "display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;";
     const titleEl = document.createElement("span");
     titleEl.style.cssText = "font-size:15px;font-weight:bold;color:#bf94ff;";
-    titleEl.textContent = `${isEdit ? "Edit Trigger" : "New Trigger"} · ${(activeProfile || DEFAULT_PROFILE).name}`;
+    const modeLabel = isProfileEdit ? "Edit Trigger" : isEdit ? "Edit My Trigger" : "New Trigger";
+    titleEl.textContent = `${modeLabel} · ${(activeProfile || DEFAULT_PROFILE).name}`;
     const xBtn = document.createElement("button");
     xBtn.innerHTML = "&#10005;";
     xBtn.style.cssText = "background:none;border:none;color:#adadb8;font-size:16px;cursor:pointer;padding:0;line-height:1;";
@@ -629,24 +638,37 @@
     }
 
     function buildTrigger() {
+      const payloads = payloadStates.map(p => ({
+        title: p.title.trim(),
+        text:  p.text.trim(),
+        image: null,
+        popupOffset: { x: p.ox, y: p.oy },
+      }));
+      if (isProfileEdit) {
+        // Profile trigger: preserve ID, no new reference images (Worker patches by ID)
+        return { id: opts.trigger.id, payloads, references: [] };
+      }
+      if (isEdit) {
+        // User trigger: preserve ID, carry existing dataUrl references so they can be re-submitted
+        const refs = (opts.trigger.references || []).map(
+          ({ dataUrl: du, w, h, srcW, srcH }) => ({ dataUrl: du, w, h, srcW, srcH })
+        );
+        return { id: opts.trigger.id, payloads, references: refs };
+      }
       return {
-        id: isEdit ? opts.trigger.id : "user-" + Date.now(),
-        payloads: payloadStates.map(p => ({
-          title: p.title.trim(),
-          text:  p.text.trim(),
-          image: null,
-          popupOffset: { x: p.ox, y: p.oy },
-        })),
-        references: isEdit
-          ? [] // update mode: Worker keeps existing references
-          : [{ dataUrl, w: meta.cropW, h: meta.cropH, srcW: meta.videoW, srcH: meta.videoH }],
+        id: "user-" + Date.now(),
+        payloads,
+        references: [{ dataUrl, w: meta.cropW, h: meta.cropH, srcW: meta.videoW, srcH: meta.videoH }],
       };
     }
 
     async function saveLocally(trigger) {
-      TRIGGERS.push(trigger);
+      // Replace in-memory entry if editing an existing trigger, otherwise append.
+      const existingIdx = TRIGGERS.findIndex(t => t.id === trigger.id);
+      if (existingIdx >= 0) TRIGGERS[existingIdx] = trigger;
+      else TRIGGERS.push(trigger);
       loadRefImages(trigger);
-      await saveUserTrigger(trigger);
+      await saveUserTrigger(trigger, isEdit);
     }
 
     // Footer
@@ -656,15 +678,15 @@
     const cancelBtn = editorBtn("Cancel", false);
     cancelBtn.onclick = () => { backdrop.remove(); showToast("Cancelled.", "info"); };
 
-    const submitLabel = isEdit ? "Propose Update" : (WORKER_URL ? "Submit to Profile" : "Save Trigger");
+    const submitLabel = isProfileEdit ? "Propose Update" : (WORKER_URL ? "Submit to Profile" : "Save Trigger");
     const submitBtn = editorBtn(submitLabel, true);
     submitBtn.style.flex = "1";
     submitBtn.onclick = async () => {
       if (!validate()) return;
       const trigger = buildTrigger();
 
-      if (isEdit) {
-        // Edit mode: only submit to profile, no local save
+      if (isProfileEdit) {
+        // Profile trigger edit: propose update PR only, no local save
         if (!WORKER_URL) {
           showToast("Worker not configured — cannot propose updates.", "warn");
           return;
@@ -676,7 +698,7 @@
           const result = await submitToProfile(trigger, "update");
           backdrop.remove();
           showToast("Update proposed! PR opened.", "ok");
-          console.log("[overlay/content] update PR opened:", result.prUrl);
+          console.log("[overlay/content] update PR:", result.prUrl);
         } catch (err) {
           console.warn("[overlay/content] update submit failed:", err.message);
           submitBtn.textContent = "Propose Update";
@@ -687,12 +709,12 @@
         return;
       }
 
-      // New trigger flow: save locally, then optionally submit
+      // New trigger or user-trigger re-edit: save locally then optionally submit
       await saveLocally(trigger);
 
       if (!WORKER_URL) {
         backdrop.remove();
-        showToast("Trigger saved!", "ok");
+        showToast(isEdit ? "Trigger updated!" : "Trigger saved!", "ok");
         return;
       }
 
@@ -704,7 +726,7 @@
         const result = await submitToProfile(trigger, "add");
         backdrop.remove();
         showToast("Submitted! PR opened.", "ok");
-        console.log("[overlay/content] PR opened:", result.prUrl);
+        console.log("[overlay/content] add PR:", result.prUrl);
       } catch (err) {
         console.warn("[overlay/content] submit failed:", err.message);
         submitBtn.textContent = "Submit to Profile";
@@ -717,7 +739,7 @@
     footer.appendChild(cancelBtn);
     footer.appendChild(submitBtn);
 
-    if (!isEdit && WORKER_URL) {
+    if (!isProfileEdit && WORKER_URL) {
       const localLink = document.createElement("a");
       localLink.href = "#";
       localLink.textContent = "local only";
@@ -727,7 +749,7 @@
         if (!validate()) return;
         await saveLocally(buildTrigger());
         backdrop.remove();
-        showToast("Saved locally.", "ok");
+        showToast(isEdit ? "Trigger updated locally." : "Saved locally.", "ok");
       };
       footer.appendChild(localLink);
     }
@@ -874,6 +896,7 @@
     while (activePopups.length < payloads.length) activePopups.push(makePopupEl());
 
     const isProfileTrigger = trigger && !trigger.id?.startsWith("user-");
+    const editLabel = isProfileTrigger ? "✏ Suggest edit" : "✏ Edit";
 
     payloads.forEach((payload, i) => {
       const el = activePopups[i];
@@ -884,12 +907,12 @@
         `<div style="font-weight:bold;color:#bf94ff;margin-bottom:4px;">${payload.title}</div>` +
         `<div>${payload.text}</div>`;
 
-      // Add "Suggest edit" link on the first popup for profile triggers only.
-      if (i === 0 && isProfileTrigger) {
+      // Add edit link on the first popup for any matched trigger.
+      if (i === 0 && trigger) {
         html +=
           `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #333;">` +
           `<a class="sg-edit-link" href="#" style="font-size:11px;color:#adadb8;text-decoration:none;">` +
-          `✏ Suggest edit</a></div>`;
+          `${editLabel}</a></div>`;
       }
 
       el.innerHTML = html;
@@ -897,7 +920,7 @@
       el.style.top  = Math.min(clientY + oy, window.innerHeight - 100) + "px";
       el.style.display = "block";
 
-      if (i === 0 && isProfileTrigger) {
+      if (i === 0 && trigger) {
         const editLink = el.querySelector(".sg-edit-link");
         if (editLink) {
           editLink.onmouseenter = () => { editLink.style.color = "#9146ff"; };
