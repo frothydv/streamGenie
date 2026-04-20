@@ -51,7 +51,7 @@ const contributorCodeKey = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
   // --- Load catalog from CDN (fall back to hardcoded if unavailable) ---
   let CATALOG = FALLBACK_CATALOG;
   try {
-    const res = await fetch(CATALOG_URL);
+    const res = await fetch(CATALOG_URL, { cache: "no-cache" });
     if (res.ok) {
       const raw = await res.json();
       CATALOG = raw.games.map(g => ({
@@ -280,8 +280,8 @@ const contributorCodeKey = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
   }
 
   rebuildProfileSelect();
-  gameSelect.addEventListener("change", () => { rebuildProfileSelect(); renderTriggers(); });
-  profileSelect.addEventListener("change", renderTriggers);
+  gameSelect.addEventListener("change", () => { rebuildProfileSelect(); renderTriggers(); renderContributorStatus(); });
+  profileSelect.addEventListener("change", () => { renderTriggers(); renderContributorStatus(); });
 
   applyBtn.addEventListener("click", async () => {
     const game = CATALOG.find(g => g.gameId === gameSelect.value);
@@ -384,7 +384,9 @@ const contributorCodeKey = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
     const codeSaveBtn = document.getElementById("contributor-code-save");
     const codeNote   = document.getElementById("contributor-code-note");
 
-    const codeKey = contributorCodeKey(active.gameId, active.profileId);
+    const gId = gameSelect.value || active.gameId;
+    const pId = profileSelect.value || active.profileId;
+    const codeKey = contributorCodeKey(gId, pId);
     const stored  = await chrome.storage.local.get(codeKey);
     const code    = stored[codeKey] || null;
 
@@ -417,7 +419,7 @@ const contributorCodeKey = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
               "X-Submit-Secret":  SUBMIT_SECRET,
               "X-Contributor-Key": input,
             },
-            body: JSON.stringify({ gameId: active.gameId, profileId: active.profileId, mode: "verify" }),
+            body: JSON.stringify({ gameId: gId, profileId: pId, mode: "verify" }),
           });
           const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
           if (!data.ok) throw new Error(data.error || `HTTP ${res.status}`);
