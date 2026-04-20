@@ -7,6 +7,19 @@
   }
   window.__streamOverlayLoaded = true;
 
+  // Child frame (Twitch Extension iframe on ext.twitch.tv): relay mouse
+  // position to the parent frame so the overlay stays active while the
+  // cursor is inside the extension overlay. No capture or popup logic runs here.
+  if (window !== window.top) {
+    document.addEventListener("mousemove", (e) => {
+      window.parent.postMessage(
+        { type: "streamGenie_mousemove", clientX: e.clientX, clientY: e.clientY },
+        "*"
+      );
+    }, { passive: true });
+    return;
+  }
+
   console.log("[overlay/content] loaded on", location.href);
 
   // --- Config ---------------------------------------------------------------
@@ -2164,5 +2177,22 @@
   ensureDebugPanel();
   document.addEventListener("mousemove", onDocumentMouseMove, { passive: true });
   document.addEventListener("mousedown", onDocumentClick, true);
+
+  // Receive relayed mouse coordinates from Twitch Extension child frames
+  // (ext.twitch.tv iframes injected by all_frames:true). Translate from
+  // iframe-local coords to parent-frame client coords and feed into the
+  // existing capture pipeline as a synthetic mousemove.
+  window.addEventListener("message", (event) => {
+    if (!event.data || event.data.type !== "streamGenie_mousemove") return;
+    const iframes = Array.from(document.querySelectorAll("iframe"));
+    const sourceFrame = iframes.find(f => f.contentWindow === event.source);
+    if (!sourceFrame) return;
+    const rect = sourceFrame.getBoundingClientRect();
+    onDocumentMouseMove({
+      clientX: rect.left + event.data.clientX,
+      clientY: rect.top + event.data.clientY,
+    });
+  });
+
   heartbeat();
 })();
