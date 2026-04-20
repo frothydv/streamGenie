@@ -24,6 +24,7 @@ function assertEqual(a, b) {
 
 const CANONICAL_SIZE = 32;
 const MIN_MASKED_BITS = 12;
+const MASK_VERIFY_GRID = 16;
 const _gray = new Float32Array(72);
 const _allBitMask = new Uint8Array(64).fill(1);
 
@@ -91,6 +92,42 @@ function maskBitsFromPixels(maskPixels, srcW, sx, sy, sw, sh) {
     }
   }
   return { bits, validBits };
+}
+
+function buildVerifyRefFromPixels(refPixels, maskPixels) {
+  const gray = new Float32Array(MASK_VERIFY_GRID * MASK_VERIFY_GRID);
+  const mask = new Uint8Array(MASK_VERIFY_GRID * MASK_VERIFY_GRID);
+  let active = 0;
+  for (let y = 0; y < MASK_VERIFY_GRID; y++) {
+    for (let x = 0; x < MASK_VERIFY_GRID; x++) {
+      const px = Math.min(CANONICAL_SIZE - 1, Math.floor(((x + 0.5) * CANONICAL_SIZE) / MASK_VERIFY_GRID));
+      const py = Math.min(CANONICAL_SIZE - 1, Math.floor(((y + 0.5) * CANONICAL_SIZE) / MASK_VERIFY_GRID));
+      const idx = y * MASK_VERIFY_GRID + x;
+      const pixelIdx = (py * CANONICAL_SIZE + px) * 4;
+      gray[idx] = 0.299 * refPixels[pixelIdx] + 0.587 * refPixels[pixelIdx + 1] + 0.114 * refPixels[pixelIdx + 2];
+      const alpha = maskPixels ? maskPixels[pixelIdx + 3] : 255;
+      mask[idx] = alpha >= 128 ? 1 : 0;
+      active += mask[idx];
+    }
+  }
+  return { gray, mask, active };
+}
+
+function maskedVerifyScoreFromPixels(pixels, srcW, sx, sy, sw, sh, refVerifyGray, refVerifyMask, refVerifyActive) {
+  if (!refVerifyGray || !refVerifyMask || !refVerifyActive) return { score: 1, active: 0 };
+  let total = 0;
+  for (let y = 0; y < MASK_VERIFY_GRID; y++) {
+    for (let x = 0; x < MASK_VERIFY_GRID; x++) {
+      const idx = y * MASK_VERIFY_GRID + x;
+      if (!refVerifyMask[idx]) continue;
+      const px = sx + Math.min(sw - 1, Math.max(0, Math.floor(((x + 0.5) * sw) / MASK_VERIFY_GRID)));
+      const py = sy + Math.min(sh - 1, Math.max(0, Math.floor(((y + 0.5) * sh) / MASK_VERIFY_GRID)));
+      const pixelIdx = (py * srcW + px) * 4;
+      const gray = 0.299 * pixels[pixelIdx] + 0.587 * pixels[pixelIdx + 1] + 0.114 * pixels[pixelIdx + 2];
+      total += Math.abs(gray - refVerifyGray[idx]);
+    }
+  }
+  return { score: total / (refVerifyActive * 255), active: refVerifyActive };
 }
 
 function makePixels(width, height, backgroundFn, objectFn) {
@@ -168,6 +205,22 @@ test("mask still rejects wrong foreground", () => {
   const masked = dHashDistFromPixels(candidate, 32, 0, 0, 32, 32, refHash, maskBits.bits, maskBits.validBits);
   assert(masked.dist > 0, "foreground change should still produce mismatches");
   assert(masked.ratio > 0, "foreground change should survive masking");
+});
+
+test("masked verifier ignores background-only changes", () => {
+  const ref = scene(false, false);
+  const candidate = scene(true, false);
+  const verifyRef = buildVerifyRefFromPixels(ref, makeCenterMask(32, 32));
+  const verify = maskedVerifyScoreFromPixels(candidate, 32, 0, 0, 32, 32, verifyRef.gray, verifyRef.mask, verifyRef.active);
+  assert(verify.score < 0.05, `expected low verify score, got ${verify.score}`);
+});
+
+test("masked verifier rejects wrong foreground", () => {
+  const ref = scene(false, false);
+  const candidate = scene(true, true);
+  const verifyRef = buildVerifyRefFromPixels(ref, makeCenterMask(32, 32));
+  const verify = maskedVerifyScoreFromPixels(candidate, 32, 0, 0, 32, 32, verifyRef.gray, verifyRef.mask, verifyRef.active);
+  assert(verify.score > 0.3, `expected high verify score, got ${verify.score}`);
 });
 
 test("tiny masks are rejected as too weak", () => {

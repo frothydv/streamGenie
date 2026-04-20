@@ -17,6 +17,8 @@
   const MIN_VIDEO_SIZE = 100;
   const MATCH_THRESHOLD_RATIO = 10 / 64; // unmasked references preserve old 10/64 cutoff
   const MASKED_MATCH_THRESHOLD_RATIO = 6 / 64; // masked refs need a tighter cutoff to avoid false positives
+  const MASK_VERIFY_GRID = 16;
+  const MASK_VERIFY_THRESHOLD = 0.16; // average grayscale delta / 255 for masked refs
   const SLIDE_STEP = 1;                // 1px step — ensures no alignment misses
   const MIN_REF_PX = 8;               // only skip truly microscopic refs
   const MIN_MASKED_BITS = 16;         // reject masks that leave too little signal
@@ -60,7 +62,7 @@
   let debugPanel = null;
   let lastCaptureTime = 0;
   let mouseOverVideo = false;
-  let lastMatchInfo = null; // { title, dist, ratio, validBits, noMatch? } for debug panel
+  let lastMatchInfo = null; // { title, dist, ratio, validBits, threshold, verifyScore, verifyThreshold, noMatch?, candidates? } for debug panel
   let activeProfile = null; // set by loadProfile(); used by editor + saveUserTrigger
   let overPopup = false;   // true while cursor is over an active popup
   let currentMatchedTrigger = null;
@@ -326,6 +328,42 @@
     return { bits, validBits };
   }
 
+  function buildVerifyRefFromPixels(refPixels, maskPixels) {
+    const gray = new Float32Array(MASK_VERIFY_GRID * MASK_VERIFY_GRID);
+    const mask = new Uint8Array(MASK_VERIFY_GRID * MASK_VERIFY_GRID);
+    let active = 0;
+    for (let y = 0; y < MASK_VERIFY_GRID; y++) {
+      for (let x = 0; x < MASK_VERIFY_GRID; x++) {
+        const px = Math.min(CANONICAL_SIZE - 1, Math.floor(((x + 0.5) * CANONICAL_SIZE) / MASK_VERIFY_GRID));
+        const py = Math.min(CANONICAL_SIZE - 1, Math.floor(((y + 0.5) * CANONICAL_SIZE) / MASK_VERIFY_GRID));
+        const idx = y * MASK_VERIFY_GRID + x;
+        const pixelIdx = (py * CANONICAL_SIZE + px) * 4;
+        gray[idx] = 0.299 * refPixels[pixelIdx] + 0.587 * refPixels[pixelIdx + 1] + 0.114 * refPixels[pixelIdx + 2];
+        const alpha = maskPixels ? maskPixels[pixelIdx + 3] : 255;
+        mask[idx] = alpha >= 128 ? 1 : 0;
+        active += mask[idx];
+      }
+    }
+    return { gray, mask, active };
+  }
+
+  function maskedVerifyScoreFromPixels(pixels, srcW, sx, sy, sw, sh, refVerifyGray, refVerifyMask, refVerifyActive) {
+    if (!refVerifyGray || !refVerifyMask || !refVerifyActive) return { score: 1, active: 0 };
+    let total = 0;
+    for (let y = 0; y < MASK_VERIFY_GRID; y++) {
+      for (let x = 0; x < MASK_VERIFY_GRID; x++) {
+        const idx = y * MASK_VERIFY_GRID + x;
+        if (!refVerifyMask[idx]) continue;
+        const px = sx + Math.min(sw - 1, Math.max(0, Math.floor(((x + 0.5) * sw) / MASK_VERIFY_GRID)));
+        const py = sy + Math.min(sh - 1, Math.max(0, Math.floor(((y + 0.5) * sh) / MASK_VERIFY_GRID)));
+        const pixelIdx = (py * srcW + px) * 4;
+        const gray = 0.299 * pixels[pixelIdx] + 0.587 * pixels[pixelIdx + 1] + 0.114 * pixels[pixelIdx + 2];
+        total += Math.abs(gray - refVerifyGray[idx]);
+      }
+    }
+    return { score: total / (refVerifyActive * 255), active: refVerifyActive };
+  }
+
   // Slide a reference entry across the capture pixels, return best position + distance.
   function slidingWindowMatch(ref, capturePixels) {
     const { refHash, refBitMask, refValidBits, w, h } = ref;
@@ -351,24 +389,44 @@
     return ref && ref.refValidBits < 64 ? MASKED_MATCH_THRESHOLD_RATIO : MATCH_THRESHOLD_RATIO;
   }
 
+  function verifyThresholdForRef(ref) {
+    return ref && ref.refValidBits < 64 ? MASK_VERIFY_THRESHOLD : null;
+  }
+
   // Run all triggers/references in a single pass. Returns the overall best result.
   function findBestMatch(capturePixels) {
     let best = null;
+    const candidates = [];
     for (const trigger of TRIGGERS) {
       if (!trigger.references) continue;
       for (const ref of trigger.references) {
         if (!ref.refHash) continue;
         const result = slidingWindowMatch(ref, capturePixels);
+        const threshold = matchThresholdForRef(ref);
+        const verify = ref.refVerifyGray
+          ? maskedVerifyScoreFromPixels(capturePixels, CAPTURE_SIZE, result.x, result.y, ref.w, ref.h, ref.refVerifyGray, ref.refVerifyMask, ref.refVerifyActive)
+          : null;
+        const verifyThreshold = verifyThresholdForRef(ref);
+        candidates.push({
+          title: trigger.payloads?.[0]?.title || trigger.id,
+          dist: result.dist,
+          ratio: result.ratio,
+          validBits: result.validBits,
+          threshold,
+          verifyScore: verify ? verify.score : null,
+          verifyThreshold,
+        });
         if (
           !best ||
           result.ratio < best.ratio ||
           (result.ratio === best.ratio && result.dist < best.dist)
         ) {
-          best = { trigger, ref, ...result };
+          best = { trigger, ref, ...result, verifyScore: verify ? verify.score : null, verifyActive: verify ? verify.active : 0 };
         }
       }
     }
-    return best; // may be null if no refs loaded
+    candidates.sort((a, b) => a.ratio - b.ratio || a.dist - b.dist);
+    return { best, candidates: candidates.slice(0, 3) }; // best may be null
   }
 
   // --- Profile loading ------------------------------------------------------
@@ -503,10 +561,17 @@
       const maskBits = maskBitsFromPixels(maskPx, CANONICAL_SIZE, 0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
       ref.refBitMask = maskBits.bits;
       ref.refValidBits = maskBits.validBits;
+      const verifyRef = buildVerifyRefFromPixels(px, maskPx);
+      ref.refVerifyGray = verifyRef.gray;
+      ref.refVerifyMask = verifyRef.mask;
+      ref.refVerifyActive = verifyRef.active;
       if (ref.refValidBits < MIN_MASKED_BITS) ref.refHash = null;
     } else {
       ref.refBitMask = new Uint8Array(_allBitMask);
       ref.refValidBits = 64;
+      ref.refVerifyGray = null;
+      ref.refVerifyMask = null;
+      ref.refVerifyActive = 0;
     }
   }
 
@@ -1662,16 +1727,37 @@
 
     // Single getImageData read — all matching runs against this array.
     const capturePixels = captureCtx.getImageData(0, 0, CAPTURE_SIZE, CAPTURE_SIZE).data;
-    const best = findBestMatch(capturePixels);
-
+    const matchResult = findBestMatch(capturePixels);
+    const best = matchResult.best;
     const threshold = best ? matchThresholdForRef(best.ref) : MATCH_THRESHOLD_RATIO;
-    if (best && best.ratio <= threshold && best.validBits >= MIN_MASKED_BITS) {
+    const verifyThreshold = best ? verifyThresholdForRef(best.ref) : null;
+    const verifyOk = verifyThreshold == null || (best && best.verifyScore != null && best.verifyScore <= verifyThreshold);
+    if (best && best.ratio <= threshold && best.validBits >= MIN_MASKED_BITS && verifyOk) {
       const label = best.trigger.payloads ? best.trigger.payloads[0].title : best.trigger.id;
-      lastMatchInfo = { title: label, dist: best.dist, ratio: best.ratio, validBits: best.validBits };
+      lastMatchInfo = {
+        title: label,
+        dist: best.dist,
+        ratio: best.ratio,
+        validBits: best.validBits,
+        threshold,
+        verifyScore: best.verifyScore,
+        verifyThreshold,
+        candidates: matchResult.candidates,
+      };
       showPopups(best.trigger.payloads || [], event.clientX, event.clientY, best.trigger);
     } else {
       const label = best ? (best.trigger.payloads ? best.trigger.payloads[0].title : best.trigger.id) : null;
-      lastMatchInfo = best ? { title: label, dist: best.dist, ratio: best.ratio, validBits: best.validBits, noMatch: true } : null;
+      lastMatchInfo = best ? {
+        title: label,
+        dist: best.dist,
+        ratio: best.ratio,
+        validBits: best.validBits,
+        threshold,
+        verifyScore: best.verifyScore,
+        verifyThreshold,
+        noMatch: true,
+        candidates: matchResult.candidates,
+      } : null;
       hidePopups();
     }
 
@@ -1790,10 +1876,21 @@
     if (!infoEl) return;
     let matchLine = "";
     if (lastMatchInfo) {
+      const verifyText = lastMatchInfo.verifyThreshold != null && lastMatchInfo.verifyScore != null
+        ? ` · v=${Math.round(lastMatchInfo.verifyScore * 100)}% <= ${Math.round(lastMatchInfo.verifyThreshold * 100)}%`
+        : "";
       matchLine = lastMatchInfo.noMatch
-        ? `<span style="color:#adadb8">best: ${lastMatchInfo.dist}/${lastMatchInfo.validBits} (${Math.round(lastMatchInfo.ratio * 100)}%) "${lastMatchInfo.title}"</span>`
-        : `<span style="color:#00f593">MATCH "${lastMatchInfo.title}" ${lastMatchInfo.dist}/${lastMatchInfo.validBits} (${Math.round(lastMatchInfo.ratio * 100)}%)</span>`;
+        ? `<span style="color:#adadb8">best: ${lastMatchInfo.dist}/${lastMatchInfo.validBits} (${Math.round(lastMatchInfo.ratio * 100)}%) <= ${Math.round(lastMatchInfo.threshold * 100)}%${verifyText} "${lastMatchInfo.title}"</span>`
+        : `<span style="color:#00f593">MATCH "${lastMatchInfo.title}" ${lastMatchInfo.dist}/${lastMatchInfo.validBits} (${Math.round(lastMatchInfo.ratio * 100)}%) <= ${Math.round(lastMatchInfo.threshold * 100)}%${verifyText}</span>`;
     }
+    const candidateLines = (lastMatchInfo?.candidates || [])
+      .map((c, idx) => {
+        const verifyText = c.verifyThreshold != null && c.verifyScore != null
+          ? ` · v${Math.round(c.verifyScore * 100)}<=${Math.round(c.verifyThreshold * 100)}`
+          : "";
+        return `#${idx + 1} ${Math.round(c.ratio * 100)}% (${c.dist}/${c.validBits}) <= ${Math.round(c.threshold * 100)}%${verifyText} ${c.title}`;
+      })
+      .join("<br>");
     infoEl.innerHTML =
       `client: ${info.clientX}, ${info.clientY}<br>` +
       `video:  ${info.videoX}, ${info.videoY}<br>` +
@@ -1801,7 +1898,8 @@
       `offset: ${info.offsetX}, ${info.offsetY}<br>` +
       `fit:    ${info.objectFit}<br>` +
       `source: ${info.videoW}x${info.videoH}` +
-      (matchLine ? `<br>${matchLine}` : "");
+      (matchLine ? `<br>${matchLine}` : "") +
+      (candidateLines ? `<br><span style="color:#888">top:</span><br>${candidateLines}` : "");
   }
 
   // --- Capture mode ---------------------------------------------------------
