@@ -65,13 +65,12 @@ const contributorCodeKey = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
     // Network unavailable — fallback catalog still works
   }
 
-  // Seed twitchSlugs from FALLBACK_CATALOG — CDN may not have them yet and the fetch
-  // above overwrites FALLBACK_CATALOG, so we always re-apply the known mappings.
+  // Always apply FALLBACK_CATALOG twitchSlugs — they are authoritative.
+  // CDN may have a wrong or missing value (e.g. "slay-the-spire-2" instead of
+  // "slay-the-spire-ii"), and we can't fix the CDN immediately.
   for (const fallback of FALLBACK_CATALOG) {
     const existing = CATALOG.find(g => g.gameId === fallback.gameId);
-    if (existing && !existing.twitchSlug && fallback.twitchSlug) {
-      existing.twitchSlug = fallback.twitchSlug;
-    }
+    if (existing && fallback.twitchSlug) existing.twitchSlug = fallback.twitchSlug;
   }
 
   // Merge in locally-created profiles (persist across reloads until CDN cache refreshes).
