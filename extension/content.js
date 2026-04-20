@@ -15,10 +15,11 @@
   const CAPTURE_INTERVAL_MS = 100;     // throttle mouse-driven captures (10Hz)
   const HEARTBEAT_MS = 500;
   const MIN_VIDEO_SIZE = 100;
-  const MATCH_THRESHOLD_RATIO = 10 / 64; // max mismatch ratio; preserves old 10/64 cutoff
+  const MATCH_THRESHOLD_RATIO = 10 / 64; // unmasked references preserve old 10/64 cutoff
+  const MASKED_MATCH_THRESHOLD_RATIO = 6 / 64; // masked refs need a tighter cutoff to avoid false positives
   const SLIDE_STEP = 1;                // 1px step — ensures no alignment misses
   const MIN_REF_PX = 8;               // only skip truly microscopic refs
-  const MIN_MASKED_BITS = 12;         // reject masks that leave too little signal
+  const MIN_MASKED_BITS = 16;         // reject masks that leave too little signal
   // Both reference and each capture window are normalised through this virtual
   // size before hashing, so small refs produce equally discriminative hashes.
   const CANONICAL_SIZE = 32;
@@ -344,6 +345,10 @@
       }
     }
     return best;
+  }
+
+  function matchThresholdForRef(ref) {
+    return ref && ref.refValidBits < 64 ? MASKED_MATCH_THRESHOLD_RATIO : MATCH_THRESHOLD_RATIO;
   }
 
   // Run all triggers/references in a single pass. Returns the overall best result.
@@ -1163,6 +1168,20 @@
       overlayCtx.restore();
     }
 
+    function drawPolygonCrosshair() {
+      if (!state.hovering || state.tool !== "polygon") return;
+      overlayCtx.save();
+      overlayCtx.strokeStyle = "#f5f5f5";
+      overlayCtx.lineWidth = 1;
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(state.hoverX - 7, state.hoverY);
+      overlayCtx.lineTo(state.hoverX + 7, state.hoverY);
+      overlayCtx.moveTo(state.hoverX, state.hoverY - 7);
+      overlayCtx.lineTo(state.hoverX, state.hoverY + 7);
+      overlayCtx.stroke();
+      overlayCtx.restore();
+    }
+
     function drawPolygonPreview() {
       if (state.tool !== "polygon" || state.polygonPoints.length === 0) return;
       overlayCtx.save();
@@ -1225,7 +1244,9 @@
     function renderOverlay() {
       if (!state.imageLoaded) return;
       overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+      updateInfo();
       drawBrushPreview();
+      drawPolygonCrosshair();
       drawPolygonPreview();
     }
 
@@ -1643,7 +1664,8 @@
     const capturePixels = captureCtx.getImageData(0, 0, CAPTURE_SIZE, CAPTURE_SIZE).data;
     const best = findBestMatch(capturePixels);
 
-    if (best && best.ratio <= MATCH_THRESHOLD_RATIO && best.validBits >= MIN_MASKED_BITS) {
+    const threshold = best ? matchThresholdForRef(best.ref) : MATCH_THRESHOLD_RATIO;
+    if (best && best.ratio <= threshold && best.validBits >= MIN_MASKED_BITS) {
       const label = best.trigger.payloads ? best.trigger.payloads[0].title : best.trigger.id;
       lastMatchInfo = { title: label, dist: best.dist, ratio: best.ratio, validBits: best.validBits };
       showPopups(best.trigger.payloads || [], event.clientX, event.clientY, best.trigger);
