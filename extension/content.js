@@ -511,6 +511,7 @@
 
     const codeStore = await chrome.storage.local.get(contributorCodeKey(ap.gameId, ap.profileId));
     const contributorCode = codeStore[contributorCodeKey(ap.gameId, ap.profileId)] || null;
+    console.log(`[overlay/submit] mode=${mode} game=${ap.gameId} profile=${ap.profileId} trusted=${!!contributorCode}`);
 
     const triggerPayload = {
       id:       trigger.id,
@@ -539,11 +540,28 @@
       }),
     });
     const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
+    console.log(`[overlay/submit] worker response (${res.status}):`, JSON.stringify(data));
     if (!data.ok) throw new Error(data.error || `HTTP ${res.status}`);
     return data; // { ok, direct } or { ok, prUrl }
   }
 
   // --- Trigger editor -------------------------------------------------------
+
+  function showSubmitError(container, message) {
+    let el = container.querySelector(".sg-submit-error");
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "sg-submit-error";
+      Object.assign(el.style, {
+        width: "100%", padding: "8px 10px", marginBottom: "8px",
+        background: "rgba(255,92,92,0.12)", border: "1px solid #ff5c5c",
+        borderRadius: "4px", color: "#ff5c5c", fontSize: "12px",
+        lineHeight: "1.4", boxSizing: "border-box", wordBreak: "break-word",
+      });
+      container.insertBefore(el, container.firstChild);
+    }
+    el.textContent = "Submit error: " + message;
+  }
 
   // opts = { mode: 'edit', trigger: existingTrigger } for suggest-edit flow.
   function openTriggerEditor(dataUrl, meta, opts = {}) {
@@ -750,11 +768,12 @@
           showToast(result.direct ? "Update submitted directly!" : "Update proposed! PR opened.", "ok");
           if (result.prUrl) console.log("[overlay/content] update PR:", result.prUrl);
         } catch (err) {
-          console.warn("[overlay/content] update submit failed:", err.message);
-          submitBtn.textContent = "Propose Update";
+          console.error("[overlay/content] update submit FAILED:", err.message, err);
+          submitBtn.textContent = "Retry Submit";
           submitBtn.disabled = false;
           cancelBtn.disabled = false;
-          showToast("Submit failed: " + err.message, "warn");
+          showSubmitError(footer, err.message);
+          showToast("Submit failed — see error above in editor.", "warn");
         }
         return;
       }
@@ -778,11 +797,12 @@
         showToast(result.direct ? "Submitted directly!" : "Submitted! PR opened.", "ok");
         if (result.prUrl) console.log("[overlay/content] add PR:", result.prUrl);
       } catch (err) {
-        console.warn("[overlay/content] submit failed:", err.message);
-        submitBtn.textContent = "Submit to Profile";
+        console.error("[overlay/content] submit FAILED:", err.message, err);
+        submitBtn.textContent = "Retry Submit";
         submitBtn.disabled = false;
         cancelBtn.disabled = false;
-        showToast("Saved locally. Submit failed: " + err.message, "warn");
+        showSubmitError(footer, err.message);
+        showToast("Submit failed — see error above in editor.", "warn");
       }
     };
 
