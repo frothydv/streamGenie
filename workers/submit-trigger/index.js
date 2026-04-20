@@ -2,12 +2,22 @@
  * Stream Genie — Submit Trigger Worker
  *
  * POST /  { gameId, profileId, trigger, mode? }
- * Header: X-Submit-Secret: <secret>
+ * Headers: X-Submit-Secret: <secret>
+ *          X-Contributor-Key: <uuid>   (optional — unlocks direct-commit path)
  *
- * mode "add"    (default) — upload reference PNG(s), append trigger, open PR
- * mode "update" — patch existing trigger payloads by id, open PR (no new images)
+ * Modes:
+ *   "add"            — add trigger; trusted → direct commit, untrusted → PR
+ *   "update"         — patch trigger payloads; trusted → direct, untrusted → PR
+ *   "remove"         — delete trigger; trusted → direct, untrusted → PR
+ *   "create-profile" — create new profile stub + catalog entry; always direct;
+ *                      returns a contributor code for the new profile
+ *   "verify"         — check if X-Contributor-Key is trusted for gameId/profileId
  *
- * Required Worker secrets (set via `wrangler secret put`):
+ * KV (CONTRIBUTOR_KEYS):
+ *   key:   UUID contributor code
+ *   value: JSON { gameId, profileId, label, createdAt }
+ *
+ * Secrets (set via `wrangler secret put`):
  *   GITHUB_TOKEN   — PAT with repo write access to streamGenieProfiles
  *   SUBMIT_SECRET  — shared secret the extension sends in X-Submit-Secret
  */
@@ -19,70 +29,77 @@ const BASE  = "main";
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, X-Submit-Secret",
+  "Access-Control-Allow-Headers": "Content-Type, X-Submit-Secret, X-Contributor-Key",
 };
 
 export default {
   async fetch(request, env) {
-    if (request.method === "OPTIONS") {
-      return new Response(null, { headers: CORS });
-    }
-    if (request.method !== "POST") {
-      return json({ ok: false, error: "Method not allowed" }, 405);
-    }
+    if (request.method === "OPTIONS") return new Response(null, { headers: CORS });
+    if (request.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
 
     if (request.headers.get("X-Submit-Secret") !== env.SUBMIT_SECRET) {
       return json({ ok: false, error: "Unauthorized" }, 401);
     }
 
     let body;
-    try {
-      body = await request.json();
-    } catch {
-      return json({ ok: false, error: "Invalid JSON" }, 400);
+    try { body = await request.json(); }
+    catch { return json({ ok: false, error: "Invalid JSON" }, 400); }
+
+    const {
+      gameId, profileId, trigger, mode = "add",
+      gameName, twitchSlug, newProfileId, newProfileName,
+    } = body;
+
+    const contributorKey = request.headers.get("X-Contributor-Key") || null;
+
+    // --- verify mode --------------------------------------------------------
+    if (mode === "verify") {
+      if (!gameId || !profileId) return json({ ok: false, error: "Missing gameId/profileId" }, 400);
+      const trusted = await isTrustedContributor(env, contributorKey, gameId, profileId);
+      return json({ ok: true, trusted });
     }
 
-    const { gameId, profileId, trigger, mode = "add", gameName, twitchSlug, newProfileId, newProfileName } = body;
-
+    // --- create-profile mode ------------------------------------------------
     if (mode === "create-profile") {
-      if (!gameId || !gameName) {
-        return json({ ok: false, error: "Missing gameId or gameName for create-profile" }, 400);
+      if (!gameId || !gameName || !newProfileId) {
+        return json({ ok: false, error: "Missing gameId, gameName, or newProfileId" }, 400);
       }
-      if (!newProfileId) {
-        return json({ ok: false, error: "Missing newProfileId for create-profile" }, 400);
-      }
-    } else {
-      if (!gameId || !profileId || !trigger) {
-        return json({ ok: false, error: "Missing required fields" }, 400);
-      }
-      if (mode !== "remove" && !trigger.payloads) {
-        return json({ ok: false, error: "Missing trigger payloads" }, 400);
-      }
-      if (mode === "add") {
-        if (!trigger.references?.length) {
-          return json({ ok: false, error: "Missing references array" }, 400);
-        }
-        if (!trigger.references[0]?.dataUrl) {
-          return json({ ok: false, error: "Missing reference image" }, 400);
-        }
-      }
-      if ((mode === "update" || mode === "remove") && !trigger.id) {
-        return json({ ok: false, error: `Missing trigger id for ${mode}` }, 400);
+      try {
+        const gh = githubClient(env.GITHUB_TOKEN);
+        const result = await createProfile(gh, env, gameId, gameName, twitchSlug || gameId, newProfileId, newProfileName || newProfileId);
+        return json({ ok: true, ...result });
+      } catch (err) {
+        console.error("createProfile failed:", err.message);
+        return json({ ok: false, error: err.message }, 500);
       }
     }
+
+    // --- trigger modes (add / update / remove) ------------------------------
+    if (!gameId || !profileId || !trigger) {
+      return json({ ok: false, error: "Missing required fields" }, 400);
+    }
+    if (mode !== "remove" && !trigger.payloads) {
+      return json({ ok: false, error: "Missing trigger payloads" }, 400);
+    }
+    if (mode === "add") {
+      if (!trigger.references?.length)      return json({ ok: false, error: "Missing references array" }, 400);
+      if (!trigger.references[0]?.dataUrl)  return json({ ok: false, error: "Missing reference image" }, 400);
+    }
+    if ((mode === "update" || mode === "remove") && !trigger.id) {
+      return json({ ok: false, error: `Missing trigger id for ${mode}` }, 400);
+    }
+
+    const trusted = await isTrustedContributor(env, contributorKey, gameId, profileId);
+    const hint    = contributorHint(contributorKey);
 
     try {
       const gh = githubClient(env.GITHUB_TOKEN);
-      if (mode === "create-profile") {
-        const profileUrl = await createProfile(gh, gameId, gameName, twitchSlug || gameId, newProfileId, newProfileName || newProfileId);
-        return json({ ok: true, profileUrl, profileId: newProfileId, profileName: newProfileName || newProfileId });
-      }
-      const prUrl = mode === "update"
-        ? await updateTrigger(gh, gameId, profileId, trigger)
+      const result = mode === "update"
+        ? await updateTrigger(gh, gameId, profileId, trigger, trusted, hint)
         : mode === "remove"
-          ? await removeTrigger(gh, gameId, profileId, trigger)
-          : await addTrigger(gh, gameId, profileId, trigger);
-      return json({ ok: true, prUrl });
+          ? await removeTrigger(gh, gameId, profileId, trigger, trusted, hint)
+          : await addTrigger(gh, gameId, profileId, trigger, trusted, hint);
+      return json({ ok: true, ...result });
     } catch (err) {
       console.error(`${mode}Trigger failed:`, err.message);
       return json({ ok: false, error: err.message }, 500);
@@ -91,167 +108,160 @@ export default {
 };
 
 // ---------------------------------------------------------------------------
+// Permission helpers
+// ---------------------------------------------------------------------------
 
-async function addTrigger(gh, gameId, profileId, trigger) {
+async function isTrustedContributor(env, key, gameId, profileId) {
+  if (!key || !env.CONTRIBUTOR_KEYS) return false;
+  try {
+    const value = await env.CONTRIBUTOR_KEYS.get(key);
+    if (!value) return false;
+    const data = JSON.parse(value);
+    return data.gameId === gameId && data.profileId === profileId;
+  } catch { return false; }
+}
+
+function contributorHint(key) {
+  if (!key) return "anonymous";
+  return key.replace(/-/g, "").slice(0, 8);
+}
+
+// ---------------------------------------------------------------------------
+// Trigger operations (trusted = direct commit to main; untrusted = PR)
+// ---------------------------------------------------------------------------
+
+async function addTrigger(gh, gameId, profileId, trigger, direct, hint) {
   const profilePath = `games/${gameId}/profiles/${profileId}`;
-
   const rawId = (trigger.payloads[0]?.title || trigger.id || Date.now().toString())
     .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
   const triggerId = `${rawId}-${Date.now()}`;
-  const branchName = `trigger/${triggerId}`;
+  const branch = direct ? null : `trigger/${triggerId}`;
 
-  const baseSha = await getMainSha(gh);
-
-  await gh(`repos/${OWNER}/${REPO}/git/refs`, "POST", {
-    ref: `refs/heads/${branchName}`,
-    sha: baseSha,
-  });
-
-  // Upload reference images
-  const profileRefs = [];
-  for (let i = 0; i < trigger.references.length; i++) {
-    const ref = trigger.references[i];
-    const imageB64 = ref.dataUrl.replace(/^data:image\/\w+;base64,/, "");
-    const suffix = trigger.references.length > 1 ? `-${i}` : "";
-    const filename = `${triggerId}${suffix}.png`;
-    const filePath = `${profilePath}/references/${filename}`;
-
-    await gh(`repos/${OWNER}/${REPO}/contents/${filePath}`, "PUT", {
-      message: `feat: add reference image ${filename}`,
-      content: imageB64,
-      branch: branchName,
-    });
-
-    profileRefs.push({
-      file: filename,
-      w:    ref.w    ?? null,
-      h:    ref.h    ?? null,
-      srcW: ref.srcW ?? null,
-      srcH: ref.srcH ?? null,
+  if (!direct) {
+    const baseSha = await getMainSha(gh);
+    await gh(`repos/${OWNER}/${REPO}/git/refs`, "POST", {
+      ref: `refs/heads/${branch}`, sha: baseSha,
     });
   }
 
-  const { file: profileFile, profile } = await readProfile(gh, profilePath, branchName);
+  const profileRefs = [];
+  for (let i = 0; i < trigger.references.length; i++) {
+    const ref      = trigger.references[i];
+    const imageB64 = ref.dataUrl.replace(/^data:image\/\w+;base64,/, "");
+    const suffix   = trigger.references.length > 1 ? `-${i}` : "";
+    const filename = `${triggerId}${suffix}.png`;
+    const filePath = `${profilePath}/references/${filename}`;
+    const fileBody = { message: `feat: add reference image ${filename}`, content: imageB64 };
+    if (branch) fileBody.branch = branch;
+    await gh(`repos/${OWNER}/${REPO}/contents/${filePath}`, "PUT", fileBody);
+    profileRefs.push({ file: filename, w: ref.w ?? null, h: ref.h ?? null, srcW: ref.srcW ?? null, srcH: ref.srcH ?? null });
+  }
 
+  const { file: profileFile, profile } = await readProfile(gh, profilePath, branch || BASE);
   const newTrigger = {
-    id: rawId,
-    payloads: normalisedPayloads(trigger.payloads),
+    id:         rawId,
+    payloads:   normalisedPayloads(trigger.payloads),
     references: profileRefs,
   };
   profile.triggers.push(newTrigger);
 
-  await writeProfile(gh, profilePath, profile, profileFile.sha, branchName,
-    `feat: add trigger "${newTrigger.payloads[0]?.title || rawId}"`);
+  const title = newTrigger.payloads[0]?.title || rawId;
+  await writeProfile(gh, profilePath, profile, profileFile.sha, branch,
+    `feat: add trigger "${title}" [contributor: ${hint}]`);
+
+  if (direct) return { direct: true };
 
   const pr = await gh(`repos/${OWNER}/${REPO}/pulls`, "POST", {
-    title: `Add trigger: ${newTrigger.payloads[0]?.title || rawId}`,
-    body: prBody("New trigger submitted via Stream Genie.", gameId, profileId, [
-      `**Payloads:** ${trigger.payloads.length}`,
-    ]),
-    head: branchName,
-    base: BASE,
+    title: `Add trigger: ${title}`,
+    body:  prBody("New trigger submitted via Stream Genie.", gameId, profileId, [`**Payloads:** ${trigger.payloads.length}`]),
+    head:  branch, base: BASE,
   });
-
-  return pr.html_url;
+  return { prUrl: pr.html_url };
 }
 
-async function updateTrigger(gh, gameId, profileId, trigger) {
+async function updateTrigger(gh, gameId, profileId, trigger, direct, hint) {
   const profilePath = `games/${gameId}/profiles/${profileId}`;
-  const triggerId = trigger.id;
-  const branchName = `update/${triggerId}-${Date.now()}`;
+  const triggerId   = trigger.id;
+  const branch      = direct ? null : `update/${triggerId}-${Date.now()}`;
 
-  const baseSha = await getMainSha(gh);
+  if (!direct) {
+    const baseSha = await getMainSha(gh);
+    await gh(`repos/${OWNER}/${REPO}/git/refs`, "POST", {
+      ref: `refs/heads/${branch}`, sha: baseSha,
+    });
+  }
 
-  await gh(`repos/${OWNER}/${REPO}/git/refs`, "POST", {
-    ref: `refs/heads/${branchName}`,
-    sha: baseSha,
-  });
-
-  const { file: profileFile, profile } = await readProfile(gh, profilePath, branchName);
-
+  const { file: profileFile, profile } = await readProfile(gh, profilePath, branch || BASE);
   const idx = profile.triggers.findIndex(t => t.id === triggerId);
   if (idx === -1) throw new Error(`Trigger "${triggerId}" not found in profile`);
 
-  profile.triggers[idx] = {
-    ...profile.triggers[idx],
-    payloads: normalisedPayloads(trigger.payloads),
-  };
-
+  profile.triggers[idx] = { ...profile.triggers[idx], payloads: normalisedPayloads(trigger.payloads) };
   const title = trigger.payloads[0]?.title || triggerId;
 
-  await writeProfile(gh, profilePath, profile, profileFile.sha, branchName,
-    `fix: update trigger "${title}"`);
+  await writeProfile(gh, profilePath, profile, profileFile.sha, branch,
+    `fix: update trigger "${title}" [contributor: ${hint}]`);
+
+  if (direct) return { direct: true };
 
   const pr = await gh(`repos/${OWNER}/${REPO}/pulls`, "POST", {
     title: `Update trigger: ${title}`,
-    body: prBody("Proposed update to an existing trigger via Stream Genie.", gameId, profileId, [
-      `**Trigger ID:** ${triggerId}`,
-    ]),
-    head: branchName,
-    base: BASE,
+    body:  prBody("Proposed update via Stream Genie.", gameId, profileId, [`**Trigger ID:** ${triggerId}`]),
+    head:  branch, base: BASE,
   });
-
-  return pr.html_url;
+  return { prUrl: pr.html_url };
 }
 
-async function removeTrigger(gh, gameId, profileId, trigger) {
+async function removeTrigger(gh, gameId, profileId, trigger, direct, hint) {
   const profilePath = `games/${gameId}/profiles/${profileId}`;
-  const triggerId = trigger.id;
-  const branchName = `remove/${triggerId}-${Date.now()}`;
+  const triggerId   = trigger.id;
+  const branch      = direct ? null : `remove/${triggerId}-${Date.now()}`;
 
-  const baseSha = await getMainSha(gh);
-  await gh(`repos/${OWNER}/${REPO}/git/refs`, "POST", {
-    ref: `refs/heads/${branchName}`,
-    sha: baseSha,
-  });
+  if (!direct) {
+    const baseSha = await getMainSha(gh);
+    await gh(`repos/${OWNER}/${REPO}/git/refs`, "POST", {
+      ref: `refs/heads/${branch}`, sha: baseSha,
+    });
+  }
 
-  const { file: profileFile, profile } = await readProfile(gh, profilePath, branchName);
-
+  const { file: profileFile, profile } = await readProfile(gh, profilePath, branch || BASE);
   const idx = profile.triggers.findIndex(t => t.id === triggerId);
   if (idx === -1) throw new Error(`Trigger "${triggerId}" not found in profile`);
 
   const removed = profile.triggers.splice(idx, 1)[0];
-  const title = removed.payloads?.[0]?.title || triggerId;
+  const title   = removed.payloads?.[0]?.title || triggerId;
 
-  await writeProfile(gh, profilePath, profile, profileFile.sha, branchName,
-    `fix: remove trigger "${title}"`);
+  await writeProfile(gh, profilePath, profile, profileFile.sha, branch,
+    `fix: remove trigger "${title}" [contributor: ${hint}]`);
+
+  if (direct) return { direct: true };
 
   const pr = await gh(`repos/${OWNER}/${REPO}/pulls`, "POST", {
     title: `Remove trigger: ${title}`,
-    body: prBody("Requested removal of a trigger via Stream Genie.", gameId, profileId, [
-      `**Trigger ID:** ${triggerId}`,
-    ]),
-    head: branchName,
-    base: BASE,
+    body:  prBody("Requested removal via Stream Genie.", gameId, profileId, [`**Trigger ID:** ${triggerId}`]),
+    head:  branch, base: BASE,
   });
-
-  return pr.html_url;
+  return { prUrl: pr.html_url };
 }
 
-async function createProfile(gh, gameId, gameName, twitchSlug, profileId, profileName) {
+async function createProfile(gh, env, gameId, gameName, twitchSlug, profileId, profileName) {
   const profilePath = `games/${gameId}/profiles/${profileId}`;
   const profileUrl  = `https://cdn.jsdelivr.net/gh/${OWNER}/${REPO}@main/${profilePath}/profile.json`;
 
-  // Fail fast if this specific profile already exists on main.
+  // Fail fast if profile already exists on main.
   try {
     await gh(`repos/${OWNER}/${REPO}/contents/${profilePath}/profile.json?ref=${BASE}`, "GET");
     throw new Error(`Profile "${profileId}" for "${gameId}" already exists`);
   } catch (err) {
     if (err.message.includes("already exists")) throw err;
-    // 404 = doesn't exist yet, proceed
   }
 
-  // Commit profile.json directly to main.
   await gh(`repos/${OWNER}/${REPO}/contents/${profilePath}/profile.json`, "PUT", {
     message: `feat: create ${gameName} ${profileName} profile`,
     content: b64encode(JSON.stringify({ triggers: [] }, null, 2)),
   });
 
-  // Patch catalog.json — add game if new, or add profile to existing game.
-  const catalogFile = await gh(
-    `repos/${OWNER}/${REPO}/contents/catalog.json?ref=${BASE}`, "GET"
-  );
-  const catalog = JSON.parse(b64decode(catalogFile.content));
+  const catalogFile = await gh(`repos/${OWNER}/${REPO}/contents/catalog.json?ref=${BASE}`, "GET");
+  const catalog     = JSON.parse(b64decode(catalogFile.content));
   const existingGame = catalog.games.find(g => g.id === gameId);
   if (existingGame) {
     if (!existingGame.twitchSlug && twitchSlug) existingGame.twitchSlug = twitchSlug;
@@ -259,12 +269,7 @@ async function createProfile(gh, gameId, gameName, twitchSlug, profileId, profil
       existingGame.profiles.push({ id: profileId, name: profileName, url: profileUrl });
     }
   } else {
-    catalog.games.push({
-      id:         gameId,
-      name:       gameName,
-      twitchSlug: twitchSlug,
-      profiles:   [{ id: profileId, name: profileName, url: profileUrl }],
-    });
+    catalog.games.push({ id: gameId, name: gameName, twitchSlug, profiles: [{ id: profileId, name: profileName, url: profileUrl }] });
   }
   await gh(`repos/${OWNER}/${REPO}/contents/catalog.json`, "PUT", {
     message: `feat: add ${profileName} profile for ${gameName}`,
@@ -272,34 +277,38 @@ async function createProfile(gh, gameId, gameName, twitchSlug, profileId, profil
     sha:     catalogFile.sha,
   });
 
-  return profileUrl;
+  // Generate and store contributor code for the profile owner.
+  const code = crypto.randomUUID();
+  if (env.CONTRIBUTOR_KEYS) {
+    await env.CONTRIBUTOR_KEYS.put(code, JSON.stringify({
+      gameId, profileId, label: "owner", createdAt: new Date().toISOString(),
+    }));
+  }
+
+  return { profileUrl, profileId, profileName, code };
 }
 
 // ---------------------------------------------------------------------------
+// GitHub helpers
+// ---------------------------------------------------------------------------
 
 async function getMainSha(gh) {
-  const { object: { sha } } = await gh(
-    `repos/${OWNER}/${REPO}/git/refs/heads/${BASE}`, "GET"
-  );
+  const { object: { sha } } = await gh(`repos/${OWNER}/${REPO}/git/refs/heads/${BASE}`, "GET");
   return sha;
 }
 
 async function readProfile(gh, profilePath, ref) {
   const file = await gh(
-    `repos/${OWNER}/${REPO}/contents/${profilePath}/profile.json?ref=${ref}`,
-    "GET"
+    `repos/${OWNER}/${REPO}/contents/${profilePath}/profile.json?ref=${ref}`, "GET"
   );
   const profile = JSON.parse(b64decode(file.content));
   return { file, profile };
 }
 
 async function writeProfile(gh, profilePath, profile, sha, branch, message) {
-  await gh(`repos/${OWNER}/${REPO}/contents/${profilePath}/profile.json`, "PUT", {
-    message,
-    content: b64encode(JSON.stringify(profile, null, 2)),
-    sha,
-    branch,
-  });
+  const body = { message, content: b64encode(JSON.stringify(profile, null, 2)), sha };
+  if (branch) body.branch = branch;
+  await gh(`repos/${OWNER}/${REPO}/contents/${profilePath}/profile.json`, "PUT", body);
 }
 
 function normalisedPayloads(payloads) {
@@ -314,8 +323,6 @@ function normalisedPayloads(payloads) {
 function prBody(intro, gameId, profileId, extras = []) {
   return [intro, "", `**Game:** ${gameId}`, `**Profile:** ${profileId}`, ...extras].join("\n");
 }
-
-// ---------------------------------------------------------------------------
 
 function githubClient(token) {
   return async function gh(path, method, body) {
@@ -340,14 +347,14 @@ function githubClient(token) {
 
 function b64decode(str) {
   const binary = atob(str.replace(/\n/g, ""));
-  const bytes = new Uint8Array(binary.length);
+  const bytes  = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return new TextDecoder().decode(bytes);
 }
 
 function b64encode(str) {
   const bytes = new TextEncoder().encode(str);
-  let binary = "";
+  let binary  = "";
   for (const b of bytes) binary += String.fromCharCode(b);
   return btoa(binary);
 }

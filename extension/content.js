@@ -34,8 +34,9 @@
     url:       "https://cdn.jsdelivr.net/gh/frothydv/streamGenieProfiles@main/games/slay-the-spire-2/profiles/community/profile.json",
   };
 
-  const profileCacheKey   = (gId, pId) => `streamGenie_profile_${gId}_${pId}`;
-  const userTriggersKey   = (gId, pId) => `streamGenie_triggers_${gId}_${pId}`;
+  const profileCacheKey    = (gId, pId) => `streamGenie_profile_${gId}_${pId}`;
+  const userTriggersKey    = (gId, pId) => `streamGenie_triggers_${gId}_${pId}`;
+  const contributorCodeKey = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
 
   // --- Worker config --------------------------------------------------------
   // Set WORKER_URL after deploying the Cloudflare Worker (`wrangler deploy`).
@@ -506,6 +507,9 @@
     if (!WORKER_URL) throw new Error("Worker URL not configured");
     const ap = activeProfile || DEFAULT_PROFILE;
 
+    const codeStore = await chrome.storage.local.get(contributorCodeKey(ap.gameId, ap.profileId));
+    const contributorCode = codeStore[contributorCodeKey(ap.gameId, ap.profileId)] || null;
+
     const triggerPayload = {
       id:       trigger.id,
       payloads: trigger.payloads,
@@ -516,12 +520,15 @@
       );
     }
 
+    const headers = {
+      "Content-Type":    "application/json",
+      "X-Submit-Secret": SUBMIT_SECRET,
+    };
+    if (contributorCode) headers["X-Contributor-Key"] = contributorCode;
+
     const res = await fetch(WORKER_URL, {
       method: "POST",
-      headers: {
-        "Content-Type":    "application/json",
-        "X-Submit-Secret": SUBMIT_SECRET,
-      },
+      headers,
       body: JSON.stringify({
         gameId:    ap.gameId,
         profileId: ap.profileId,
@@ -531,7 +538,7 @@
     });
     const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
     if (!data.ok) throw new Error(data.error || `HTTP ${res.status}`);
-    return data; // { ok, prUrl }
+    return data; // { ok, direct } or { ok, prUrl }
   }
 
   // --- Trigger editor -------------------------------------------------------
@@ -738,8 +745,8 @@
         try {
           const result = await submitToProfile(trigger, "update");
           backdrop.remove();
-          showToast("Update proposed! PR opened.", "ok");
-          console.log("[overlay/content] update PR:", result.prUrl);
+          showToast(result.direct ? "Update submitted directly!" : "Update proposed! PR opened.", "ok");
+          if (result.prUrl) console.log("[overlay/content] update PR:", result.prUrl);
         } catch (err) {
           console.warn("[overlay/content] update submit failed:", err.message);
           submitBtn.textContent = "Propose Update";
@@ -766,8 +773,8 @@
       try {
         const result = await submitToProfile(trigger, "add");
         backdrop.remove();
-        showToast("Submitted! PR opened.", "ok");
-        console.log("[overlay/content] add PR:", result.prUrl);
+        showToast(result.direct ? "Submitted directly!" : "Submitted! PR opened.", "ok");
+        if (result.prUrl) console.log("[overlay/content] add PR:", result.prUrl);
       } catch (err) {
         console.warn("[overlay/content] submit failed:", err.message);
         submitBtn.textContent = "Submit to Profile";

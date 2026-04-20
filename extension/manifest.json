@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Stream Overlay (dev)",
-  "version": "0.5.0",
-  "description": "Hover-to-reveal overlays for Twitch streams. Development build.",
+  "name": "Stream Genie (pre-alpha)",
+  "version": "0.6.0",
+  "description": "Hover-to-reveal overlays for Twitch streams. Pre-alpha build.",
   "permissions": [
     "activeTab",
     "storage"

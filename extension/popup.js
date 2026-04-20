@@ -23,7 +23,8 @@ const FALLBACK_CATALOG = [
   },
 ];
 
-const userTriggersKey = (gId, pId) => `streamGenie_triggers_${gId}_${pId}`;
+const userTriggersKey    = (gId, pId) => `streamGenie_triggers_${gId}_${pId}`;
+const contributorCodeKey = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
 
 (async function () {
   // --- Tab status ---
@@ -208,6 +209,11 @@ const userTriggersKey = (gId, pId) => `streamGenie_triggers_${gId}_${pId}`;
     const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
     if (!data.ok) throw new Error(data.error || `HTTP ${res.status}`);
 
+    // Save contributor code — profile creator is automatically trusted.
+    if (data.code) {
+      await chrome.storage.local.set({ [contributorCodeKey(gameId, data.profileId)]: data.code });
+    }
+
     // Persist to local catalog so the profile survives popup reloads until CDN refreshes.
     const newProf = { id: data.profileId, name: data.profileName, url: data.profileUrl };
     const stored = await chrome.storage.local.get(LOCAL_CATALOG_KEY);
@@ -273,6 +279,7 @@ const userTriggersKey = (gId, pId) => `streamGenie_triggers_${gId}_${pId}`;
       applyNote.style.color = "#00f593";
     }
     renderTriggers();
+    renderContributorStatus();
   });
 
   // --- Contribute button ---
@@ -294,22 +301,25 @@ const userTriggersKey = (gId, pId) => `streamGenie_triggers_${gId}_${pId}`;
     renderTriggers();
   }
 
-  async function submitRemoval(trigger) {
-    const res = await fetch(WORKER_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type":    "application/json",
-        "X-Submit-Secret": SUBMIT_SECRET,
-      },
-      body: JSON.stringify({
-        gameId:    active.gameId,
-        profileId: active.profileId,
-        trigger:   { id: trigger.id },
-        mode:      "remove",
-      }),
-    });
+  async function workerPost(body) {
+    const codeKey = contributorCodeKey(active.gameId, active.profileId);
+    const stored  = await chrome.storage.local.get(codeKey);
+    const code    = stored[codeKey] || null;
+    const headers = { "Content-Type": "application/json", "X-Submit-Secret": SUBMIT_SECRET };
+    if (code) headers["X-Contributor-Key"] = code;
+    const res  = await fetch(WORKER_URL, { method: "POST", headers, body: JSON.stringify(body) });
     const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
     if (!data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  }
+
+  async function submitRemoval(trigger) {
+    const data = await workerPost({
+      gameId:    active.gameId,
+      profileId: active.profileId,
+      trigger:   { id: trigger.id },
+      mode:      "remove",
+    });
     return data.prUrl;
   }
 
@@ -365,6 +375,72 @@ const userTriggersKey = (gId, pId) => `streamGenie_triggers_${gId}_${pId}`;
     row.parentNode.replaceChild(confirmRow, row);
   }
 
+  // --- Contributor status ---
+  async function renderContributorStatus() {
+    const trustedEl  = document.getElementById("contributor-trusted");
+    const prEl       = document.getElementById("contributor-pr");
+    const codeHintEl = document.getElementById("contributor-code-hint");
+    const codeClearEl = document.getElementById("contributor-clear");
+    const codeInput  = document.getElementById("contributor-code-input");
+    const codeSaveBtn = document.getElementById("contributor-code-save");
+    const codeNote   = document.getElementById("contributor-code-note");
+
+    const codeKey = contributorCodeKey(active.gameId, active.profileId);
+    const stored  = await chrome.storage.local.get(codeKey);
+    const code    = stored[codeKey] || null;
+
+    if (code) {
+      trustedEl.style.display = "block";
+      prEl.style.display = "none";
+      codeHintEl.textContent = `(${code.replace(/-/g, "").slice(0, 8)}…)`;
+      codeClearEl.onclick = async (e) => {
+        e.preventDefault();
+        await chrome.storage.local.remove(codeKey);
+        renderContributorStatus();
+      };
+    } else {
+      trustedEl.style.display = "none";
+      prEl.style.display = "block";
+      codeNote.textContent = "";
+      codeInput.value = "";
+
+      codeSaveBtn.onclick = async () => {
+        const input = codeInput.value.trim();
+        if (!input) { codeNote.textContent = "Paste a code first."; codeNote.style.color = "#f5b000"; return; }
+        codeSaveBtn.disabled = true;
+        codeSaveBtn.textContent = "Verifying…";
+        codeNote.textContent = "";
+        try {
+          const res = await fetch(WORKER_URL, {
+            method: "POST",
+            headers: {
+              "Content-Type":     "application/json",
+              "X-Submit-Secret":  SUBMIT_SECRET,
+              "X-Contributor-Key": input,
+            },
+            body: JSON.stringify({ gameId: active.gameId, profileId: active.profileId, mode: "verify" }),
+          });
+          const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
+          if (!data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+          if (data.trusted) {
+            await chrome.storage.local.set({ [codeKey]: input });
+            renderContributorStatus();
+          } else {
+            codeNote.textContent = "Code not recognized for this profile.";
+            codeNote.style.color = "#ff5c5c";
+            codeSaveBtn.textContent = "Save";
+            codeSaveBtn.disabled = false;
+          }
+        } catch (err) {
+          codeNote.textContent = `Error: ${err.message}`;
+          codeNote.style.color = "#ff5c5c";
+          codeSaveBtn.textContent = "Save";
+          codeSaveBtn.disabled = false;
+        }
+      };
+    }
+  }
+
   // --- Saved triggers ---
   async function renderTriggers() {
     const listEl    = document.getElementById("triggers-list");
@@ -413,4 +489,5 @@ const userTriggersKey = (gId, pId) => `streamGenie_triggers_${gId}_${pId}`;
   }
 
   renderTriggers();
+  renderContributorStatus();
 })();

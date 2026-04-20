@@ -80,10 +80,20 @@
       }
       .create-profile-btn:hover { background: rgba(245,166,35,0.15); }
       .create-profile-btn:disabled { opacity: 0.5; cursor: default; }
+      .contributor-status { font-size: 11px; padding: 6px 0; }
+      .contributor-status.trusted { color: #00f593; }
+      .contributor-status.pr { color: #adadb8; }
+      .contributor-status input {
+        width: 100%; box-sizing: border-box; background: #0e0e10; border: 1px solid #555;
+        border-radius: 4px; color: #efeff1; padding: 4px 8px; font-size: 11px; margin-top: 6px;
+      }
+      .contributor-status input:focus { outline: none; border-color: #9146ff; }
+      .code-row { display: flex; gap: 6px; margin-top: 6px; }
+      .code-row input { flex: 1; }
     </style>
   </head>
   <body>
-    <h1>Stream Genie (dev)</h1>
+    <h1>Stream Genie (pre-alpha)</h1>
     <div id="status" class="status wait">Checking…</div>
 
     <div class="section-title">Active Profile</div>
@@ -112,6 +122,25 @@
     </a>
     <button class="apply-btn" id="apply-btn">Apply</button>
     <div id="apply-note" class="note"></div>
+
+    <div class="section-title">Contributor Status</div>
+    <div id="contributor-trusted" class="contributor-status trusted" style="display:none;">
+      ✓ Trusted contributor
+      <span id="contributor-code-hint" style="font-size:10px;margin-left:6px;color:#adadb8;"></span>
+      <a href="#" id="contributor-clear" style="font-size:10px;color:#adadb8;margin-left:8px;text-decoration:none;">Clear</a>
+    </div>
+    <div id="contributor-pr" class="contributor-status pr" style="display:none;">
+      Contributing via PR — have a code?
+      <div class="code-row">
+        <input id="contributor-code-input" type="text" placeholder="Paste contributor code…" />
+        <button id="contributor-code-save" class="delete-btn" style="padding:4px 10px;white-space:nowrap;">Save</button>
+      </div>
+      <div id="contributor-code-note" class="note" style="margin-top:4px;"></div>
+      <a href="https://github.com/frothydv/streamGenieProfiles/pulls" target="_blank"
+        style="display:block;font-size:10px;color:#adadb8;margin-top:6px;text-decoration:none;">
+        View pending PRs on GitHub ↗
+      </a>
+    </div>
 
     <hr class="divider" />
 
