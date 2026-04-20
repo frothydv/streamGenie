@@ -154,7 +154,14 @@ async function addTrigger(gh, gameId, profileId, trigger, direct, hint) {
     const fileBody = { message: `feat: add reference image ${filename}`, content: imageB64 };
     if (branch) fileBody.branch = branch;
     await gh(`repos/${OWNER}/${REPO}/contents/${filePath}`, "PUT", fileBody);
-    profileRefs.push({ file: filename, w: ref.w ?? null, h: ref.h ?? null, srcW: ref.srcW ?? null, srcH: ref.srcH ?? null });
+    profileRefs.push({
+      file: filename,
+      w: ref.w ?? null,
+      h: ref.h ?? null,
+      srcW: ref.srcW ?? null,
+      srcH: ref.srcH ?? null,
+      maskDataUrl: ref.maskDataUrl ?? null,
+    });
   }
 
   const { file: profileFile, profile } = await readProfile(gh, profilePath, branch || BASE);
@@ -195,7 +202,19 @@ async function updateTrigger(gh, gameId, profileId, trigger, direct, hint) {
   const idx = profile.triggers.findIndex(t => t.id === triggerId);
   if (idx === -1) throw new Error(`Trigger "${triggerId}" not found in profile`);
 
-  profile.triggers[idx] = { ...profile.triggers[idx], payloads: normalisedPayloads(trigger.payloads) };
+  const nextTrigger = { ...profile.triggers[idx], payloads: normalisedPayloads(trigger.payloads) };
+  if (trigger.references?.length) {
+    nextTrigger.references = trigger.references.map((ref, idx2) => ({
+      ...(profile.triggers[idx].references?.[idx2] || {}),
+      file: ref.file ?? profile.triggers[idx].references?.[idx2]?.file ?? null,
+      w: ref.w ?? profile.triggers[idx].references?.[idx2]?.w ?? null,
+      h: ref.h ?? profile.triggers[idx].references?.[idx2]?.h ?? null,
+      srcW: ref.srcW ?? profile.triggers[idx].references?.[idx2]?.srcW ?? null,
+      srcH: ref.srcH ?? profile.triggers[idx].references?.[idx2]?.srcH ?? null,
+      maskDataUrl: ref.maskDataUrl ?? null,
+    }));
+  }
+  profile.triggers[idx] = nextTrigger;
   const title = trigger.payloads[0]?.title || triggerId;
 
   await writeProfile(gh, profilePath, profile, profileFile.sha, branch,

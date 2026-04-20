@@ -121,7 +121,14 @@ async function addTrigger(gh, gameId, profileId, trigger, direct, hint) {
     const fileBody = { message: `feat: add reference image ${filename}`, content: imageB64 };
     if (branch) fileBody.branch = branch;
     await gh(`repos/${OWNER}/${REPO}/contents/${filePath}`, "PUT", fileBody);
-    profileRefs.push({ file: filename, w: ref.w ?? null, h: ref.h ?? null, srcW: ref.srcW ?? null, srcH: ref.srcH ?? null });
+    profileRefs.push({
+      file: filename,
+      w: ref.w ?? null,
+      h: ref.h ?? null,
+      srcW: ref.srcW ?? null,
+      srcH: ref.srcH ?? null,
+      maskDataUrl: ref.maskDataUrl ?? null,
+    });
   }
 
   const { file: profileFile, profile } = await readProfile(gh, profilePath, branch || BASE);
@@ -162,7 +169,19 @@ async function updateTrigger(gh, gameId, profileId, trigger, direct, hint) {
   const idx = profile.triggers.findIndex(t => t.id === triggerId);
   if (idx === -1) throw new Error(`Trigger "${triggerId}" not found in profile`);
 
-  profile.triggers[idx] = { ...profile.triggers[idx], payloads: normalisedPayloads(trigger.payloads) };
+  const nextTrigger = { ...profile.triggers[idx], payloads: normalisedPayloads(trigger.payloads) };
+  if (trigger.references?.length) {
+    nextTrigger.references = trigger.references.map((ref, idx2) => ({
+      ...(profile.triggers[idx].references?.[idx2] || {}),
+      file: ref.file ?? profile.triggers[idx].references?.[idx2]?.file ?? null,
+      w: ref.w ?? profile.triggers[idx].references?.[idx2]?.w ?? null,
+      h: ref.h ?? profile.triggers[idx].references?.[idx2]?.h ?? null,
+      srcW: ref.srcW ?? profile.triggers[idx].references?.[idx2]?.srcW ?? null,
+      srcH: ref.srcH ?? profile.triggers[idx].references?.[idx2]?.srcH ?? null,
+      maskDataUrl: ref.maskDataUrl ?? null,
+    }));
+  }
+  profile.triggers[idx] = nextTrigger;
   const title = trigger.payloads[0]?.title || triggerId;
 
   await writeProfile(gh, profilePath, profile, profileFile.sha, branch,
@@ -243,7 +262,7 @@ function makeGh(profileContent = { triggers: [] }, mainSha = "deadbeef") {
 const SAMPLE_TRIGGER = {
   id: "user-1776700000000",
   payloads: [{ title: "Ice Cream", text: "Gain 3 Energy at start of each turn." }],
-  references: [{ dataUrl: "data:image/png;base64,iVBORw0KGgo=", w: 40, h: 40, srcW: 1920, srcH: 1080 }],
+  references: [{ dataUrl: "data:image/png;base64,iVBORw0KGgo=", maskDataUrl: "data:image/png;base64,mask123", w: 40, h: 40, srcW: 1920, srcH: 1080 }],
 };
 
 const PROFILE_WITH_TRIGGER = {
@@ -251,7 +270,7 @@ const PROFILE_WITH_TRIGGER = {
     {
       id: "existing-trigger",
       payloads: [{ title: "Old Title", text: "Old text", image: null, popupOffset: { x: 14, y: 22 } }],
-      references: [{ file: "existing-1234.png", w: 30, h: 30, srcW: 1920, srcH: 1080 }],
+      references: [{ file: "existing-1234.png", maskDataUrl: null, w: 30, h: 30, srcW: 1920, srcH: 1080 }],
     },
   ],
 };
@@ -311,6 +330,15 @@ await test("trigger references list references uploaded image filename", async (
   const added = written.triggers.find(t => t.id === "ice-cream");
   assert(added.references[0].file.startsWith("ice-cream-"), "reference filename should start with trigger id");
   assert(added.references[0].file.endsWith(".png"), "reference filename should end with .png");
+});
+
+await test("new trigger preserves maskDataUrl in profile.json", async () => {
+  const { gh, calls } = makeGh();
+  await addTrigger(gh, "slay-the-spire-2", "community", SAMPLE_TRIGGER, true, "f61d1f28");
+  const write = calls.find(c => c.method === "PUT" && c.path.includes("profile.json"));
+  const written = JSON.parse(b64decode(write.body.content));
+  const added = written.triggers.find(t => t.id === "ice-cream");
+  assertEqual(added.references[0].maskDataUrl, "data:image/png;base64,mask123");
 });
 
 await test("commit message includes title and contributor hint", async () => {
@@ -412,6 +440,20 @@ await test("update untrusted path creates PR", async () => {
   const pr = calls.find(c => c.method === "POST" && c.path.includes("/pulls"));
   assert(pr, "should create PR");
   assert(result.prUrl, "should return prUrl");
+});
+
+await test("updateTrigger can patch maskDataUrl on existing references", async () => {
+  const { gh, calls } = makeGh(PROFILE_WITH_TRIGGER);
+  const update = {
+    id: "existing-trigger",
+    payloads: [{ title: "New Title", text: "New text." }],
+    references: [{ file: "existing-1234.png", maskDataUrl: "data:image/png;base64,newmask", w: 30, h: 30, srcW: 1920, srcH: 1080 }],
+  };
+  await updateTrigger(gh, "slay-the-spire-2", "community", update, true, "f61d1f28");
+  const write = calls.find(c => c.method === "PUT" && c.path.includes("profile.json"));
+  const written = JSON.parse(b64decode(write.body.content));
+  assertEqual(written.triggers[0].references[0].maskDataUrl, "data:image/png;base64,newmask");
+  assertEqual(written.triggers[0].references[0].file, "existing-1234.png");
 });
 
 // ---------------------------------------------------------------------------

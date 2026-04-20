@@ -15,9 +15,10 @@
   const CAPTURE_INTERVAL_MS = 100;     // throttle mouse-driven captures (10Hz)
   const HEARTBEAT_MS = 500;
   const MIN_VIDEO_SIZE = 100;
-  const MATCH_THRESHOLD = 10;          // max Hamming distance (out of 64)
+  const MATCH_THRESHOLD_RATIO = 10 / 64; // max mismatch ratio; preserves old 10/64 cutoff
   const SLIDE_STEP = 1;                // 1px step — ensures no alignment misses
   const MIN_REF_PX = 8;               // only skip truly microscopic refs
+  const MIN_MASKED_BITS = 12;         // reject masks that leave too little signal
   // Both reference and each capture window are normalised through this virtual
   // size before hashing, so small refs produce equally discriminative hashes.
   const CANONICAL_SIZE = 32;
@@ -58,10 +59,11 @@
   let debugPanel = null;
   let lastCaptureTime = 0;
   let mouseOverVideo = false;
-  let lastMatchInfo = null; // { title, dist, noMatch? } for debug panel
+  let lastMatchInfo = null; // { title, dist, ratio, validBits, noMatch? } for debug panel
   let activeProfile = null; // set by loadProfile(); used by editor + saveUserTrigger
   let overPopup = false;   // true while cursor is over an active popup
   let currentMatchedTrigger = null;
+  let editorModalOpen = false;
   let detectedGame = null;  // { name, slug } scraped from Twitch category link
   let lastUrl = location.href;
   let firstRunHintDone = false;
@@ -250,6 +252,7 @@
 
   // Reusable scratch buffer — avoids GC pressure inside the hot matching loop.
   const _gray = new Float32Array(72); // 9×8
+  const _allBitMask = new Uint8Array(64).fill(1);
 
   // Compute 64-bit dHash for a region of a flat RGBA pixel array.
   // Samples 9×8 positions mapped through CANONICAL_SIZE so that small and large
@@ -276,7 +279,7 @@
 
   // Same, but computes distance against a known refHash in one pass without
   // allocating a new Uint8Array — used in the hot sliding-window loop.
-  function dHashDistFromPixels(pixels, srcW, sx, sy, sw, sh, refHash) {
+  function dHashDistFromPixels(pixels, srcW, sx, sy, sw, sh, refHash, refBitMask, refValidBits) {
     for (let dy = 0; dy < 8; dy++) {
       for (let dx = 0; dx < 9; dx++) {
         const cx = Math.floor((dx * CANONICAL_SIZE) / 9);
@@ -288,33 +291,59 @@
       }
     }
     let dist = 0;
-    for (let y = 0; y < 8; y++) {
-      for (let x = 0; x < 8; x++) {
-        const bit = _gray[y * 9 + x + 1] > _gray[y * 9 + x] ? 1 : 0;
-        if (bit !== refHash[y * 8 + x]) dist++;
-      }
+    const mask = refBitMask || _allBitMask;
+    const validBits = refValidBits ?? 64;
+    if (validBits < MIN_MASKED_BITS) return { dist: 64, validBits, ratio: 1 };
+    for (let i = 0; i < 64; i++) {
+      if (!mask[i]) continue;
+      const y = Math.floor(i / 8);
+      const x = i % 8;
+      const bit = _gray[y * 9 + x + 1] > _gray[y * 9 + x] ? 1 : 0;
+      if (bit !== refHash[i]) dist++;
     }
-    return dist;
+    return { dist, validBits, ratio: dist / validBits };
   }
 
-  function hammingDistance(a, b) {
-    let d = 0;
-    for (let i = 0; i < 64; i++) if (a[i] !== b[i]) d++;
-    return d;
+  function maskBitsFromPixels(maskPixels, srcW, sx, sy, sw, sh) {
+    const bits = new Uint8Array(64);
+    let validBits = 0;
+    for (let y = 0; y < 8; y++) {
+      for (let x = 0; x < 8; x++) {
+        const leftCx = Math.floor((x * CANONICAL_SIZE) / 9);
+        const rightCx = Math.floor(((x + 1) * CANONICAL_SIZE) / 9);
+        const cy = Math.floor((y * CANONICAL_SIZE) / 8);
+        const leftPx = sx + Math.floor((leftCx * sw) / CANONICAL_SIZE);
+        const rightPx = sx + Math.floor((rightCx * sw) / CANONICAL_SIZE);
+        const py = sy + Math.floor((cy * sh) / CANONICAL_SIZE);
+        const leftA = maskPixels[(py * srcW + leftPx) * 4 + 3];
+        const rightA = maskPixels[(py * srcW + rightPx) * 4 + 3];
+        const idx = y * 8 + x;
+        bits[idx] = (leftA >= 128 && rightA >= 128) ? 1 : 0;
+        validBits += bits[idx];
+      }
+    }
+    return { bits, validBits };
   }
 
   // Slide a reference entry across the capture pixels, return best position + distance.
   function slidingWindowMatch(ref, capturePixels) {
-    const { refHash, w, h } = ref;
-    if (!refHash || w > CAPTURE_SIZE || h > CAPTURE_SIZE) return { dist: 64, x: 0, y: 0 };
-    let bestDist = 64, bestX = 0, bestY = 0;
+    const { refHash, refBitMask, refValidBits, w, h } = ref;
+    if (!refHash || w > CAPTURE_SIZE || h > CAPTURE_SIZE) {
+      return { dist: 64, ratio: 1, validBits: refValidBits ?? 64, x: 0, y: 0 };
+    }
+    let best = { dist: 64, ratio: 1, validBits: refValidBits ?? 64, x: 0, y: 0 };
     for (let y = 0; y <= CAPTURE_SIZE - h; y += SLIDE_STEP) {
       for (let x = 0; x <= CAPTURE_SIZE - w; x += SLIDE_STEP) {
-        const dist = dHashDistFromPixels(capturePixels, CAPTURE_SIZE, x, y, w, h, refHash);
-        if (dist < bestDist) { bestDist = dist; bestX = x; bestY = y; }
+        const result = dHashDistFromPixels(capturePixels, CAPTURE_SIZE, x, y, w, h, refHash, refBitMask, refValidBits);
+        if (
+          result.ratio < best.ratio ||
+          (result.ratio === best.ratio && result.dist < best.dist)
+        ) {
+          best = { ...result, x, y };
+        }
       }
     }
-    return { dist: bestDist, x: bestX, y: bestY };
+    return best;
   }
 
   // Run all triggers/references in a single pass. Returns the overall best result.
@@ -325,7 +354,13 @@
       for (const ref of trigger.references) {
         if (!ref.refHash) continue;
         const result = slidingWindowMatch(ref, capturePixels);
-        if (!best || result.dist < best.dist) best = { trigger, ref, ...result };
+        if (
+          !best ||
+          result.ratio < best.ratio ||
+          (result.ratio === best.ratio && result.dist < best.dist)
+        ) {
+          best = { trigger, ref, ...result };
+        }
       }
     }
     return best; // may be null if no refs loaded
@@ -347,9 +382,19 @@
           ref.sourceImg = img;
           ref.origW = img.naturalWidth;
           ref.origH = img.naturalHeight;
-          rehashRef(ref);
-          console.log(`[overlay/content] reference loaded: ${ref.file} (${ref.origW}x${ref.origH})`);
-          updateDebugPanelStatus();
+          const finish = () => {
+            rehashRef(ref);
+            console.log(`[overlay/content] reference loaded: ${ref.file} (${ref.origW}x${ref.origH})`);
+            updateDebugPanelStatus();
+          };
+          if (ref.maskDataUrl) {
+            const maskImg = new Image();
+            maskImg.onload = () => { ref.maskImg = maskImg; finish(); };
+            maskImg.onerror = finish;
+            maskImg.src = ref.maskDataUrl;
+          } else {
+            finish();
+          }
         };
         img.onerror = () => console.warn(`[overlay/content] failed to load reference: ${ref.file}`);
         img.src = baseUrl + "references/" + ref.file;
@@ -422,6 +467,8 @@
     ref.h = h;
     if (w < MIN_REF_PX || h < MIN_REF_PX || w > CAPTURE_SIZE || h > CAPTURE_SIZE) {
       ref.refHash = null;
+      ref.refBitMask = null;
+      ref.refValidBits = 0;
       return;
     }
     // Draw reference at canonical size for consistent hash quality at all resolutions.
@@ -433,6 +480,29 @@
     ctx.drawImage(ref.sourceImg, 0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
     const px = ctx.getImageData(0, 0, CANONICAL_SIZE, CANONICAL_SIZE).data;
     ref.refHash = dHashFromPixels(px, CANONICAL_SIZE, 0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
+    if (ref.maskDataUrl) {
+      const maskCanvas = document.createElement("canvas");
+      maskCanvas.width = CANONICAL_SIZE;
+      maskCanvas.height = CANONICAL_SIZE;
+      const maskCtx = maskCanvas.getContext("2d");
+      maskCtx.clearRect(0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
+      if (ref.maskImg) {
+        maskCtx.imageSmoothingEnabled = true;
+        maskCtx.imageSmoothingQuality = "high";
+        maskCtx.drawImage(ref.maskImg, 0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
+      } else {
+        maskCtx.fillStyle = "#fff";
+        maskCtx.fillRect(0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
+      }
+      const maskPx = maskCtx.getImageData(0, 0, CANONICAL_SIZE, CANONICAL_SIZE).data;
+      const maskBits = maskBitsFromPixels(maskPx, CANONICAL_SIZE, 0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
+      ref.refBitMask = maskBits.bits;
+      ref.refValidBits = maskBits.validBits;
+      if (ref.refValidBits < MIN_MASKED_BITS) ref.refHash = null;
+    } else {
+      ref.refBitMask = new Uint8Array(_allBitMask);
+      ref.refValidBits = 64;
+    }
   }
 
   function rehashAllTriggers() {
@@ -472,8 +542,18 @@
         ref.sourceImg = img;
         ref.origW = img.naturalWidth;
         ref.origH = img.naturalHeight;
-        rehashRef(ref);
-        updateDebugPanelStatus();
+        const finish = () => {
+          rehashRef(ref);
+          updateDebugPanelStatus();
+        };
+        if (ref.maskDataUrl) {
+          const maskImg = new Image();
+          maskImg.onload = () => { ref.maskImg = maskImg; finish(); };
+          maskImg.onerror = finish;
+          maskImg.src = ref.maskDataUrl;
+        } else {
+          finish();
+        }
       };
       img.src = ref.dataUrl;
     }
@@ -486,7 +566,7 @@
       const storable = {
         id: trigger.id,
         payloads: trigger.payloads,
-        references: trigger.references.map(({ dataUrl, w, h, srcW, srcH }) => ({ dataUrl, w, h, srcW, srcH })),
+        references: trigger.references.map(({ dataUrl, maskDataUrl, file, w, h, srcW, srcH }) => ({ dataUrl, maskDataUrl, file, w, h, srcW, srcH })),
       };
       const result = await chrome.storage.local.get(key);
       const saved = result[key] || [];
@@ -517,9 +597,9 @@
       id:       trigger.id,
       payloads: trigger.payloads,
     };
-    if (mode === "add") {
+    if (mode === "add" || mode === "update") {
       triggerPayload.references = trigger.references.map(
-        ({ dataUrl, w, h, srcW, srcH }) => ({ dataUrl, w, h, srcW, srcH })
+        ({ dataUrl, maskDataUrl, file, w, h, srcW, srcH }) => ({ dataUrl, maskDataUrl, file, w, h, srcW, srcH })
       );
     }
 
@@ -568,6 +648,14 @@
     const isEdit = opts.mode === "edit";
     // Profile triggers → propose update PR. User triggers → re-submit as add.
     const isProfileEdit = isEdit && !opts.trigger?.id?.startsWith("user-");
+    let destroyMaskEditor = null;
+    editorModalOpen = true;
+    function closeEditor(message = "Cancelled.", level = "info") {
+      if (destroyMaskEditor) destroyMaskEditor();
+      editorModalOpen = false;
+      backdrop.remove();
+      if (message) showToast(message, level);
+    }
     const backdrop = document.createElement("div");
     Object.assign(backdrop.style, {
       position: "fixed", inset: "0", background: "rgba(0,0,0,0.82)",
@@ -576,7 +664,7 @@
     });
     document.body.appendChild(backdrop);
     backdrop.addEventListener("click", (e) => {
-      if (e.target === backdrop) { backdrop.remove(); showToast("Cancelled.", "info"); }
+      if (e.target === backdrop) closeEditor();
     });
 
     const modal = document.createElement("div");
@@ -598,7 +686,7 @@
     const xBtn = document.createElement("button");
     xBtn.innerHTML = "&#10005;";
     xBtn.style.cssText = "background:none;border:none;color:#adadb8;font-size:16px;cursor:pointer;padding:0;line-height:1;";
-    xBtn.onclick = () => { backdrop.remove(); showToast("Cancelled.", "info"); };
+    xBtn.onclick = () => closeEditor();
     header.appendChild(titleEl); header.appendChild(xBtn);
     modal.appendChild(header);
 
@@ -615,6 +703,19 @@
     refMetaEl.textContent = `${meta.cropW}×${meta.cropH} px · from ${meta.videoW}×${meta.videoH} source`;
     refSec.appendChild(refMetaEl);
     modal.appendChild(refSec);
+
+    const initialMaskDataUrl = (isEdit && opts.trigger?.references?.[0]?.maskDataUrl) || null;
+    const maskSec = document.createElement("div");
+    maskSec.style.cssText = "margin-bottom:16px;";
+    maskSec.appendChild(editorLabel("Match Mask"));
+    const maskHint = document.createElement("div");
+    maskHint.style.cssText = "color:#adadb8;font-size:11px;line-height:1.4;margin-bottom:8px;";
+    maskHint.textContent = "Paint what should count as the match. Ignored background is tinted red. Mouse wheel changes brush size.";
+    maskSec.appendChild(maskHint);
+    const maskEditor = buildMaskEditor(dataUrl, initialMaskDataUrl);
+    destroyMaskEditor = maskEditor.destroy;
+    maskSec.appendChild(maskEditor.el);
+    modal.appendChild(maskSec);
 
     // Payloads
     modal.appendChild(editorLabel("Payloads"));
@@ -702,10 +803,15 @@
         showToast("Add a title or text to at least one payload.", "warn");
         return false;
       }
+      if (maskEditor.getMaskSummary().coverage === 0) {
+        showToast("Your mask is fully erased — paint at least some pixels to match.", "warn");
+        return false;
+      }
       return true;
     }
 
     function buildTrigger() {
+      const maskDataUrl = maskEditor.getMaskDataUrl();
       const payloads = payloadStates.map(p => ({
         title: p.title.trim(),
         text:  p.text.trim(),
@@ -713,20 +819,38 @@
         popupOffset: { x: p.ox, y: p.oy },
       }));
       if (isProfileEdit) {
-        // Profile trigger: preserve ID, no new reference images (Worker patches by ID)
-        return { id: opts.trigger.id, payloads, references: [] };
+        return {
+          id: opts.trigger.id,
+          payloads,
+          references: (opts.trigger.references || []).map((ref, idx) => ({
+            file: ref.file ?? null,
+            w: ref.w ?? null,
+            h: ref.h ?? null,
+            srcW: ref.srcW ?? null,
+            srcH: ref.srcH ?? null,
+            maskDataUrl: idx === 0 ? maskDataUrl : (ref.maskDataUrl || null),
+          })),
+        };
       }
       if (isEdit) {
         // User trigger: preserve ID, carry existing dataUrl references so they can be re-submitted
         const refs = (opts.trigger.references || []).map(
-          ({ dataUrl: du, w, h, srcW, srcH }) => ({ dataUrl: du, w, h, srcW, srcH })
+          ({ dataUrl: du, maskDataUrl: existingMask, file, w, h, srcW, srcH }, idx) => ({
+            dataUrl: du,
+            maskDataUrl: idx === 0 ? maskDataUrl : (existingMask || null),
+            file,
+            w,
+            h,
+            srcW,
+            srcH,
+          })
         );
         return { id: opts.trigger.id, payloads, references: refs };
       }
       return {
         id: "user-" + Date.now(),
         payloads,
-        references: [{ dataUrl, w: meta.cropW, h: meta.cropH, srcW: meta.videoW, srcH: meta.videoH }],
+        references: [{ dataUrl, maskDataUrl, w: meta.cropW, h: meta.cropH, srcW: meta.videoW, srcH: meta.videoH }],
       };
     }
 
@@ -744,7 +868,7 @@
     footer.style.cssText = "display:flex;gap:10px;align-items:center;";
 
     const cancelBtn = editorBtn("Cancel", false);
-    cancelBtn.onclick = () => { backdrop.remove(); showToast("Cancelled.", "info"); };
+    cancelBtn.onclick = () => closeEditor();
 
     const submitLabel = isProfileEdit ? "Propose Update" : (WORKER_URL ? "Submit to Profile" : "Save Trigger");
     const submitBtn = editorBtn(submitLabel, true);
@@ -764,8 +888,7 @@
         cancelBtn.disabled = true;
         try {
           const result = await submitToProfile(trigger, "update");
-          backdrop.remove();
-          showToast(result.direct ? "Update submitted directly!" : "Update proposed! PR opened.", "ok");
+          closeEditor(result.direct ? "Update submitted directly!" : "Update proposed! PR opened.", "ok");
           if (result.prUrl) console.log("[overlay/content] update PR:", result.prUrl);
         } catch (err) {
           console.error("[overlay/content] update submit FAILED:", err.message, err);
@@ -782,8 +905,7 @@
       await saveLocally(trigger);
 
       if (!WORKER_URL) {
-        backdrop.remove();
-        showToast(isEdit ? "Trigger updated!" : "Trigger saved!", "ok");
+        closeEditor(isEdit ? "Trigger updated!" : "Trigger saved!", "ok");
         return;
       }
 
@@ -793,8 +915,7 @@
 
       try {
         const result = await submitToProfile(trigger, "add");
-        backdrop.remove();
-        showToast(result.direct ? "Submitted directly!" : "Submitted! PR opened.", "ok");
+        closeEditor(result.direct ? "Submitted directly!" : "Submitted! PR opened.", "ok");
         if (result.prUrl) console.log("[overlay/content] add PR:", result.prUrl);
       } catch (err) {
         console.error("[overlay/content] submit FAILED:", err.message, err);
@@ -818,8 +939,7 @@
         e.preventDefault();
         if (!validate()) return;
         await saveLocally(buildTrigger());
-        backdrop.remove();
-        showToast(isEdit ? "Trigger updated locally." : "Saved locally.", "ok");
+        closeEditor(isEdit ? "Trigger updated locally." : "Saved locally.", "ok");
       };
       footer.appendChild(localLink);
     }
@@ -915,6 +1035,441 @@
     });
 
     return { el: area, updatePreview };
+  }
+
+  function buildMaskEditor(imageUrl, initialMaskDataUrl) {
+    const state = {
+      brushShape: "round",
+      brushMode: "erase",
+      tool: "brush",
+      brushSize: 18,
+      hoverX: 0,
+      hoverY: 0,
+      hovering: false,
+      painting: false,
+      imageLoaded: false,
+      polygonPoints: [],
+      polygonHover: null,
+      summary: { coverage: 1, keptPixels: 0, totalPixels: 0 },
+    };
+
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "background:#0e0e10;border:1px solid #333;border-radius:6px;padding:10px;";
+
+    const toolbar = document.createElement("div");
+    toolbar.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;";
+    wrap.appendChild(toolbar);
+
+    const info = document.createElement("div");
+    info.style.cssText = "margin-left:auto;color:#adadb8;font-size:11px;white-space:nowrap;";
+    toolbar.appendChild(info);
+
+    function makeToggleButton(label, active = false) {
+      const btn = document.createElement("button");
+      btn.textContent = label;
+      btn.style.cssText =
+        `background:${active ? "#9146ff" : "#18181b"};border:1px solid ${active ? "#9146ff" : "#555"};` +
+        `border-radius:4px;color:${active ? "#fff" : "#adadb8"};font-size:12px;cursor:pointer;padding:6px 10px;`;
+      return btn;
+    }
+
+    function setToggleState(btn, active) {
+      btn.style.background = active ? "#9146ff" : "#18181b";
+      btn.style.borderColor = active ? "#9146ff" : "#555";
+      btn.style.color = active ? "#fff" : "#adadb8";
+    }
+
+    const brushBtn = makeToggleButton("Brush", true);
+    const polygonBtn = makeToggleButton("Polygon");
+    const roundBtn = makeToggleButton("Round", true);
+    const squareBtn = makeToggleButton("Square");
+    const paintBtn = makeToggleButton("Paint");
+    const eraseBtn = makeToggleButton("Erase", true);
+    const fillBtn = makeToggleButton("Fill All");
+    const clearBtn = makeToggleButton("Clear All");
+    const applyPolygonBtn = makeToggleButton("Apply Polygon");
+    const cancelPolygonBtn = makeToggleButton("Cancel Polygon");
+
+    [brushBtn, polygonBtn, roundBtn, squareBtn, paintBtn, eraseBtn, fillBtn, clearBtn, applyPolygonBtn, cancelPolygonBtn]
+      .forEach(btn => toolbar.appendChild(btn));
+
+    const canvasWrap = document.createElement("div");
+    canvasWrap.style.cssText = "display:flex;justify-content:center;align-items:center;background:#111;border:1px solid #222;border-radius:4px;padding:8px;overflow:auto;";
+    wrap.appendChild(canvasWrap);
+
+    const stage = document.createElement("div");
+    stage.style.cssText = "position:relative;display:inline-block;line-height:0;cursor:none;";
+    canvasWrap.appendChild(stage);
+
+    const imageCanvas = document.createElement("canvas");
+    imageCanvas.style.cssText = "display:block;max-width:100%;image-rendering:auto;";
+    stage.appendChild(imageCanvas);
+    const imageCtx = imageCanvas.getContext("2d");
+
+    const tintCanvas = document.createElement("canvas");
+    tintCanvas.style.cssText = "position:absolute;inset:0;display:block;pointer-events:none;";
+    stage.appendChild(tintCanvas);
+    const tintCtx = tintCanvas.getContext("2d");
+
+    const overlayCanvas = document.createElement("canvas");
+    overlayCanvas.style.cssText = "position:absolute;inset:0;display:block;cursor:none;pointer-events:none;";
+    stage.appendChild(overlayCanvas);
+    const overlayCtx = overlayCanvas.getContext("2d");
+
+    const maskCanvas = document.createElement("canvas");
+    const maskCtx = maskCanvas.getContext("2d");
+    const sourceImg = new Image();
+    const maskImg = initialMaskDataUrl ? new Image() : null;
+    let tintDirty = false;
+    let overlayDirty = false;
+    let rafPending = false;
+    let summaryDirty = false;
+
+    function updateInfo() {
+      const toolLabel = state.tool === "polygon" ? "polygon include" : `${state.brushShape} ${state.brushMode}`;
+      const polySuffix = state.tool === "polygon" ? ` · ${state.polygonPoints.length} pts` : "";
+      info.textContent = `${toolLabel} · ${state.brushSize}px${polySuffix} · ${Math.round(state.summary.coverage * 100)}% kept`;
+      roundBtn.style.display = state.tool === "brush" ? "inline-block" : "none";
+      squareBtn.style.display = state.tool === "brush" ? "inline-block" : "none";
+      paintBtn.style.display = state.tool === "brush" ? "inline-block" : "none";
+      eraseBtn.style.display = state.tool === "brush" ? "inline-block" : "none";
+      applyPolygonBtn.style.display = state.tool === "polygon" ? "inline-block" : "none";
+      cancelPolygonBtn.style.display = state.tool === "polygon" ? "inline-block" : "none";
+    }
+
+    function canvasCoords(event) {
+      const rect = stage.getBoundingClientRect();
+      const scaleX = imageCanvas.width / rect.width;
+      const scaleY = imageCanvas.height / rect.height;
+      return {
+        x: Math.max(0, Math.min(imageCanvas.width - 1, Math.round((event.clientX - rect.left) * scaleX))),
+        y: Math.max(0, Math.min(imageCanvas.height - 1, Math.round((event.clientY - rect.top) * scaleY))),
+      };
+    }
+
+    function drawBrushPreview() {
+      if (!state.hovering || state.painting || state.tool !== "brush") return;
+      overlayCtx.save();
+      overlayCtx.strokeStyle = state.brushMode === "paint" ? "#00f593" : "#ff3860";
+      overlayCtx.lineWidth = Math.max(1, Math.round(imageCanvas.width / 180));
+      if (state.brushShape === "round") {
+        overlayCtx.beginPath();
+        overlayCtx.arc(state.hoverX, state.hoverY, state.brushSize / 2, 0, Math.PI * 2);
+        overlayCtx.stroke();
+      } else {
+        const half = state.brushSize / 2;
+        overlayCtx.strokeRect(state.hoverX - half, state.hoverY - half, state.brushSize, state.brushSize);
+      }
+      overlayCtx.restore();
+    }
+
+    function drawPolygonPreview() {
+      if (state.tool !== "polygon" || state.polygonPoints.length === 0) return;
+      overlayCtx.save();
+      overlayCtx.lineWidth = Math.max(1, Math.round(imageCanvas.width / 180));
+      overlayCtx.strokeStyle = "#00f593";
+      overlayCtx.fillStyle = "rgba(0,245,147,0.20)";
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(state.polygonPoints[0].x, state.polygonPoints[0].y);
+      for (let i = 1; i < state.polygonPoints.length; i++) {
+        overlayCtx.lineTo(state.polygonPoints[i].x, state.polygonPoints[i].y);
+      }
+      if (state.polygonHover) {
+        overlayCtx.lineTo(state.polygonHover.x, state.polygonHover.y);
+      }
+      overlayCtx.stroke();
+      for (const pt of state.polygonPoints) {
+        overlayCtx.beginPath();
+        overlayCtx.arc(pt.x, pt.y, 3, 0, Math.PI * 2);
+        overlayCtx.fillStyle = "#00f593";
+        overlayCtx.fill();
+      }
+      overlayCtx.restore();
+    }
+
+    function refreshSummary() {
+      if (!state.imageLoaded) {
+        state.summary = { coverage: 1, keptPixels: 0, totalPixels: 0 };
+        return state.summary;
+      }
+      const image = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height).data;
+      let kept = 0;
+      for (let i = 3; i < image.length; i += 4) {
+        if (image[i] >= 128) kept++;
+      }
+      const total = maskCanvas.width * maskCanvas.height;
+      state.summary = { coverage: total ? kept / total : 0, keptPixels: kept, totalPixels: total };
+      summaryDirty = false;
+      return state.summary;
+    }
+
+    function renderTint() {
+      if (!state.imageLoaded) return;
+      tintCtx.clearRect(0, 0, tintCanvas.width, tintCanvas.height);
+      tintCtx.save();
+      tintCtx.fillStyle = "rgba(255,56,96,0.30)";
+      tintCtx.fillRect(0, 0, tintCanvas.width, tintCanvas.height);
+      tintCtx.globalCompositeOperation = "destination-out";
+      tintCtx.drawImage(maskCanvas, 0, 0);
+      tintCtx.restore();
+
+      tintCtx.save();
+      tintCtx.fillStyle = "rgba(0,245,147,0.24)";
+      tintCtx.fillRect(0, 0, tintCanvas.width, tintCanvas.height);
+      tintCtx.globalCompositeOperation = "destination-in";
+      tintCtx.drawImage(maskCanvas, 0, 0);
+      tintCtx.restore();
+      updateInfo();
+    }
+
+    function renderOverlay() {
+      if (!state.imageLoaded) return;
+      overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+      drawBrushPreview();
+      drawPolygonPreview();
+    }
+
+    function scheduleRender(needsTint = false, needsOverlay = true) {
+      tintDirty = tintDirty || needsTint;
+      overlayDirty = overlayDirty || needsOverlay;
+      if (rafPending) return;
+      rafPending = true;
+      requestAnimationFrame(() => {
+        rafPending = false;
+        if (tintDirty) {
+          renderTint();
+          tintDirty = false;
+          overlayDirty = true;
+        }
+        if (overlayDirty) {
+          renderOverlay();
+          overlayDirty = false;
+        }
+      });
+    }
+
+    function applyBrush(x, y) {
+      const half = state.brushSize / 2;
+      maskCtx.save();
+      if (state.brushMode === "paint") {
+        maskCtx.globalCompositeOperation = "source-over";
+        maskCtx.fillStyle = "#fff";
+      } else {
+        maskCtx.globalCompositeOperation = "destination-out";
+      }
+      if (state.brushShape === "round") {
+        maskCtx.beginPath();
+        maskCtx.arc(x, y, half, 0, Math.PI * 2);
+        maskCtx.fill();
+      } else if (state.brushMode === "paint") {
+        maskCtx.fillRect(x - half, y - half, state.brushSize, state.brushSize);
+      } else {
+        maskCtx.clearRect(x - half, y - half, state.brushSize, state.brushSize);
+      }
+      maskCtx.restore();
+      summaryDirty = true;
+      scheduleRender(true, true);
+    }
+
+    function getMaskSummary() {
+      if (summaryDirty) refreshSummary();
+      return state.summary;
+    }
+
+    function getMaskDataUrl() {
+      if (!state.imageLoaded) return null;
+      const summary = getMaskSummary();
+      if (summary.coverage >= 0.999) return null;
+      return maskCanvas.toDataURL("image/png");
+    }
+
+    function fillMask() {
+      if (!state.imageLoaded) return;
+      maskCtx.globalCompositeOperation = "source-over";
+      maskCtx.fillStyle = "#fff";
+      maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
+      state.polygonPoints = [];
+      state.polygonHover = null;
+      refreshSummary();
+      scheduleRender(true, true);
+    }
+
+    function clearMask() {
+      if (!state.imageLoaded) return;
+      maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+      state.polygonPoints = [];
+      state.polygonHover = null;
+      refreshSummary();
+      scheduleRender(true, true);
+    }
+
+    function applyPolygon() {
+      if (!state.imageLoaded || state.polygonPoints.length < 3) return;
+      maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+      maskCtx.save();
+      maskCtx.fillStyle = "#fff";
+      maskCtx.beginPath();
+      maskCtx.moveTo(state.polygonPoints[0].x, state.polygonPoints[0].y);
+      for (let i = 1; i < state.polygonPoints.length; i++) {
+        maskCtx.lineTo(state.polygonPoints[i].x, state.polygonPoints[i].y);
+      }
+      maskCtx.closePath();
+      maskCtx.fill();
+      maskCtx.restore();
+      state.polygonPoints = [];
+      state.polygonHover = null;
+      refreshSummary();
+      scheduleRender(true, true);
+    }
+
+    brushBtn.onclick = () => {
+      state.tool = "brush";
+      state.polygonHover = null;
+      setToggleState(brushBtn, true);
+      setToggleState(polygonBtn, false);
+      scheduleRender(false, true);
+    };
+    polygonBtn.onclick = () => {
+      state.tool = "polygon";
+      setToggleState(brushBtn, false);
+      setToggleState(polygonBtn, true);
+      scheduleRender(false, true);
+    };
+    roundBtn.onclick = () => {
+      state.brushShape = "round";
+      setToggleState(roundBtn, true);
+      setToggleState(squareBtn, false);
+      scheduleRender(false, true);
+    };
+    squareBtn.onclick = () => {
+      state.brushShape = "square";
+      setToggleState(roundBtn, false);
+      setToggleState(squareBtn, true);
+      scheduleRender(false, true);
+    };
+    paintBtn.onclick = () => {
+      state.brushMode = "paint";
+      setToggleState(paintBtn, true);
+      setToggleState(eraseBtn, false);
+      scheduleRender(false, true);
+    };
+    eraseBtn.onclick = () => {
+      state.brushMode = "erase";
+      setToggleState(paintBtn, false);
+      setToggleState(eraseBtn, true);
+      scheduleRender(false, true);
+    };
+    fillBtn.onclick = fillMask;
+    clearBtn.onclick = clearMask;
+    applyPolygonBtn.onclick = applyPolygon;
+    cancelPolygonBtn.onclick = () => {
+      state.polygonPoints = [];
+      state.polygonHover = null;
+      scheduleRender(false, true);
+    };
+
+    stage.addEventListener("mousedown", (event) => {
+      if (!state.imageLoaded) return;
+      const coords = canvasCoords(event);
+      state.hovering = true;
+      state.hoverX = coords.x;
+      state.hoverY = coords.y;
+      if (state.tool === "polygon") {
+      state.polygonPoints.push(coords);
+      state.polygonHover = coords;
+      scheduleRender(false, true);
+      return;
+    }
+      state.painting = true;
+      applyBrush(coords.x, coords.y);
+    });
+    stage.addEventListener("mousemove", (event) => {
+      if (!state.imageLoaded) return;
+      const coords = canvasCoords(event);
+      state.hovering = true;
+      state.hoverX = coords.x;
+      state.hoverY = coords.y;
+      if (state.tool === "polygon") {
+        state.polygonHover = coords;
+        scheduleRender(false, true);
+      } else if (state.painting) applyBrush(coords.x, coords.y);
+      else scheduleRender(false, true);
+    });
+    stage.addEventListener("mouseenter", (event) => {
+      if (!state.imageLoaded) return;
+      const coords = canvasCoords(event);
+      state.hovering = true;
+      state.hoverX = coords.x;
+      state.hoverY = coords.y;
+      scheduleRender(false, true);
+    });
+    stage.addEventListener("mouseleave", () => {
+      state.hovering = false;
+      state.polygonHover = null;
+      scheduleRender(false, true);
+    });
+    stage.addEventListener("wheel", (event) => {
+      event.preventDefault();
+      const next = event.deltaY < 0 ? state.brushSize + 2 : state.brushSize - 2;
+      state.brushSize = Math.max(4, Math.min(96, next));
+      scheduleRender(false, true);
+    }, { passive: false });
+
+    function stopPainting() {
+      state.painting = false;
+      if (summaryDirty) refreshSummary();
+      scheduleRender(false, true);
+    }
+    document.addEventListener("mouseup", stopPainting);
+
+    sourceImg.onload = () => {
+      imageCanvas.width = sourceImg.naturalWidth;
+      imageCanvas.height = sourceImg.naturalHeight;
+      tintCanvas.width = sourceImg.naturalWidth;
+      tintCanvas.height = sourceImg.naturalHeight;
+      overlayCanvas.width = sourceImg.naturalWidth;
+      overlayCanvas.height = sourceImg.naturalHeight;
+      const scale = Math.min(1, 260 / sourceImg.naturalWidth, 180 / sourceImg.naturalHeight);
+      const cssW = Math.max(48, Math.round(sourceImg.naturalWidth * scale)) + "px";
+      const cssH = Math.max(48, Math.round(sourceImg.naturalHeight * scale)) + "px";
+      imageCanvas.style.width = cssW;
+      imageCanvas.style.height = cssH;
+      tintCanvas.style.width = cssW;
+      tintCanvas.style.height = cssH;
+      overlayCanvas.style.width = cssW;
+      overlayCanvas.style.height = cssH;
+      imageCtx.clearRect(0, 0, imageCanvas.width, imageCanvas.height);
+      imageCtx.drawImage(sourceImg, 0, 0, imageCanvas.width, imageCanvas.height);
+      maskCanvas.width = sourceImg.naturalWidth;
+      maskCanvas.height = sourceImg.naturalHeight;
+      maskCtx.fillStyle = "#fff";
+      maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
+      state.imageLoaded = true;
+      if (maskImg) {
+        maskImg.onload = () => {
+          maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+          maskCtx.drawImage(maskImg, 0, 0, maskCanvas.width, maskCanvas.height);
+          refreshSummary();
+          scheduleRender(true, true);
+        };
+        maskImg.onerror = () => {
+          refreshSummary();
+          scheduleRender(true, true);
+        };
+        maskImg.src = initialMaskDataUrl;
+      } else {
+        refreshSummary();
+        scheduleRender(true, true);
+      }
+    };
+    sourceImg.src = imageUrl;
+
+    function destroy() {
+      document.removeEventListener("mouseup", stopPainting);
+    }
+
+    updateInfo();
+    return { el: wrap, getMaskDataUrl, getMaskSummary, destroy };
   }
 
   function editorLabel(text) {
@@ -1048,6 +1603,11 @@
     lastMouseX = event.clientX;
     lastMouseY = event.clientY;
 
+    if (editorModalOpen) {
+      hidePopups();
+      return;
+    }
+
     // Cursor is hovering over a popup — don't disturb it.
     if (overPopup) return;
 
@@ -1083,13 +1643,13 @@
     const capturePixels = captureCtx.getImageData(0, 0, CAPTURE_SIZE, CAPTURE_SIZE).data;
     const best = findBestMatch(capturePixels);
 
-    if (best && best.dist <= MATCH_THRESHOLD) {
+    if (best && best.ratio <= MATCH_THRESHOLD_RATIO && best.validBits >= MIN_MASKED_BITS) {
       const label = best.trigger.payloads ? best.trigger.payloads[0].title : best.trigger.id;
-      lastMatchInfo = { title: label, dist: best.dist };
+      lastMatchInfo = { title: label, dist: best.dist, ratio: best.ratio, validBits: best.validBits };
       showPopups(best.trigger.payloads || [], event.clientX, event.clientY, best.trigger);
     } else {
       const label = best ? (best.trigger.payloads ? best.trigger.payloads[0].title : best.trigger.id) : null;
-      lastMatchInfo = best ? { title: label, dist: best.dist, noMatch: true } : null;
+      lastMatchInfo = best ? { title: label, dist: best.dist, ratio: best.ratio, validBits: best.validBits, noMatch: true } : null;
       hidePopups();
     }
 
@@ -1209,8 +1769,8 @@
     let matchLine = "";
     if (lastMatchInfo) {
       matchLine = lastMatchInfo.noMatch
-        ? `<span style="color:#adadb8">best: ${lastMatchInfo.dist} "${lastMatchInfo.title}"</span>`
-        : `<span style="color:#00f593">MATCH "${lastMatchInfo.title}" d=${lastMatchInfo.dist}</span>`;
+        ? `<span style="color:#adadb8">best: ${lastMatchInfo.dist}/${lastMatchInfo.validBits} (${Math.round(lastMatchInfo.ratio * 100)}%) "${lastMatchInfo.title}"</span>`
+        : `<span style="color:#00f593">MATCH "${lastMatchInfo.title}" ${lastMatchInfo.dist}/${lastMatchInfo.validBits} (${Math.round(lastMatchInfo.ratio * 100)}%)</span>`;
     }
     infoEl.innerHTML =
       `client: ${info.clientX}, ${info.clientY}<br>` +
@@ -1274,7 +1834,8 @@
 
     const selection = document.createElement("div");
     selection.style.cssText =
-      "position:absolute;border:2px solid #00f593;background:rgba(0,245,147,0.15);" +
+      "position:absolute;border:2px solid #00f593;background:rgba(0,245,147,0.18);" +
+      "box-shadow:0 0 0 9999px rgba(255,56,96,0.26);" +
       "display:none;pointer-events:none;";
     overlay.appendChild(selection);
 
