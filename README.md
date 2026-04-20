@@ -60,6 +60,6 @@ More games and profiles can be added by anyone — see [Contributing triggers](#
 
 ## Known limitations
 
-- Matching works best at 720p and above. At 480p and below, small UI elements may not match reliably.
+- Matching works best at 1080p. At 720p some small UI elements may miss; at 480p and below most small elements won't match.
 - The debug panel (top-right) is visible on all Twitch pages. Toggle it with the hotkey or ignore it.
 - Chrome only for now. Firefox support is planned.
