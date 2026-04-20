@@ -58,7 +58,7 @@ const contributorCodeKey = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
         gameId:      g.id,
         gameName:    g.name,
         twitchSlug:  g.twitchSlug  || null,
-        profiles:    g.profiles.map(p => ({ id: p.id, name: p.name, url: p.url })),
+        profiles:    g.profiles.map(p => ({ id: p.id, name: p.name, verified: p.verified ?? false, url: p.url })),
       }));
     }
   } catch (_) {
@@ -116,7 +116,7 @@ const contributorCodeKey = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
       CATALOG.push(game);
     }
     if (!game.profiles.find(p => p.id === active.profileId)) {
-      game.profiles.push({ id: active.profileId, name: active.name, url: active.url });
+      game.profiles.push({ id: active.profileId, name: active.name, verified: false, url: active.url });
     }
   }
 
@@ -229,7 +229,7 @@ const contributorCodeKey = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
     }
 
     // Persist to local catalog so the profile survives popup reloads until CDN refreshes.
-    const newProf = { id: data.profileId, name: data.profileName, url: data.profileUrl };
+    const newProf = { id: data.profileId, name: data.profileName, verified: false, url: data.profileUrl };
     const stored = await chrome.storage.local.get(LOCAL_CATALOG_KEY);
     const localAdditions = stored[LOCAL_CATALOG_KEY] || [];
     let localGame = localAdditions.find(g => g.gameId === gameId);
@@ -269,7 +269,7 @@ const contributorCodeKey = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
     for (const p of game.profiles) {
       const opt = document.createElement("option");
       opt.value = p.id;
-      opt.textContent = p.name;
+      opt.textContent = p.verified ? `✓ ${p.name}` : p.name;
       if (game.gameId === active.gameId && p.id === active.profileId) opt.selected = true;
       profileSelect.appendChild(opt);
     }

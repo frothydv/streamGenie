@@ -266,10 +266,10 @@ async function createProfile(gh, env, gameId, gameName, twitchSlug, profileId, p
   if (existingGame) {
     if (!existingGame.twitchSlug && twitchSlug) existingGame.twitchSlug = twitchSlug;
     if (!existingGame.profiles.find(p => p.id === profileId)) {
-      existingGame.profiles.push({ id: profileId, name: profileName, url: profileUrl });
+      existingGame.profiles.push({ id: profileId, name: profileName, verified: false, url: profileUrl });
     }
   } else {
-    catalog.games.push({ id: gameId, name: gameName, twitchSlug, profiles: [{ id: profileId, name: profileName, url: profileUrl }] });
+    catalog.games.push({ id: gameId, name: gameName, twitchSlug, profiles: [{ id: profileId, name: profileName, verified: false, url: profileUrl }] });
   }
   await gh(`repos/${OWNER}/${REPO}/contents/catalog.json`, "PUT", {
     message: `feat: add ${profileName} profile for ${gameName}`,
