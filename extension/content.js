@@ -10,10 +10,20 @@
   // Child frame (Twitch Extension iframe on ext.twitch.tv): relay mouse
   // position to the parent frame so the overlay stays active while the
   // cursor is inside the extension overlay. No capture or popup logic runs here.
+  //
+  // IMPORTANT: send NORMALISED coordinates (0–1 fraction of the child window's
+  // inner dimensions), NOT raw clientX/Y. Many Twitch Extensions (e.g. Slay
+  // the Relics) render at a fixed internal resolution (1920×1080) that is
+  // CSS-scaled down to fit the player. Raw clientX would be e.g. 1200 even
+  // though the iframe is only 400 px wide on screen, causing the parent to
+  // reconstruct a wildly over-shot coordinate. Normalising avoids the issue
+  // entirely — the parent just multiplies by the iframe's visual dimensions.
   if (window !== window.top) {
     document.addEventListener("mousemove", (e) => {
+      const nx = window.innerWidth  > 0 ? e.clientX / window.innerWidth  : 0;
+      const ny = window.innerHeight > 0 ? e.clientY / window.innerHeight : 0;
       window.parent.postMessage(
-        { type: "streamGenie_mousemove", clientX: e.clientX, clientY: e.clientY },
+        { type: "streamGenie_mousemove", nx, ny },
         "*"
       );
     }, { passive: true });
@@ -2179,19 +2189,21 @@
   document.addEventListener("mousedown", onDocumentClick, true);
 
   // Receive relayed mouse coordinates from Twitch Extension child frames
-  // (ext.twitch.tv iframes injected by all_frames:true). Translate from
-  // iframe-local coords to parent-frame client coords and feed into the
-  // existing capture pipeline as a synthetic mousemove.
+  // (ext.twitch.tv iframes injected by all_frames:true). The child sends
+  // normalised coordinates (nx/ny, each a 0–1 fraction of the child window's
+  // inner size) so that CSS-scaled iframes (e.g. Slay the Relics at 1920×1080
+  // internal res displayed at ~400 px) produce correct parent-frame positions.
   window.addEventListener("message", (event) => {
     if (!event.data || event.data.type !== "streamGenie_mousemove") return;
+    // Accept both old raw format and new normalised format for safety.
+    const { nx, ny, clientX: rawX, clientY: rawY } = event.data;
     const iframes = Array.from(document.querySelectorAll("iframe"));
     const sourceFrame = iframes.find(f => f.contentWindow === event.source);
     if (!sourceFrame) return;
     const rect = sourceFrame.getBoundingClientRect();
-    onDocumentMouseMove({
-      clientX: rect.left + event.data.clientX,
-      clientY: rect.top + event.data.clientY,
-    });
+    const absX = nx !== undefined ? rect.left + nx * rect.width  : rect.left + rawX;
+    const absY = ny !== undefined ? rect.top  + ny * rect.height : rect.top  + rawY;
+    onDocumentMouseMove({ clientX: absX, clientY: absY });
   });
 
   heartbeat();
