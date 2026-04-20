@@ -18,7 +18,7 @@ const FALLBACK_CATALOG = [
     gameName:   "Slay the Spire 2",
     twitchSlug: "slay-the-spire-ii",
     profiles: [
-      { id: "community", name: "STS2 Community", url: DEFAULT_PROFILE.url },
+      { id: "community", name: "STS2 Community", verified: true, url: DEFAULT_PROFILE.url },
     ],
   },
 ];
@@ -65,12 +65,16 @@ const contributorCodeKey = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
     // Network unavailable — fallback catalog still works
   }
 
-  // Always apply FALLBACK_CATALOG twitchSlugs — they are authoritative.
-  // CDN may have a wrong or missing value (e.g. "slay-the-spire-2" instead of
-  // "slay-the-spire-ii"), and we can't fix the CDN immediately.
+  // Always apply FALLBACK_CATALOG overrides — twitchSlug and verified are authoritative
+  // here so CDN cache staleness never breaks matching or badge display.
   for (const fallback of FALLBACK_CATALOG) {
     const existing = CATALOG.find(g => g.gameId === fallback.gameId);
-    if (existing && fallback.twitchSlug) existing.twitchSlug = fallback.twitchSlug;
+    if (!existing) continue;
+    if (fallback.twitchSlug) existing.twitchSlug = fallback.twitchSlug;
+    for (const fp of fallback.profiles) {
+      const ep = existing.profiles.find(p => p.id === fp.id);
+      if (ep && fp.verified !== undefined) ep.verified = fp.verified;
+    }
   }
 
   // Merge in locally-created profiles (persist across reloads until CDN cache refreshes).
