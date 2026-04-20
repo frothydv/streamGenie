@@ -1,83 +1,65 @@
-# Stream Overlay — development build
+# Stream Genie — pre-alpha
 
-Hover-to-reveal overlays for Twitch streams.
+Hover-to-reveal overlays for Twitch streams. Point your cursor at something on screen — a card, a relic, a UI icon — and a popup tells you what it is. No streamer setup required; it all runs in your browser.
 
-## Current milestone: 2 — hover + pixel capture
+> **Pre-alpha:** Profiles exist for Slay the Spire 2. Everything else is rough edges.
 
-The extension now:
-- Finds the Twitch video player
-- Tracks your mouse while it's over the video
-- Captures a 160×160 pixel region under your cursor
-- Displays the captured region live in a debug panel in the top-right of the page
-- Registers Alt+Shift+C as the capture hotkey (still a no-op; reserved for milestone 7)
+## Install
 
-No matching or popups yet. This milestone is about confirming we can reliably read clean pixels out of the stream.
+1. Download **[stream-genie-pre-alpha.zip](https://github.com/frothydv/streamGenie/releases/latest)** and unzip it anywhere.
+2. In Chrome, go to `chrome://extensions/` and enable **Developer mode** (top-right toggle).
+3. Click **Load unpacked** and select the unzipped `extension/` folder.
+4. The Stream Genie icon appears in your toolbar.
 
-## Updating your installed extension
+## Using it
 
-1. Go to `chrome://extensions/`
-2. Find "Stream Overlay (dev)"
-3. Click the **reload** icon (circular arrow) on its card
-4. If you point Chrome at a different folder now, use **Load unpacked** and pick the new `extension/` folder
+1. Open a Twitch stream. Stream Genie auto-detects the game from the Twitch category.
+2. Click the toolbar icon to confirm the active profile or switch games/profiles.
+3. Hover over things in the video. If a match is found, a popup appears near your cursor.
+4. Move your cursor away and the popup disappears.
 
-You do **not** need to remove and reinstall — reload is enough.
+**Keyboard shortcut:** Alt+Shift+C opens the trigger capture editor (for contributors).
 
-## Testing milestone 2
+## Contributing triggers
 
-**Should take about 2 minutes.**
+Anyone can contribute. Stream Genie sends your contributions as GitHub pull requests, which the profile owner can review and merge.
 
-### 1. Open a Twitch stream
+**If you have a contributor code** (shared by the profile owner), your submissions go directly — no PR needed.
 
-Go to any live stream on Twitch. A stream of a game (anything, doesn't matter which) is ideal — lots of visual variety makes the debug panel more interesting.
+To add a trigger:
+1. Click **+ Contribute a Trigger** in the popup while watching a stream.
+2. A frame freezes. Drag a box around the thing you want to annotate.
+3. Fill in the title and description, then click **Submit to Profile**.
 
-### 2. Look for the debug panel
+If you have a code, paste it in the **Contributor Status** section of the popup.
 
-In the top-right corner of the page, under Twitch's own header, you should see a small dark panel labeled **"overlay debug"** with:
-- A status line
-- A 160×160 black box (the live capture preview)
-- Coordinate info
+## For profile owners
 
-If status says **"no video"** — wait a few seconds for Twitch to fully load, or reload the page.
+When you create a new profile via the popup, you receive a **contributor code**. Share it with people you trust to submit directly.
 
-### 3. Hover over the video
+Your contributors' PRs (from untrusted users) appear at:  
+[github.com/frothydv/streamGenieProfiles/pulls](https://github.com/frothydv/streamGenieProfiles/pulls)
 
-Move your mouse onto the video player. You should see:
-- Status changes to **"capturing"** in green
-- The 160×160 box fills with live video content — specifically, whatever your cursor is pointing at
-- The coordinate info updates continuously:
-  - `client` = mouse position on your screen
-  - `video` = corresponding position in the video's native resolution
-  - `crop` = top-left corner of what we captured
-  - `source` = video's native resolution (e.g. 1920×1080)
+## Updating
 
-Move your cursor around the video. The capture preview should track your cursor's position through the video.
+To update to a newer version:
 
-### 4. Check quality
+1. Download the new zip from [Releases](https://github.com/frothydv/streamGenie/releases).
+2. Unzip it, replacing the old folder.
+3. Go to `chrome://extensions/`, find **Stream Genie (pre-alpha)**, and click the reload icon (↺).
 
-Hover over something distinct — a face, a UI element, some text on screen. The preview should show that region legibly. If it's a blurry mess or frozen or blank, something's wrong and I need to know.
+You do **not** need to remove and reinstall — reload is enough. Your saved profiles and contributor codes are preserved in Chrome storage.
 
-### 5. Test SPA navigation (optional but helpful)
+## Supported games
 
-While the panel is active, click another stream in Twitch's sidebar. The URL changes without a full page reload. The debug panel should stay attached, re-find the new video, and resume capturing when you hover.
+| Game | Profile | Status |
+|------|---------|--------|
+| Slay the Spire 2 | community | Active |
 
-## What to report back
+More games and profiles can be added by anyone — see [Contributing triggers](#contributing-triggers) above.
 
-- Does the debug panel appear?
-- Does the capture preview show live video when you hover?
-- Is the preview quality readable? (Blurry / pixelated is expected at small text, but major objects should be clearly identifiable)
-- Do the coordinates change as you move?
-- Does it still work after you navigate to a different stream?
+## Known limitations
 
-**Screenshots of the debug panel in action are enormously helpful** — especially one showing the preview successfully capturing something recognizable.
-
-## Known non-issues
-
-- Twitch's cursor auto-hide over the video is a Twitch feature, not us. We're not fixing it here.
-- The debug panel is visible on all Twitch pages including non-stream ones. That's intentional for now (easier to debug). It'll be removed / made toggleable in a later milestone.
-- The hotkey Alt+Shift+C fires but does nothing user-visible yet — still just logs to console.
-
-## What's next
-
-Milestone 3: dummy matching. We'll hard-code a single reference image and a single payload. When you hover over the right spot on a stream and our capture matches the reference, a real popup will appear. End-to-end pipeline proven, still with no cloud-loaded profiles.
-
-To make milestone 3 testable, we'll first have you capture a reference image from a real stream using the debug panel — so we have a known-good reference to match against.
+- Matching works best at 720p and above. At 480p and below, small UI elements may not match reliably.
+- The debug panel (top-right) is visible on all Twitch pages. Toggle it with the hotkey or ignore it.
+- Chrome only for now. Firefox support is planned.
