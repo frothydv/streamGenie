@@ -58,6 +58,28 @@
       .empty-note { font-size: 11px; color: #555; font-style: italic; }
       .hint { font-size: 10px; color: #adadb8; margin-top: 6px; }
       code { background: #0e0e10; padding: 1px 4px; border-radius: 2px; font-size: 10px; }
+      .detected-note {
+        font-size: 10px; color: #00f593; margin: -4px 0 8px;
+        display: none;
+      }
+      .contribute-btn {
+        width: 100%; background: none; border: 1px solid #9146ff; border-radius: 4px;
+        color: #9146ff; font-size: 12px; font-weight: bold; cursor: pointer;
+        padding: 7px; margin-top: 4px;
+      }
+      .contribute-btn:hover { background: rgba(145,70,255,0.15); }
+      .no-profile-banner {
+        background: rgba(245,166,35,0.1); border: 1px solid #f5a623; border-radius: 4px;
+        padding: 8px 10px; margin: 4px 0 8px; display: none;
+      }
+      .no-profile-banner p { margin: 0 0 6px; font-size: 11px; color: #f5a623; }
+      .create-profile-btn {
+        width: 100%; background: none; border: 1px solid #f5a623; border-radius: 4px;
+        color: #f5a623; font-size: 12px; font-weight: bold; cursor: pointer;
+        padding: 6px;
+      }
+      .create-profile-btn:hover { background: rgba(245,166,35,0.15); }
+      .create-profile-btn:disabled { opacity: 0.5; cursor: default; }
     </style>
   </head>
   <body>
@@ -67,17 +89,36 @@
     <div class="section-title">Active Profile</div>
     <label class="field-label">Game</label>
     <select id="game-select"></select>
+    <div id="detected-game" class="detected-note"></div>
+    <div id="no-profile-banner" class="no-profile-banner">
+      <p id="no-profile-text"></p>
+      <button class="create-profile-btn" id="create-profile-btn"></button>
+    </div>
     <label class="field-label">Profile</label>
     <select id="profile-select"></select>
+    <div id="new-profile-form" style="display:none; margin-bottom:8px;">
+      <input id="new-profile-name" type="text" placeholder="Profile name (e.g. competitive)"
+        style="width:100%;box-sizing:border-box;background:#0e0e10;border:1px solid #9146ff;
+               border-radius:4px;color:#efeff1;padding:5px 8px;font-size:12px;margin-bottom:4px;" />
+      <div style="display:flex;gap:6px;">
+        <button class="apply-btn" id="new-profile-submit" style="flex:1;margin:0;">Create</button>
+        <button class="delete-btn" id="new-profile-cancel" style="padding:6px 10px;">Cancel</button>
+      </div>
+      <div id="new-profile-note" class="note"></div>
+    </div>
+    <a href="#" id="new-profile-link"
+      style="display:block;font-size:10px;color:#9146ff;text-align:right;margin:-4px 0 8px;text-decoration:none;">
+      + New profile
+    </a>
     <button class="apply-btn" id="apply-btn">Apply</button>
     <div id="apply-note" class="note"></div>
 
     <hr class="divider" />
 
+    <button class="contribute-btn" id="contribute-btn">+ Contribute a Trigger</button>
+
     <div class="section-title">Saved Triggers (<span id="profile-label">—</span>)</div>
     <div id="triggers-list"></div>
-
-    <div class="hint">Press <code>Alt+Shift+C</code> on a stream to create a trigger.</div>
 
     <script src="popup.js"></script>
   </body>

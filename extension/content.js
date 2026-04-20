@@ -21,6 +21,7 @@
   // Both reference and each capture window are normalised through this virtual
   // size before hashing, so small refs produce equally discriminative hashes.
   const CANONICAL_SIZE = 32;
+  const FIRST_RUN_KEY = "streamGenie_first_run_shown";
 
   // --- Profile config -------------------------------------------------------
 
@@ -60,6 +61,38 @@
   let activeProfile = null; // set by loadProfile(); used by editor + saveUserTrigger
   let overPopup = false;   // true while cursor is over an active popup
   let currentMatchedTrigger = null;
+  let detectedGame = null;  // { name, slug } scraped from Twitch category link
+  let lastUrl = location.href;
+  let firstRunHintDone = false;
+
+  // --- Game detection -------------------------------------------------------
+
+  function detectTwitchGame() {
+    // Twitch renders the active game as a link to /directory/category/<slug>
+    const link = document.querySelector(
+      'a[href*="/directory/category/"], a[href*="/directory/game/"]'
+    );
+    if (!link) return;
+    const href = link.getAttribute("href") || "";
+    const m = href.match(/\/directory\/(?:category|game)\/([^/?#]+)/);
+    if (!m) return;
+    const slug = decodeURIComponent(m[1]);
+    const name = link.textContent.trim();
+    if (detectedGame && detectedGame.slug === slug) return; // no change
+    detectedGame = { name, slug };
+    console.log(`[overlay/content] game detected: "${name}" (${slug})`);
+  }
+
+  async function maybeShowFirstRunHint() {
+    if (firstRunHintDone) return;
+    firstRunHintDone = true;
+    const r = await chrome.storage.local.get(FIRST_RUN_KEY);
+    if (r[FIRST_RUN_KEY]) return;
+    await chrome.storage.local.set({ [FIRST_RUN_KEY]: true });
+    setTimeout(() =>
+      showToast("Stream Genie ready — hover over game elements for info, or click the toolbar icon to contribute.", "info"),
+    1500);
+  }
 
   // --- Video discovery ------------------------------------------------------
 
@@ -83,6 +116,7 @@
     if (currentVideo === video) return;
     detachFromVideo();
     currentVideo = video;
+    maybeShowFirstRunHint();
     const rect = video.getBoundingClientRect();
     console.log("[overlay/content] attaching to video:", {
       layoutSize: `${Math.round(rect.width)}x${Math.round(rect.height)}`,
@@ -107,6 +141,13 @@
 
   let lastKnownVideoDims = "";
   function heartbeat() {
+    // SPA navigation — Twitch navigates client-side; reset detection on URL change.
+    if (location.href !== lastUrl) {
+      lastUrl = location.href;
+      detectedGame = null;
+    }
+    detectTwitchGame();
+
     const { video, total, visible } = findBestVideo();
     window.__streamOverlayStats = { total, visible, attached: !!currentVideo };
     if (currentVideo) {
@@ -1291,10 +1332,24 @@
     setTimeout(() => { toast.style.opacity = "0"; setTimeout(() => toast.remove(), 300); }, 2500);
   }
 
+  // --- React to active profile changes made in the popup --------------------
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local" || !changes[ACTIVE_PROFILE_KEY]) return;
+    const next = changes[ACTIVE_PROFILE_KEY].newValue;
+    if (!next) return;
+    const cur = activeProfile || DEFAULT_PROFILE;
+    if (next.gameId !== cur.gameId || next.profileId !== cur.profileId) {
+      console.log(`[overlay/content] profile changed to ${next.gameId}/${next.profileId}, reloading`);
+      loadProfile();
+    }
+  });
+
   // --- Messages from background ---------------------------------------------
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg && msg.type === "capture-trigger") { startCaptureMode(); sendResponse({ ok: true }); }
+    if (msg && msg.type === "get-game") { sendResponse({ game: detectedGame }); }
     return true;
   });
 

@@ -42,30 +42,46 @@ export default {
       return json({ ok: false, error: "Invalid JSON" }, 400);
     }
 
-    const { gameId, profileId, trigger, mode = "add" } = body;
+    const { gameId, profileId, trigger, mode = "add", gameName, twitchSlug, newProfileId, newProfileName } = body;
 
-    if (!gameId || !profileId || !trigger?.payloads) {
-      return json({ ok: false, error: "Missing required fields" }, 400);
-    }
-
-    if (mode === "add") {
-      if (!trigger.references?.length) {
-        return json({ ok: false, error: "Missing references array" }, 400);
+    if (mode === "create-profile") {
+      if (!gameId || !gameName) {
+        return json({ ok: false, error: "Missing gameId or gameName for create-profile" }, 400);
       }
-      if (!trigger.references[0]?.dataUrl) {
-        return json({ ok: false, error: "Missing reference image" }, 400);
+      if (!newProfileId) {
+        return json({ ok: false, error: "Missing newProfileId for create-profile" }, 400);
       }
-    }
-
-    if (mode === "update" && !trigger.id) {
-      return json({ ok: false, error: "Missing trigger id for update" }, 400);
+    } else {
+      if (!gameId || !profileId || !trigger) {
+        return json({ ok: false, error: "Missing required fields" }, 400);
+      }
+      if (mode !== "remove" && !trigger.payloads) {
+        return json({ ok: false, error: "Missing trigger payloads" }, 400);
+      }
+      if (mode === "add") {
+        if (!trigger.references?.length) {
+          return json({ ok: false, error: "Missing references array" }, 400);
+        }
+        if (!trigger.references[0]?.dataUrl) {
+          return json({ ok: false, error: "Missing reference image" }, 400);
+        }
+      }
+      if ((mode === "update" || mode === "remove") && !trigger.id) {
+        return json({ ok: false, error: `Missing trigger id for ${mode}` }, 400);
+      }
     }
 
     try {
       const gh = githubClient(env.GITHUB_TOKEN);
+      if (mode === "create-profile") {
+        const profileUrl = await createProfile(gh, gameId, gameName, twitchSlug || gameId, newProfileId, newProfileName || newProfileId);
+        return json({ ok: true, profileUrl, profileId: newProfileId, profileName: newProfileName || newProfileId });
+      }
       const prUrl = mode === "update"
         ? await updateTrigger(gh, gameId, profileId, trigger)
-        : await addTrigger(gh, gameId, profileId, trigger);
+        : mode === "remove"
+          ? await removeTrigger(gh, gameId, profileId, trigger)
+          : await addTrigger(gh, gameId, profileId, trigger);
       return json({ ok: true, prUrl });
     } catch (err) {
       console.error(`${mode}Trigger failed:`, err.message);
@@ -176,6 +192,87 @@ async function updateTrigger(gh, gameId, profileId, trigger) {
   });
 
   return pr.html_url;
+}
+
+async function removeTrigger(gh, gameId, profileId, trigger) {
+  const profilePath = `games/${gameId}/profiles/${profileId}`;
+  const triggerId = trigger.id;
+  const branchName = `remove/${triggerId}-${Date.now()}`;
+
+  const baseSha = await getMainSha(gh);
+  await gh(`repos/${OWNER}/${REPO}/git/refs`, "POST", {
+    ref: `refs/heads/${branchName}`,
+    sha: baseSha,
+  });
+
+  const { file: profileFile, profile } = await readProfile(gh, profilePath, branchName);
+
+  const idx = profile.triggers.findIndex(t => t.id === triggerId);
+  if (idx === -1) throw new Error(`Trigger "${triggerId}" not found in profile`);
+
+  const removed = profile.triggers.splice(idx, 1)[0];
+  const title = removed.payloads?.[0]?.title || triggerId;
+
+  await writeProfile(gh, profilePath, profile, profileFile.sha, branchName,
+    `fix: remove trigger "${title}"`);
+
+  const pr = await gh(`repos/${OWNER}/${REPO}/pulls`, "POST", {
+    title: `Remove trigger: ${title}`,
+    body: prBody("Requested removal of a trigger via Stream Genie.", gameId, profileId, [
+      `**Trigger ID:** ${triggerId}`,
+    ]),
+    head: branchName,
+    base: BASE,
+  });
+
+  return pr.html_url;
+}
+
+async function createProfile(gh, gameId, gameName, twitchSlug, profileId, profileName) {
+  const profilePath = `games/${gameId}/profiles/${profileId}`;
+  const profileUrl  = `https://cdn.jsdelivr.net/gh/${OWNER}/${REPO}@main/${profilePath}/profile.json`;
+
+  // Fail fast if this specific profile already exists on main.
+  try {
+    await gh(`repos/${OWNER}/${REPO}/contents/${profilePath}/profile.json?ref=${BASE}`, "GET");
+    throw new Error(`Profile "${profileId}" for "${gameId}" already exists`);
+  } catch (err) {
+    if (err.message.includes("already exists")) throw err;
+    // 404 = doesn't exist yet, proceed
+  }
+
+  // Commit profile.json directly to main.
+  await gh(`repos/${OWNER}/${REPO}/contents/${profilePath}/profile.json`, "PUT", {
+    message: `feat: create ${gameName} ${profileName} profile`,
+    content: b64encode(JSON.stringify({ triggers: [] }, null, 2)),
+  });
+
+  // Patch catalog.json — add game if new, or add profile to existing game.
+  const catalogFile = await gh(
+    `repos/${OWNER}/${REPO}/contents/catalog.json?ref=${BASE}`, "GET"
+  );
+  const catalog = JSON.parse(b64decode(catalogFile.content));
+  const existingGame = catalog.games.find(g => g.id === gameId);
+  if (existingGame) {
+    if (!existingGame.twitchSlug && twitchSlug) existingGame.twitchSlug = twitchSlug;
+    if (!existingGame.profiles.find(p => p.id === profileId)) {
+      existingGame.profiles.push({ id: profileId, name: profileName, url: profileUrl });
+    }
+  } else {
+    catalog.games.push({
+      id:         gameId,
+      name:       gameName,
+      twitchSlug: twitchSlug,
+      profiles:   [{ id: profileId, name: profileName, url: profileUrl }],
+    });
+  }
+  await gh(`repos/${OWNER}/${REPO}/contents/catalog.json`, "PUT", {
+    message: `feat: add ${profileName} profile for ${gameName}`,
+    content: b64encode(JSON.stringify(catalog, null, 2)),
+    sha:     catalogFile.sha,
+  });
+
+  return profileUrl;
 }
 
 // ---------------------------------------------------------------------------
