@@ -69,10 +69,12 @@
   // --- Game detection -------------------------------------------------------
 
   function detectTwitchGame() {
-    // Twitch renders the active game as a link to /directory/category/<slug>
-    const link = document.querySelector(
-      'a[href*="/directory/category/"], a[href*="/directory/game/"]'
-    );
+    // Prefer the stream-info panel link (stable data-a-target); fall back to the
+    // first match inside <main> to avoid sidebar recommendations picking up the wrong game.
+    const link =
+      document.querySelector('[data-a-target="stream-game-link"]') ||
+      document.querySelector('main a[href*="/directory/category/"], main a[href*="/directory/game/"]') ||
+      document.querySelector('a[href*="/directory/category/"], a[href*="/directory/game/"]');
     if (!link) return;
     const href = link.getAttribute("href") || "";
     const m = href.match(/\/directory\/(?:category|game)\/([^/?#]+)/);

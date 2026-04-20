@@ -65,6 +65,15 @@ const contributorCodeKey = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
     // Network unavailable — fallback catalog still works
   }
 
+  // Seed twitchSlugs from FALLBACK_CATALOG — CDN may not have them yet and the fetch
+  // above overwrites FALLBACK_CATALOG, so we always re-apply the known mappings.
+  for (const fallback of FALLBACK_CATALOG) {
+    const existing = CATALOG.find(g => g.gameId === fallback.gameId);
+    if (existing && !existing.twitchSlug && fallback.twitchSlug) {
+      existing.twitchSlug = fallback.twitchSlug;
+    }
+  }
+
   // Merge in locally-created profiles (persist across reloads until CDN cache refreshes).
   // Also propagates twitchSlug if CDN entry is missing it, fixing catalogMatch.
   const localCatalogStore = await chrome.storage.local.get(LOCAL_CATALOG_KEY);
@@ -155,7 +164,13 @@ const contributorCodeKey = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
       createProfileBtn.disabled = true;
       createProfileBtn.textContent = "Creating…";
       try {
-        await doCreateProfile(detectedSlug, detectedName || detectedSlug, detectedSlug, "community");
+        // Use the canonical gameId — if detectedSlug is a Twitch category slug for a
+        // known game (e.g. "slay-the-spire-ii" → "slay-the-spire-2"), use that ID.
+        const fbMatch  = FALLBACK_CATALOG.find(g => g.gameId === detectedSlug || g.twitchSlug === detectedSlug);
+        const cId      = fbMatch ? fbMatch.gameId                      : detectedSlug;
+        const cName    = fbMatch ? fbMatch.gameName                    : (detectedName || detectedSlug);
+        const cSlug    = fbMatch ? (fbMatch.twitchSlug || detectedSlug): detectedSlug;
+        await doCreateProfile(cId, cName, cSlug, "community");
         noProfileBanner.style.display = "none";
         detectedEl.textContent = "✓ Profile created — ready to use";
         detectedEl.style.color = "#00f593";
@@ -262,7 +277,8 @@ const contributorCodeKey = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
   }
 
   rebuildProfileSelect();
-  gameSelect.addEventListener("change", rebuildProfileSelect);
+  gameSelect.addEventListener("change", () => { rebuildProfileSelect(); renderTriggers(); });
+  profileSelect.addEventListener("change", renderTriggers);
 
   applyBtn.addEventListener("click", async () => {
     const game = CATALOG.find(g => g.gameId === gameSelect.value);
@@ -348,28 +364,8 @@ const contributorCodeKey = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
     localBtn.textContent = "Delete locally";
     localBtn.onclick = () => deleteLocally(key, idx);
 
-    const prBtn = document.createElement("button");
-    prBtn.className = "delete-btn";
-    prBtn.style.cssText = "border-color:#9146ff;color:#9146ff;";
-    prBtn.textContent = "Delete + request removal from profile";
-    prBtn.onclick = async () => {
-      prBtn.textContent = "Submitting…";
-      prBtn.disabled = true;
-      try {
-        const prUrl = await submitRemoval(trigger);
-        await deleteLocally(key, idx);
-        console.log("[overlay/popup] removal PR:", prUrl);
-      } catch (err) {
-        prBtn.textContent = "Failed — try again";
-        prBtn.disabled = false;
-        msg.textContent = `Error: ${err.message}`;
-        msg.style.color = "#ff5c5c";
-      }
-    };
-
     btns.appendChild(cancelBtn);
     btns.appendChild(localBtn);
-    btns.appendChild(prBtn);
     confirmRow.appendChild(btns);
 
     row.parentNode.replaceChild(confirmRow, row);
@@ -443,12 +439,18 @@ const contributorCodeKey = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
 
   // --- Saved triggers ---
   async function renderTriggers() {
-    const listEl    = document.getElementById("triggers-list");
-    const labelEl   = document.getElementById("profile-label");
-    labelEl.textContent = active.name;
+    const listEl  = document.getElementById("triggers-list");
+    const labelEl = document.getElementById("profile-label");
+    // Always reflect the selected dropdowns so the user sees the right list
+    // even before clicking Apply.
+    const gId  = gameSelect.value || active.gameId;
+    const pId  = profileSelect.value || active.profileId;
+    const game = CATALOG.find(g => g.gameId === gId);
+    const prof = game?.profiles.find(p => p.id === pId);
+    labelEl.textContent = prof?.name || active.name;
     listEl.innerHTML = "";
 
-    const key = userTriggersKey(active.gameId, active.profileId);
+    const key = userTriggersKey(gId, pId);
     const res = await chrome.storage.local.get(key);
     const triggers = res[key] || [];
 
