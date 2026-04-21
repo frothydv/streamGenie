@@ -497,4 +497,23 @@ const contributorCodeKey = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
 
   renderTriggers();
   renderContributorStatus();
+
+  // --- Interference Settings ---
+  const globalDisableExtEl = document.getElementById("global-disable-ext");
+  if (globalDisableExtEl) {
+    const extKey = "streamGenie_global_disable_ext";
+    chrome.storage.local.get(extKey).then(res => {
+      globalDisableExtEl.checked = !!res[extKey];
+    });
+    globalDisableExtEl.addEventListener("change", async () => {
+      await chrome.storage.local.set({ [extKey]: globalDisableExtEl.checked });
+      // Clear all channel-specific preferences when the global toggle is changed
+      if (globalDisableExtEl.checked) {
+        chrome.storage.local.get(null, items => {
+          const keysToRemove = Object.keys(items).filter(k => k.startsWith("streamGenie_ext_pref_"));
+          if (keysToRemove.length > 0) chrome.storage.local.remove(keysToRemove);
+        });
+      }
+    });
+  }
 })();

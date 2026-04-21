@@ -71,6 +71,14 @@
   let lastUrl = location.href;
   let firstRunHintDone = false;
 
+  // --- Extension Interference State ---
+  let extensionToggleUI = null;
+  let disabledElements = [];
+  let extensionsDisabled = false;
+  let extensionInterferenceState = "unknown"; // "unknown", "accepted", "rejected", "auto"
+  let lastExtCount = 0;
+  const EXT_SETTING_PREFIX = "streamGenie_ext_pref_";
+
   // --- Game detection -------------------------------------------------------
 
   function detectTwitchGame() {
@@ -147,14 +155,144 @@
     updateDebugPanelStatus();
   }
 
+  // --- Twitch Extension Interference ----------------------------------------
+
+  function detectTwitchExtensions() {
+    const iframes = Array.from(document.querySelectorAll("iframe"));
+    const exts = iframes.filter(f => f.src && (f.src.includes("ext-twitch.tv") || f.src.includes("extension")));
+    const containers = new Set();
+    exts.forEach(f => {
+      containers.add(f);
+      let p = f.parentElement;
+      if (p && (p.className.includes("extension") || p.classList.contains("video-player__overlay"))) {
+        containers.add(p);
+      }
+    });
+    return Array.from(containers);
+  }
+
+  function disableTwitchExtensions(exts) {
+    if (!exts) exts = detectTwitchExtensions();
+    for (const el of exts) {
+      if (!el.dataset) continue;
+      if (el.dataset.sgOrigPointerEvents === undefined) {
+        el.dataset.sgOrigPointerEvents = el.style.pointerEvents || '';
+      }
+      el.style.pointerEvents = 'none';
+      if (!disabledElements.includes(el)) disabledElements.push(el);
+    }
+    extensionsDisabled = true;
+  }
+
+  function enableTwitchExtensions() {
+    if (!disabledElements) return; // safety
+    for (const el of disabledElements) {
+      if (!el.dataset) continue;
+      el.style.pointerEvents = el.dataset.sgOrigPointerEvents || '';
+      delete el.dataset.sgOrigPointerEvents;
+    }
+    disabledElements = [];
+    extensionsDisabled = false;
+  }
+
+  async function maybeShowExtensionWarning() {
+    if (extensionInterferenceState !== "unknown") {
+       if (extensionInterferenceState === "accepted" || extensionInterferenceState === "auto") {
+          disableTwitchExtensions(); // reapplies to dynamically loaded DOM nodes
+       }
+       return;
+    }
+    const exts = detectTwitchExtensions();
+    if (exts.length === 0) return;
+    if (exts.length === lastExtCount) return;
+    lastExtCount = exts.length;
+
+    const currentChannel = location.pathname.split("/").filter(p => p)[0] || "unknown";
+    
+    const storageKeys = ["streamGenie_global_disable_ext", EXT_SETTING_PREFIX + currentChannel];
+    const storage = await chrome.storage.local.get(storageKeys);
+    
+    if (storage.streamGenie_global_disable_ext) {
+       extensionInterferenceState = "auto";
+       disableTwitchExtensions(exts);
+       return;
+    }
+
+    const channelSetting = storage[EXT_SETTING_PREFIX + currentChannel];
+    if (channelSetting !== undefined) {
+       if (channelSetting === true) {
+           extensionInterferenceState = "accepted";
+           disableTwitchExtensions(exts);
+           return;
+       } else if (channelSetting === false) {
+           extensionInterferenceState = "rejected";
+           return;
+       }
+    }
+
+    showExtensionWarningUI(currentChannel, exts.length);
+  }
+
+  function showExtensionWarningUI(channelName, count) {
+    if (extensionToggleUI) return;
+    
+    extensionToggleUI = document.createElement("div");
+    Object.assign(extensionToggleUI.style, {
+      position: "fixed", top: "16px", left: "50%", transform: "translateX(-50%)",
+      padding: "12px 16px", background: "rgba(24,24,27,0.95)", border: "1px solid #f5a623",
+      borderRadius: "8px", color: "#efeff1", fontFamily: "sans-serif", fontSize: "13px",
+      zIndex: "2147483647", display: "flex", flexDirection: "column", gap: "8px",
+      boxShadow: "0 4px 12px rgba(0,0,0,0.5)", width: "max-content", maxWidth: "450px"
+    });
+
+    extensionToggleUI.innerHTML = `
+      <div><strong style="color:#f5a623;">⚡ Potential Interference Detected (${count})</strong></div>
+      <div style="font-size:11px; color:#adadb8; line-height:1.4;">
+        Active Twitch Extensions may block StreamGenie's ability to "see" your mouse.
+        <span style="display:block; margin-top:4px;"><strong>Tip:</strong> Open the StreamGenie debug panel to check coordinate alignment.</span>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px; margin-top:4px;">
+        <button id="sg-ext-btn-disable" style="background:#00f593; color:#000; border:none; padding:6px 10px; border-radius:4px; font-weight:bold; cursor:pointer;">Disable Overlays</button>
+        <button id="sg-ext-btn-ignore"  style="background:#333; color:#efeff1; border:none; padding:6px 10px; border-radius:4px; cursor:pointer; font-weight:bold;">Ignore</button>
+        <label style="font-size:11px; color:#adadb8; margin-left:auto; display:flex; align-items:center; cursor:pointer;">
+          <input type="checkbox" id="sg-ext-chk-remember" style="margin-right:4px;" /> Remember for ${channelName}
+        </label>
+      </div>
+    `;
+    document.body.appendChild(extensionToggleUI);
+
+    document.getElementById("sg-ext-btn-disable").onclick = async () => {
+      const remember = document.getElementById("sg-ext-chk-remember").checked;
+      if (remember) await chrome.storage.local.set({ [EXT_SETTING_PREFIX + channelName]: true });
+      extensionInterferenceState = "accepted";
+      disableTwitchExtensions();
+      extensionToggleUI.remove();
+      extensionToggleUI = null;
+      showToast("Twitch extensions disabled for StreamGenie.", "ok");
+    };
+
+    document.getElementById("sg-ext-btn-ignore").onclick = async () => {
+      const remember = document.getElementById("sg-ext-chk-remember").checked;
+      if (remember) await chrome.storage.local.set({ [EXT_SETTING_PREFIX + channelName]: false });
+      extensionInterferenceState = "rejected";
+      extensionToggleUI.remove();
+      extensionToggleUI = null;
+    };
+  }
+
   let lastKnownVideoDims = "";
   function heartbeat() {
     // SPA navigation — Twitch navigates client-side; reset detection on URL change.
     if (location.href !== lastUrl) {
       lastUrl = location.href;
       detectedGame = null;
+      enableTwitchExtensions();
+      extensionInterferenceState = "unknown";
+      lastExtCount = 0;
+      if (extensionToggleUI) { extensionToggleUI.remove(); extensionToggleUI = null; }
     }
     detectTwitchGame();
+    maybeShowExtensionWarning();
 
     const { video, total, visible } = findBestVideo();
     window.__streamOverlayStats = { total, visible, attached: !!currentVideo };

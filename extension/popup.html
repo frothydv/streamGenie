@@ -149,6 +149,16 @@
     <div class="section-title">Saved Triggers (<span id="profile-label">—</span>)</div>
     <div id="triggers-list"></div>
 
+    <hr class="divider" />
+    <div class="section-title">Overlay Settings</div>
+    <div style="background:#1f1f23; border-radius:4px; padding:6px 8px; margin-bottom:12px; display:flex; align-items:flex-start;">
+        <input type="checkbox" id="global-disable-ext" style="cursor:pointer; margin:2px 8px 0 0;" />
+        <label for="global-disable-ext" style="cursor:pointer; font-size:11px; flex:1; color:#efeff1;">
+            <strong>Auto-disable Twitch Extensions</strong>
+            <div class="hint" style="margin-top:2px;">Disables pointer events on Twitch overlays (like Slay the Relics) globally so StreamGenie works everywhere.</div>
+        </label>
+    </div>
+
     <script src="popup.js"></script>
   </body>
 </html>
