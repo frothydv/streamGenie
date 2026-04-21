@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>StreamGenie Matching Performance Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background: #1e1e1e;
+            color: #fff;
+        }
+        #testCanvas {
+            border: 1px solid #444;
+            image-rendering: pixelated;
+        }
+        #controls {
+            margin: 20px 0;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            background: #444;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #555;
+        }
+        #results {
+            margin-top: 20px;
+            font-family: monospace;
+            white-space: pre-wrap;
+        }
+        .result-item {
+            margin: 5px 0;
+            padding: 5px;
+            background: #2a2a2a;
+            border-radius: 4px;
+        }
+        .success {
+            color: #4ade80;
+        }
+        .failure {
+            color: #f87171;
+        }
+        .warning {
+            color: #fbbf24;
+        }
+    </style>
+</head>
+<body>
+    <h1>StreamGenie Matching Performance Test</h1>
+
+    <div id="controls">
+        <button onclick="generateTestImage()">Generate Test Image</button>
+        <button onclick="runTest()" id="runTestBtn">Run Test</button>
+        <button onclick="clearResults()">Clear Results</button>
+    </div>
+
+    <canvas id="testCanvas" width="1920" height="1080"></canvas>
+
+    <div id="results"></div>
+
+    <script>
+        // Load the STS2 test profile
+        const profile = {
+            triggers: [
+                {
+                    id: "block-potion",
+                    payloads: [{ title: "Block Potion", text: "Gain 12 Block", popupOffset: { x: -27, y: 19 } }],
+                    references: [
+                        { file: "block-potion-1776685464686.png", w: 38, h: 39, srcW: 1280, srcH: 720 }
+                    ]
+                },
+                {
+                    id: "floor",
+                    payloads: [{ title: "Floor", text: "The # of the floor...", popupOffset: { x: -28, y: 17 } }],
+                    references: [
+                        { file: "floor-1776685557484.png", w: 30, h: 35, srcW: 1280, srcH: 720 }
+                    ]
+                },
+                {
+                    id: "run-timer",
+                    payloads: [{ title: "Run Timer", text: "Amount of time since the run began", popupOffset: { x: -28, y: 25 } }],
+                    references: [
+                        { file: "run-timer-1776685705005.png", w: 45, h: 45, srcW: 1920, srcH: 1080 }
+                    ]
+                },
+                {
+                    id: "players-gold",
+                    payloads: [{ title: "Players Gold! $$$", text: "", popupOffset: { x: 58, y: -20 } }],
+                    references: [
+                        { file: "players-gold-1776694471215.png", w: 51, h: 55, srcW: 1920, srcH: 1080 }
+                    ]
+                }
+            ]
+        };
+
+        // Reference images - we'll load these dynamically
+        const referenceImages = {};
+        let testCanvas, testCtx;
+        let testImageGenerated = false;
+
+        // Initialize
+        window.onload = function() {
+            testCanvas = document.getElementById('testCanvas');
+            testCtx = testCanvas.getContext('2d');
+
+            // Load reference images
+            loadReferenceImages();
+        };
+
+        async function loadReferenceImages() {
+            const loadPromises = profile.triggers.map(trigger => {
+                return new Promise((resolve, reject) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        referenceImages[trigger.id] = img;
+                        resolve();
+                    };
+                    img.onerror = reject;
+                    // Use the actual path to reference images
+                    img.src = `../streamGenieProfiles/games/slay-the-spire-2/profiles/sts2-test/references/${trigger.references[0].file}`;
+                });
+            });
+
+            try {
+                await Promise.all(loadPromises);
+                console.log('All reference images loaded');
+            } catch (error) {
+                console.error('Failed to load reference images:', error);
+            }
+        }
+
+        function generateTestImage() {
+            if (Object.keys(referenceImages).length === 0) {
+                alert('Reference images not loaded yet');
+                return;
+            }
+
+            // Clear canvas
+            testCtx.fillStyle = '#000';
+            testCtx.fillRect(0, 0, testCanvas.width, testCanvas.height);
+
+            // Place triggers at known positions
+            const testPositions = {
+                "block-potion": { x: 100, y: 100 },
+                "floor": { x: 500, y: 200 },
+                "run-timer": { x: 900, y: 300 },
+                "players-gold": { x: 1500, y: 400 }
+            };
+
+            // Draw each trigger at its position
+            Object.entries(testPositions).forEach(([triggerId, pos]) => {
+                const img = referenceImages[triggerId];
+                if (img) {
+                    testCtx.drawImage(img, pos.x, pos.y);
+                    // Store the expected position for testing
+                    testCanvas.dataset[`expected_${triggerId}`] = JSON.stringify(pos);
+                }
+            });
+
+            testImageGenerated = true;
+            console.log('Test image generated with triggers at known positions');
+        }
+
+        function simulatePerceptualHash(imageData) {
+            // Simplified dHash implementation for testing
+            const pixels = imageData.data;
+            const width = imageData.width;
+            const height = imageData.height;
+
+            // Convert to grayscale and resize to 9x8 for dHash
+            const grayData = [];
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const i = (y * width + x) * 4;
+                    const gray = pixels[i] * 0.299 + pixels[i + 1] * 0.587 + pixels[i + 2] * 0.114;
+                    grayData.push(gray);
+                }
+            }
+
+            // Resize to 9x8 using simple averaging
+            const smallW = 9, smallH = 8;
+            const smallData = [];
+            const blockW = width / smallW;
+            const blockH = height / smallH;
+
+            for (let y = 0; y < smallH; y++) {
+                for (let x = 0; x < smallW; x++) {
+                    let sum = 0;
+                    let count = 0;
+
+                    for (let dy = 0; dy < blockH; dy++) {
+                        for (let dx = 0; dx < blockW; dx++) {
+                            const srcX = Math.floor(x * blockW + dx);
+                            const srcY = Math.floor(y * blockH + dy);
+                            if (srcX < width && srcY < height) {
+                                sum += grayData[srcY * width + srcX];
+                                count++;
+                            }
+                        }
+                    }
+
+                    smallData.push(sum / count);
+                }
+            }
+
+            // Generate 64-bit hash
+            let hash = 0n;
+            for (let y = 0; y < smallH; y++) {
+                for (let x = 0; x < smallW - 1; x++) {
+                    const idx = y * smallW + x;
+                    const bit = smallData[idx] > smallData[idx + 1] ? 1n : 0n;
+                    hash = (hash << 1n) | bit;
+                }
+            }
+
+            return hash;
+        }
+
+        function hashDistance(hash1, hash2) {
+            const xor = hash1 ^ hash2;
+            let dist = 0;
+            let temp = xor;
+
+            while (temp > 0) {
+                dist += temp & 1;
+                temp >>= 1n;
+            }
+
+            return dist;
+        }
+
+        function runTest() {
+            if (!testImageGenerated) {
+                alert('Please generate test image first');
+                return;
+            }
+
+            const results = [];
+            const gridSize = 10;
+            const startTime = performance.now();
+
+            // Test at grid points across the canvas
+            for (let y = 0; y < testCanvas.height; y += gridSize) {
+                for (let x = 0; x < testCanvas.width; x += gridSize) {
+                    // Capture region around this point
+                    const captureSize = 160;
+                    const half = captureSize / 2;
+
+                    if (x - half >= 0 && x + half <= testCanvas.width &&
+                        y - half >= 0 && y + half <= testCanvas.height) {
+
+                        const imageData = testCtx.getImageData(x - half, y - half, captureSize, captureSize);
+
+                        // Test each trigger
+                        profile.triggers.forEach(trigger => {
+                            const ref = trigger.references[0];
+                            const refImg = referenceImages[trigger.id];
+
+                            if (refImg) {
+                                // Simulate sliding window search for small references
+                                const scaleW = captureSize / ref.srcW;
+                                const scaleH = captureSize / ref.srcH;
+                                const scaledW = Math.floor(ref.w * scaleW);
+                                const scaledH = Math.floor(ref.h * scaleH);
+
+                                let bestMatch = null;
+                                let bestDistance = 64;
+
+                                // Simple sliding window (for testing)
+                                if (scaledW < captureSize && scaledH < captureSize) {
+                                    for (let wy = 0; wy <= captureSize - scaledH; wy += 5) {
+                                        for (let wx = 0; wx <= captureSize - scaledW; wx += 5) {
+                                            const region = testCtx.getImageData(
+                                                x - half + wx,
+                                                y - half + wy,
+                                                scaledW,
+                                                scaledH
+                                            );
+
+                                            // For simplicity, just check if center matches
+                                            const centerDist = Math.abs(x - (x - half + wx + scaledW/2)) +
+                                                             Math.abs(y - (y - half + wy + scaledH/2));
+
+                                            if (centerDist < bestDistance) {
+                                                bestDistance = centerDist;
+                                                bestMatch = { x: x - half + wx, y: y - half + wy };
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Check if we're close to expected position
+                                const expected = JSON.parse(testCanvas.dataset[`expected_${trigger.id}`]);
+                                const distToExpected = Math.abs(x - expected.x) + Math.abs(y - expected.y);
+
+                                if (distToExpected < 50) { // Within 50 pixels
+                                    results.push({
+                                        x, y,
+                                        trigger: trigger.id,
+                                        expected: expected,
+                                        matched: distToExpected < 50,
+                                        distance: distToExpected
+                                    });
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+
+            const endTime = performance.now();
+            const totalTime = endTime - startTime;
+
+            // Display results
+            displayResults(results, totalTime);
+        }
+
+        function displayResults(results, totalTime) {
+            const resultsDiv = document.getElementById('results');
+            let html = `Test completed in ${totalTime.toFixed(2)}ms\n`;
+            html += `Grid points tested: ${results.length}\n\n`;
+
+            // Group results by trigger
+            const grouped = {};
+            results.forEach(r => {
+                if (!grouped[r.trigger]) grouped[r.trigger] = [];
+                grouped[r.trigger].push(r);
+            });
+
+            Object.entries(grouped).forEach(([trigger, matches]) => {
+                const success = matches.filter(m => m.matched).length;
+                const total = matches.length;
+
+                html += `Trigger: ${trigger}\n`;
+                html += `  Success rate: ${success}/${total} (${(success/total*100).toFixed(1)}%)\n`;
+
+                // Show sample matches
+                matches.slice(0, 5).forEach(r => {
+                    const status = r.matched ? 'success' : 'failure';
+                    html += `    ${status}: (${r.x}, ${r.y}) - expected near (${r.expected.x}, ${r.expected.y}) dist=${r.distance}\n`;
+                });
+
+                html += '\n';
+            });
+
+            // Performance metrics
+            const pointsPerSecond = (results.length / totalTime) * 1000;
+            html += `\nPerformance: ${pointsPerSecond.toFixed(0)} grid points/second`;
+
+            resultsDiv.innerHTML = `<pre class="result-item">${html}</pre>`;
+        }
+
+        function clearResults() {
+            document.getElementById('results').innerHTML = '';
+        }
+    </script>
+</body>
+</html>
