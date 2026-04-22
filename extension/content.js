@@ -11,21 +11,28 @@
 
   // --- Config ---------------------------------------------------------------
 
+  const MatcherCore = globalThis.StreamGenieMatcher;
+  if (!MatcherCore) {
+    console.error("[overlay/content] matcher core failed to load");
+    return;
+  }
+
   const CAPTURE_SIZE = 160;
   const CAPTURE_INTERVAL_MS = 100;     // throttle mouse-driven captures (10Hz)
   const HEARTBEAT_MS = 500;
   const MIN_VIDEO_SIZE = 100;
-  const MATCH_THRESHOLD_RATIO = 10 / 64; // unmasked references preserve old 10/64 cutoff
-  const MASKED_MATCH_THRESHOLD_RATIO = 6 / 64; // masked refs need a tighter cutoff to avoid false positives
-  const MASK_VERIFY_GRID = 16;
-  const MASK_VERIFY_THRESHOLD = 0.16; // average grayscale delta / 255 for masked refs
-  const SLIDE_STEP = 1;                // 1px step — ensures no alignment misses
+  const MATCH_THRESHOLD_RATIO = MatcherCore.DEFAULTS.matchThresholdRatio;
+  const MASKED_MATCH_THRESHOLD_RATIO = MatcherCore.DEFAULTS.maskedMatchThresholdRatio;
+  const MASK_VERIFY_GRID = MatcherCore.DEFAULTS.maskVerifyGrid;
+  const MASK_VERIFY_THRESHOLD = MatcherCore.DEFAULTS.maskVerifyThreshold;
+  const SLIDE_STEP = MatcherCore.DEFAULTS.slideStep;
   const MIN_REF_PX = 8;               // only skip truly microscopic refs
-  const MIN_MASKED_BITS = 16;         // reject masks that leave too little signal
+  const MIN_MASKED_BITS = MatcherCore.DEFAULTS.minMaskedBits;
   // Both reference and each capture window are normalised through this virtual
   // size before hashing, so small refs produce equally discriminative hashes.
-  const CANONICAL_SIZE = 32;
+  const CANONICAL_SIZE = MatcherCore.DEFAULTS.canonicalSize;
   const FIRST_RUN_KEY = "streamGenie_first_run_shown";
+  const matcher = MatcherCore.createMatcher({ captureSize: CAPTURE_SIZE });
 
   // --- Profile config -------------------------------------------------------
 
@@ -391,180 +398,31 @@
   // or GPU ops. This avoids the hundreds of getImageData calls that were
   // stalling the main thread and making captures appear to lag behind the cursor.
 
-  // Reusable scratch buffer — avoids GC pressure inside the hot matching loop.
-  const _gray = new Float32Array(72); // 9×8
-  const _allBitMask = new Uint8Array(64).fill(1);
+  const _allBitMask = matcher.allBitMask;
+  const captureGrayBuffer = matcher.createGrayBuffer();
 
-  // Compute 64-bit dHash for a region of a flat RGBA pixel array.
-  // Samples 9×8 positions mapped through CANONICAL_SIZE so that small and large
-  // windows are compared at the same effective density as the reference hash.
   function dHashFromPixels(pixels, srcW, sx, sy, sw, sh) {
-    for (let dy = 0; dy < 8; dy++) {
-      for (let dx = 0; dx < 9; dx++) {
-        const cx = Math.floor((dx * CANONICAL_SIZE) / 9);
-        const cy = Math.floor((dy * CANONICAL_SIZE) / 8);
-        const px = sx + Math.floor((cx * sw) / CANONICAL_SIZE);
-        const py = sy + Math.floor((cy * sh) / CANONICAL_SIZE);
-        const i = (py * srcW + px) * 4;
-        _gray[dy * 9 + dx] = 0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2];
-      }
-    }
-    const bits = new Uint8Array(64);
-    for (let y = 0; y < 8; y++) {
-      for (let x = 0; x < 8; x++) {
-        bits[y * 8 + x] = _gray[y * 9 + x + 1] > _gray[y * 9 + x] ? 1 : 0;
-      }
-    }
-    return bits;
-  }
-
-  // Same, but computes distance against a known refHash in one pass without
-  // allocating a new Uint8Array — used in the hot sliding-window loop.
-  function dHashDistFromPixels(pixels, srcW, sx, sy, sw, sh, refHash, refBitMask, refValidBits) {
-    for (let dy = 0; dy < 8; dy++) {
-      for (let dx = 0; dx < 9; dx++) {
-        const cx = Math.floor((dx * CANONICAL_SIZE) / 9);
-        const cy = Math.floor((dy * CANONICAL_SIZE) / 8);
-        const px = sx + Math.floor((cx * sw) / CANONICAL_SIZE);
-        const py = sy + Math.floor((cy * sh) / CANONICAL_SIZE);
-        const i = (py * srcW + px) * 4;
-        _gray[dy * 9 + dx] = 0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2];
-      }
-    }
-    let dist = 0;
-    const mask = refBitMask || _allBitMask;
-    const validBits = refValidBits ?? 64;
-    if (validBits < MIN_MASKED_BITS) return { dist: 64, validBits, ratio: 1 };
-    for (let i = 0; i < 64; i++) {
-      if (!mask[i]) continue;
-      const y = Math.floor(i / 8);
-      const x = i % 8;
-      const bit = _gray[y * 9 + x + 1] > _gray[y * 9 + x] ? 1 : 0;
-      if (bit !== refHash[i]) dist++;
-    }
-    return { dist, validBits, ratio: dist / validBits };
+    return matcher.dHashFromPixels(pixels, srcW, sx, sy, sw, sh);
   }
 
   function maskBitsFromPixels(maskPixels, srcW, sx, sy, sw, sh) {
-    const bits = new Uint8Array(64);
-    let validBits = 0;
-    for (let y = 0; y < 8; y++) {
-      for (let x = 0; x < 8; x++) {
-        const leftCx = Math.floor((x * CANONICAL_SIZE) / 9);
-        const rightCx = Math.floor(((x + 1) * CANONICAL_SIZE) / 9);
-        const cy = Math.floor((y * CANONICAL_SIZE) / 8);
-        const leftPx = sx + Math.floor((leftCx * sw) / CANONICAL_SIZE);
-        const rightPx = sx + Math.floor((rightCx * sw) / CANONICAL_SIZE);
-        const py = sy + Math.floor((cy * sh) / CANONICAL_SIZE);
-        const leftA = maskPixels[(py * srcW + leftPx) * 4 + 3];
-        const rightA = maskPixels[(py * srcW + rightPx) * 4 + 3];
-        const idx = y * 8 + x;
-        bits[idx] = (leftA >= 128 && rightA >= 128) ? 1 : 0;
-        validBits += bits[idx];
-      }
-    }
-    return { bits, validBits };
+    return matcher.maskBitsFromPixels(maskPixels, srcW, sx, sy, sw, sh);
   }
 
   function buildVerifyRefFromPixels(refPixels, maskPixels) {
-    const gray = new Float32Array(MASK_VERIFY_GRID * MASK_VERIFY_GRID);
-    const mask = new Uint8Array(MASK_VERIFY_GRID * MASK_VERIFY_GRID);
-    let active = 0;
-    for (let y = 0; y < MASK_VERIFY_GRID; y++) {
-      for (let x = 0; x < MASK_VERIFY_GRID; x++) {
-        const px = Math.min(CANONICAL_SIZE - 1, Math.floor(((x + 0.5) * CANONICAL_SIZE) / MASK_VERIFY_GRID));
-        const py = Math.min(CANONICAL_SIZE - 1, Math.floor(((y + 0.5) * CANONICAL_SIZE) / MASK_VERIFY_GRID));
-        const idx = y * MASK_VERIFY_GRID + x;
-        const pixelIdx = (py * CANONICAL_SIZE + px) * 4;
-        gray[idx] = 0.299 * refPixels[pixelIdx] + 0.587 * refPixels[pixelIdx + 1] + 0.114 * refPixels[pixelIdx + 2];
-        const alpha = maskPixels ? maskPixels[pixelIdx + 3] : 255;
-        mask[idx] = alpha >= 128 ? 1 : 0;
-        active += mask[idx];
-      }
-    }
-    return { gray, mask, active };
-  }
-
-  function maskedVerifyScoreFromPixels(pixels, srcW, sx, sy, sw, sh, refVerifyGray, refVerifyMask, refVerifyActive) {
-    if (!refVerifyGray || !refVerifyMask || !refVerifyActive) return { score: 1, active: 0 };
-    let total = 0;
-    for (let y = 0; y < MASK_VERIFY_GRID; y++) {
-      for (let x = 0; x < MASK_VERIFY_GRID; x++) {
-        const idx = y * MASK_VERIFY_GRID + x;
-        if (!refVerifyMask[idx]) continue;
-        const px = sx + Math.min(sw - 1, Math.max(0, Math.floor(((x + 0.5) * sw) / MASK_VERIFY_GRID)));
-        const py = sy + Math.min(sh - 1, Math.max(0, Math.floor(((y + 0.5) * sh) / MASK_VERIFY_GRID)));
-        const pixelIdx = (py * srcW + px) * 4;
-        const gray = 0.299 * pixels[pixelIdx] + 0.587 * pixels[pixelIdx + 1] + 0.114 * pixels[pixelIdx + 2];
-        total += Math.abs(gray - refVerifyGray[idx]);
-      }
-    }
-    return { score: total / (refVerifyActive * 255), active: refVerifyActive };
-  }
-
-  // Slide a reference entry across the capture pixels, return best position + distance.
-  function slidingWindowMatch(ref, capturePixels) {
-    const { refHash, refBitMask, refValidBits, w, h } = ref;
-    if (!refHash || w > CAPTURE_SIZE || h > CAPTURE_SIZE) {
-      return { dist: 64, ratio: 1, validBits: refValidBits ?? 64, x: 0, y: 0 };
-    }
-    let best = { dist: 64, ratio: 1, validBits: refValidBits ?? 64, x: 0, y: 0 };
-    for (let y = 0; y <= CAPTURE_SIZE - h; y += SLIDE_STEP) {
-      for (let x = 0; x <= CAPTURE_SIZE - w; x += SLIDE_STEP) {
-        const result = dHashDistFromPixels(capturePixels, CAPTURE_SIZE, x, y, w, h, refHash, refBitMask, refValidBits);
-        if (
-          result.ratio < best.ratio ||
-          (result.ratio === best.ratio && result.dist < best.dist)
-        ) {
-          best = { ...result, x, y };
-        }
-      }
-    }
-    return best;
+    return matcher.buildVerifyRefFromPixels(refPixels, maskPixels);
   }
 
   function matchThresholdForRef(ref) {
-    return ref && ref.refValidBits < 64 ? MASKED_MATCH_THRESHOLD_RATIO : MATCH_THRESHOLD_RATIO;
+    return matcher.matchThresholdForRef(ref);
   }
 
   function verifyThresholdForRef(ref) {
-    return ref && ref.refValidBits < 64 ? MASK_VERIFY_THRESHOLD : null;
+    return matcher.verifyThresholdForRef(ref);
   }
 
-  // Run all triggers/references in a single pass. Returns the overall best result.
-  function findBestMatch(capturePixels) {
-    let best = null;
-    const candidates = [];
-    for (const trigger of TRIGGERS) {
-      if (!trigger.references) continue;
-      for (const ref of trigger.references) {
-        if (!ref.refHash) continue;
-        const result = slidingWindowMatch(ref, capturePixels);
-        const threshold = matchThresholdForRef(ref);
-        const verify = ref.refVerifyGray
-          ? maskedVerifyScoreFromPixels(capturePixels, CAPTURE_SIZE, result.x, result.y, ref.w, ref.h, ref.refVerifyGray, ref.refVerifyMask, ref.refVerifyActive)
-          : null;
-        const verifyThreshold = verifyThresholdForRef(ref);
-        candidates.push({
-          title: trigger.payloads?.[0]?.title || trigger.id,
-          dist: result.dist,
-          ratio: result.ratio,
-          validBits: result.validBits,
-          threshold,
-          verifyScore: verify ? verify.score : null,
-          verifyThreshold,
-        });
-        if (
-          !best ||
-          result.ratio < best.ratio ||
-          (result.ratio === best.ratio && result.dist < best.dist)
-        ) {
-          best = { trigger, ref, ...result, verifyScore: verify ? verify.score : null, verifyActive: verify ? verify.active : 0 };
-        }
-      }
-    }
-    candidates.sort((a, b) => a.ratio - b.ratio || a.dist - b.dist);
-    return { best, candidates: candidates.slice(0, 3) }; // best may be null
+  function findBestMatch(capturePixels, captureGray) {
+    return matcher.findBestMatch(TRIGGERS, capturePixels, captureGray);
   }
 
   // --- Profile loading ------------------------------------------------------
@@ -700,16 +558,17 @@
       ref.refBitMask = maskBits.bits;
       ref.refValidBits = maskBits.validBits;
       const verifyRef = buildVerifyRefFromPixels(px, maskPx);
-      ref.refVerifyGray = verifyRef.gray;
+      ref.refVerifyValues = verifyRef.values;
       ref.refVerifyMask = verifyRef.mask;
       ref.refVerifyActive = verifyRef.active;
       if (ref.refValidBits < MIN_MASKED_BITS) ref.refHash = null;
     } else {
       ref.refBitMask = new Uint8Array(_allBitMask);
       ref.refValidBits = 64;
-      ref.refVerifyGray = null;
-      ref.refVerifyMask = null;
-      ref.refVerifyActive = 0;
+      const verifyRef = buildVerifyRefFromPixels(px, null);
+      ref.refVerifyValues = verifyRef.values;
+      ref.refVerifyMask = verifyRef.mask;
+      ref.refVerifyActive = verifyRef.active;
     }
   }
 
@@ -1865,12 +1724,13 @@
 
     // Single getImageData read — all matching runs against this array.
     const capturePixels = captureCtx.getImageData(0, 0, CAPTURE_SIZE, CAPTURE_SIZE).data;
-    const matchResult = findBestMatch(capturePixels);
+    matcher.fillGrayBuffer(capturePixels, captureGrayBuffer);
+    const matchResult = findBestMatch(capturePixels, captureGrayBuffer);
     const best = matchResult.best;
-    const threshold = best ? matchThresholdForRef(best.ref) : MATCH_THRESHOLD_RATIO;
-    const verifyThreshold = best ? verifyThresholdForRef(best.ref) : null;
-    const verifyOk = verifyThreshold == null || (best && best.verifyScore != null && best.verifyScore <= verifyThreshold);
-    if (best && best.ratio <= threshold && best.validBits >= MIN_MASKED_BITS && verifyOk) {
+    const threshold = best ? best.threshold : MATCH_THRESHOLD_RATIO;
+    const verifyThreshold = best ? best.verifyThreshold : null;
+    const verifyOk = !best || best.matched;
+    if (best && verifyOk) {
       const label = best.trigger.payloads ? best.trigger.payloads[0].title : best.trigger.id;
       lastMatchInfo = {
         title: label,

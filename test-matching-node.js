@@ -2,18 +2,13 @@
 const fs = require("fs");
 const path = require("path");
 const { PNG } = require("pngjs");
+const MatcherCore = require("./extension/matcher-core.js");
 
-const CAPTURE_SIZE = 160;
-const CANONICAL_SIZE = 32;
-const MASK_VERIFY_GRID = 16;
-const MATCH_THRESHOLD_RATIO = 10 / 64;
-const MASKED_MATCH_THRESHOLD_RATIO = 6 / 64;
-const MASK_VERIFY_THRESHOLD = 0.16;
-const SLIDE_STEP = 1;
-const MIN_MASKED_BITS = 16;
-
-const _gray = new Float32Array(72);
-const _allBitMask = new Uint8Array(64).fill(1);
+const CAPTURE_SIZE = MatcherCore.DEFAULTS.captureSize;
+const CANONICAL_SIZE = MatcherCore.DEFAULTS.canonicalSize;
+const MIN_MASKED_BITS = MatcherCore.DEFAULTS.minMaskedBits;
+const matcher = MatcherCore.createMatcher({ captureSize: CAPTURE_SIZE });
+const _allBitMask = matcher.allBitMask;
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
@@ -32,114 +27,55 @@ function clonePng(image) {
   });
 }
 
-function dHashFromPixels(pixels, srcW, sx, sy, sw, sh) {
-  for (let dy = 0; dy < 8; dy++) {
-    for (let dx = 0; dx < 9; dx++) {
-      const cx = Math.floor((dx * CANONICAL_SIZE) / 9);
-      const cy = Math.floor((dy * CANONICAL_SIZE) / 8);
-      const px = sx + Math.floor((cx * sw) / CANONICAL_SIZE);
-      const py = sy + Math.floor((cy * sh) / CANONICAL_SIZE);
-      const i = (py * srcW + px) * 4;
-      _gray[dy * 9 + dx] = 0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2];
+function resampleImageLinear(image, targetWidth, targetHeight) {
+  const data = new Uint8ClampedArray(targetWidth * targetHeight * 4);
+  const srcW = image.width;
+  const srcH = image.height;
+  for (let y = 0; y < targetHeight; y++) {
+    const srcY = ((y + 0.5) * srcH) / targetHeight - 0.5;
+    const y0 = Math.max(0, Math.floor(srcY));
+    const y1 = Math.min(srcH - 1, y0 + 1);
+    const fy = Math.max(0, Math.min(1, srcY - y0));
+    for (let x = 0; x < targetWidth; x++) {
+      const srcX = ((x + 0.5) * srcW) / targetWidth - 0.5;
+      const x0 = Math.max(0, Math.floor(srcX));
+      const x1 = Math.min(srcW - 1, x0 + 1);
+      const fx = Math.max(0, Math.min(1, srcX - x0));
+      const dstIdx = (y * targetWidth + x) * 4;
+      const idx00 = (y0 * srcW + x0) * 4;
+      const idx10 = (y0 * srcW + x1) * 4;
+      const idx01 = (y1 * srcW + x0) * 4;
+      const idx11 = (y1 * srcW + x1) * 4;
+      for (let c = 0; c < 4; c++) {
+        const top = image.data[idx00 + c] * (1 - fx) + image.data[idx10 + c] * fx;
+        const bottom = image.data[idx01 + c] * (1 - fx) + image.data[idx11 + c] * fx;
+        data[dstIdx + c] = Math.round(top * (1 - fy) + bottom * fy);
+      }
     }
   }
-  const bits = new Uint8Array(64);
-  for (let y = 0; y < 8; y++) {
-    for (let x = 0; x < 8; x++) {
-      bits[y * 8 + x] = _gray[y * 9 + x + 1] > _gray[y * 9 + x] ? 1 : 0;
-    }
-  }
-  return bits;
+  return { width: targetWidth, height: targetHeight, data };
 }
 
-function dHashDistFromPixels(pixels, srcW, sx, sy, sw, sh, refHash, refBitMask, refValidBits) {
-  for (let dy = 0; dy < 8; dy++) {
-    for (let dx = 0; dx < 9; dx++) {
-      const cx = Math.floor((dx * CANONICAL_SIZE) / 9);
-      const cy = Math.floor((dy * CANONICAL_SIZE) / 8);
-      const px = sx + Math.floor((cx * sw) / CANONICAL_SIZE);
-      const py = sy + Math.floor((cy * sh) / CANONICAL_SIZE);
-      const i = (py * srcW + px) * 4;
-      _gray[dy * 9 + dx] = 0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2];
-    }
-  }
-  const mask = refBitMask || _allBitMask;
-  const validBits = refValidBits ?? 64;
-  if (validBits < MIN_MASKED_BITS) return { dist: 64, validBits, ratio: 1 };
-  let dist = 0;
-  for (let i = 0; i < 64; i++) {
-    if (!mask[i]) continue;
-    const y = Math.floor(i / 8);
-    const x = i % 8;
-    const bit = _gray[y * 9 + x + 1] > _gray[y * 9 + x] ? 1 : 0;
-    if (bit !== refHash[i]) dist++;
-  }
-  return { dist, validBits, ratio: dist / validBits };
-}
-
-function maskBitsFromPixels(maskPixels, srcW, sx, sy, sw, sh) {
-  const bits = new Uint8Array(64);
-  let validBits = 0;
-  for (let y = 0; y < 8; y++) {
-    for (let x = 0; x < 8; x++) {
-      const leftCx = Math.floor((x * CANONICAL_SIZE) / 9);
-      const rightCx = Math.floor(((x + 1) * CANONICAL_SIZE) / 9);
-      const cy = Math.floor((y * CANONICAL_SIZE) / 8);
-      const leftPx = sx + Math.floor((leftCx * sw) / CANONICAL_SIZE);
-      const rightPx = sx + Math.floor((rightCx * sw) / CANONICAL_SIZE);
-      const py = sy + Math.floor((cy * sh) / CANONICAL_SIZE);
-      const leftA = maskPixels[(py * srcW + leftPx) * 4 + 3];
-      const rightA = maskPixels[(py * srcW + rightPx) * 4 + 3];
-      const idx = y * 8 + x;
-      bits[idx] = (leftA >= 128 && rightA >= 128) ? 1 : 0;
-      validBits += bits[idx];
-    }
-  }
-  return { bits, validBits };
-}
-
-function buildVerifyRefFromPixels(refPixels, maskPixels) {
-  const gray = new Float32Array(MASK_VERIFY_GRID * MASK_VERIFY_GRID);
-  const mask = new Uint8Array(MASK_VERIFY_GRID * MASK_VERIFY_GRID);
-  let active = 0;
-  for (let y = 0; y < MASK_VERIFY_GRID; y++) {
-    for (let x = 0; x < MASK_VERIFY_GRID; x++) {
-      const px = Math.min(CANONICAL_SIZE - 1, Math.floor(((x + 0.5) * CANONICAL_SIZE) / MASK_VERIFY_GRID));
-      const py = Math.min(CANONICAL_SIZE - 1, Math.floor(((y + 0.5) * CANONICAL_SIZE) / MASK_VERIFY_GRID));
-      const idx = y * MASK_VERIFY_GRID + x;
-      const pixelIdx = (py * CANONICAL_SIZE + px) * 4;
-      gray[idx] = 0.299 * refPixels[pixelIdx] + 0.587 * refPixels[pixelIdx + 1] + 0.114 * refPixels[pixelIdx + 2];
-      const alpha = maskPixels ? maskPixels[pixelIdx + 3] : 255;
-      mask[idx] = alpha >= 128 ? 1 : 0;
-      active += mask[idx];
-    }
-  }
-  return { gray, mask, active };
-}
-
-function maskedVerifyScoreFromPixels(pixels, srcW, sx, sy, sw, sh, refVerifyGray, refVerifyMask, refVerifyActive) {
-  if (!refVerifyGray || !refVerifyMask || !refVerifyActive) return { score: 1, active: 0 };
-  let total = 0;
-  for (let y = 0; y < MASK_VERIFY_GRID; y++) {
-    for (let x = 0; x < MASK_VERIFY_GRID; x++) {
-      const idx = y * MASK_VERIFY_GRID + x;
-      if (!refVerifyMask[idx]) continue;
-      const px = sx + Math.min(sw - 1, Math.max(0, Math.floor(((x + 0.5) * sw) / MASK_VERIFY_GRID)));
-      const py = sy + Math.min(sh - 1, Math.max(0, Math.floor(((y + 0.5) * sh) / MASK_VERIFY_GRID)));
-      const pixelIdx = (py * srcW + px) * 4;
-      const gray = 0.299 * pixels[pixelIdx] + 0.587 * pixels[pixelIdx + 1] + 0.114 * pixels[pixelIdx + 2];
-      total += Math.abs(gray - refVerifyGray[idx]);
-    }
-  }
-  return { score: total / (refVerifyActive * 255), active: refVerifyActive };
+function scaleFixture(fixture, scaleX, scaleY) {
+  if (scaleX === 1 && scaleY === 1) return fixture;
+  return {
+    ...fixture,
+    regions: (fixture.regions || []).map((region) => ({
+      ...region,
+      x: Math.round(region.x * scaleX),
+      y: Math.round(region.y * scaleY),
+      w: Math.max(1, Math.round(region.w * scaleX)),
+      h: Math.max(1, Math.round(region.h * scaleY)),
+    })),
+  };
 }
 
 function matchThresholdForRef(ref) {
-  return ref.refValidBits < 64 ? MASKED_MATCH_THRESHOLD_RATIO : MATCH_THRESHOLD_RATIO;
+  return matcher.matchThresholdForRef(ref);
 }
 
 function verifyThresholdForRef(ref) {
-  return ref.refValidBits < 64 ? MASK_VERIFY_THRESHOLD : null;
+  return matcher.verifyThresholdForRef(ref);
 }
 
 function profileDirFromFixture(fixture, repoRoot) {
@@ -188,7 +124,7 @@ function buildReferenceRuntime(ref, profileDir, targetVideoWidth) {
     h = Math.max(1, Math.round((ref.h || image.height) * scale));
   }
 
-  const refHash = dHashFromPixels(image.data, image.width, 0, 0, image.width, image.height);
+  const refHash = matcher.dHashFromPixels(image.data, image.width, 0, 0, image.width, image.height);
 
   let refBitMask = new Uint8Array(_allBitMask);
   let refValidBits = 64;
@@ -198,11 +134,16 @@ function buildReferenceRuntime(ref, profileDir, targetVideoWidth) {
 
   const maskPixels = loadMaskPixels(ref);
   if (maskPixels) {
-    const maskBits = maskBitsFromPixels(maskPixels, image.width, 0, 0, image.width, image.height);
+    const maskBits = matcher.maskBitsFromPixels(maskPixels, image.width, 0, 0, image.width, image.height);
     refBitMask = maskBits.bits;
     refValidBits = maskBits.validBits;
-    const verify = buildVerifyRefFromPixels(image.data, maskPixels);
-    refVerifyGray = verify.gray;
+    const verify = matcher.buildVerifyRefFromPixels(image.data, maskPixels);
+    refVerifyGray = verify.values;
+    refVerifyMask = verify.mask;
+    refVerifyActive = verify.active;
+  } else {
+    const verify = matcher.buildVerifyRefFromPixels(image.data, null);
+    refVerifyGray = verify.values;
     refVerifyMask = verify.mask;
     refVerifyActive = verify.active;
   }
@@ -213,22 +154,24 @@ function buildReferenceRuntime(ref, profileDir, targetVideoWidth) {
     origH: image.height,
     w,
     h,
-    refHash,
-    refBitMask,
-    refValidBits,
-    refVerifyGray,
-    refVerifyMask,
-    refVerifyActive,
-  };
+      refHash,
+      refBitMask,
+      refValidBits,
+      refVerifyValues: refVerifyGray,
+      refVerifyMask,
+      refVerifyActive,
+    };
 }
 
 function extractCapturePixels(image, centerX, centerY) {
   const pixels = new Uint8ClampedArray(CAPTURE_SIZE * CAPTURE_SIZE * 4);
   const half = CAPTURE_SIZE / 2;
+  const startX = Math.max(0, Math.min(image.width - CAPTURE_SIZE, Math.round(centerX - half)));
+  const startY = Math.max(0, Math.min(image.height - CAPTURE_SIZE, Math.round(centerY - half)));
   for (let cy = 0; cy < CAPTURE_SIZE; cy++) {
     for (let cx = 0; cx < CAPTURE_SIZE; cx++) {
-      const srcX = centerX - half + cx;
-      const srcY = centerY - half + cy;
+      const srcX = startX + cx;
+      const srcY = startY + cy;
       const srcIdx = (srcY * image.width + srcX) * 4;
       const dstIdx = (cy * CAPTURE_SIZE + cx) * 4;
       pixels[dstIdx] = image.data[srcIdx];
@@ -238,25 +181,6 @@ function extractCapturePixels(image, centerX, centerY) {
     }
   }
   return pixels;
-}
-
-function slidingWindowMatch(ref, capturePixels) {
-  if (!ref.refHash || ref.w > CAPTURE_SIZE || ref.h > CAPTURE_SIZE) {
-    return { dist: 64, ratio: 1, validBits: ref.refValidBits ?? 64, x: 0, y: 0, verifyScore: null };
-  }
-  let best = { dist: 64, ratio: 1, validBits: ref.refValidBits ?? 64, x: 0, y: 0, verifyScore: null };
-  for (let y = 0; y <= CAPTURE_SIZE - ref.h; y += SLIDE_STEP) {
-    for (let x = 0; x <= CAPTURE_SIZE - ref.w; x += SLIDE_STEP) {
-      const result = dHashDistFromPixels(capturePixels, CAPTURE_SIZE, x, y, ref.w, ref.h, ref.refHash, ref.refBitMask, ref.refValidBits);
-      if (result.ratio < best.ratio || (result.ratio === best.ratio && result.dist < best.dist)) {
-        const verify = ref.refVerifyGray
-          ? maskedVerifyScoreFromPixels(capturePixels, CAPTURE_SIZE, x, y, ref.w, ref.h, ref.refVerifyGray, ref.refVerifyMask, ref.refVerifyActive)
-          : null;
-        best = { ...result, x, y, verifyScore: verify ? verify.score : null };
-      }
-    }
-  }
-  return best;
 }
 
 function classifyPoint(regions, x, y, defaultRegion) {
@@ -279,9 +203,10 @@ function analyzeFixture(fixture, image, refs) {
   const points = [];
   const scanPoints = [];
   const startedAt = Date.now();
+  const captureGrayBuffer = matcher.createGrayBuffer();
 
-  for (let y = CAPTURE_SIZE / 2; y < image.height - CAPTURE_SIZE / 2; y += step) {
-    for (let x = CAPTURE_SIZE / 2; x < image.width - CAPTURE_SIZE / 2; x += step) {
+  for (let y = 0; y < image.height; y += step) {
+    for (let x = 0; x < image.width; x += step) {
       const region = classifyPoint(regions, x, y, defaultRegion);
       if (region.type !== "ignore") scanPoints.push({ x, y, region });
     }
@@ -295,14 +220,9 @@ function analyzeFixture(fixture, image, refs) {
     const { x, y, region } = scanPoints[index];
 
     const capturePixels = extractCapturePixels(image, x, y);
+    matcher.fillGrayBuffer(capturePixels, captureGrayBuffer);
     const candidates = refs.map((ref) => {
-      const match = slidingWindowMatch(ref, capturePixels);
-      const hashThreshold = matchThresholdForRef(ref);
-      const verifyThreshold = verifyThresholdForRef(ref);
-      const matched =
-        match.ratio <= hashThreshold &&
-        match.validBits >= MIN_MASKED_BITS &&
-        (verifyThreshold == null || (match.verifyScore != null && match.verifyScore <= verifyThreshold));
+      const match = matcher.evaluateReference(ref, capturePixels, captureGrayBuffer);
       return {
         triggerId: ref.triggerId,
         title: ref.title,
@@ -310,11 +230,16 @@ function analyzeFixture(fixture, image, refs) {
         dist: match.dist,
         validBits: match.validBits,
         verifyScore: match.verifyScore,
-        hashThreshold,
-        verifyThreshold,
-        matched,
+        score: match.score,
+        hashThreshold: match.threshold,
+        verifyThreshold: match.verifyThreshold,
+        matched: match.matched,
       };
-    }).sort((a, b) => a.ratio - b.ratio || a.dist - b.dist);
+    }).sort((a, b) => {
+      if (a.matched !== b.matched) return a.matched ? -1 : 1;
+      if (a.score !== b.score) return a.score - b.score;
+      return a.ratio - b.ratio || a.dist - b.dist;
+    });
 
     const best = candidates[0];
     const point = { x, y, region: region.name, expected: region.triggerId || null, type: region.type, best, top3: candidates.slice(0, 3) };
@@ -493,13 +418,24 @@ async function main() {
   const repoRoot = __dirname;
   const fixture = readJson(path.resolve(repoRoot, fixturePath));
   const profileDir = profileDirFromFixture(fixture, repoRoot);
-  const image = pngToImageData(path.resolve(repoRoot, fixture.imagePath));
+  const rawImage = pngToImageData(path.resolve(repoRoot, fixture.imagePath));
+  let image = rawImage;
+  let workingFixture = fixture;
+  if (fixture.videoWidth && rawImage.width !== fixture.videoWidth) {
+    const targetWidth = fixture.videoWidth;
+    const targetHeight = fixture.videoHeight || Math.round((rawImage.height * targetWidth) / rawImage.width);
+    image = resampleImageLinear(rawImage, targetWidth, targetHeight);
+    const scaleX = targetWidth / rawImage.width;
+    const scaleY = targetHeight / rawImage.height;
+    workingFixture = scaleFixture(fixture, scaleX, scaleY);
+    console.log(`Normalized screenshot from ${rawImage.width}x${rawImage.height} to source-space ${targetWidth}x${targetHeight}`);
+  }
   const rawRefs = loadProfileReferences(profileDir);
   const refs = rawRefs.map((ref) => buildReferenceRuntime(ref, profileDir, fixture.videoWidth || image.width));
 
-  const analysis = analyzeFixture(fixture, image, refs);
-  printReport(fixture, analysis);
-  writeVisualization(path.resolve(repoRoot, fixturePath), image, fixture, analysis);
+  const analysis = analyzeFixture(workingFixture, image, refs);
+  printReport(workingFixture, analysis);
+  writeVisualization(path.resolve(repoRoot, fixturePath), image, workingFixture, analysis);
 }
 
 main().catch((err) => {
