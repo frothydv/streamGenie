@@ -1,0 +1,40 @@
+{
+  "name": "sts2-grid-match-template",
+  "imagePath": "tests/fixtures/sample-image.png",
+  "gameId": "slay-the-spire-2",
+  "profileId": "community",
+  "videoWidth": 1280,
+  "gridStep": 5,
+  "defaultRegion": {
+    "name": "uncategorized",
+    "type": "ignore"
+  },
+  "regions": [
+    {
+      "name": "player-health",
+      "type": "expect",
+      "triggerId": "player-health",
+      "x": 80,
+      "y": 0,
+      "w": 170,
+      "h": 70
+    },
+    {
+      "name": "map-button",
+      "type": "expect",
+      "triggerId": "map-icon",
+      "x": 1810,
+      "y": 0,
+      "w": 130,
+      "h": 90
+    },
+    {
+      "name": "negative-middle",
+      "type": "negative",
+      "x": 700,
+      "y": 300,
+      "w": 300,
+      "h": 180
+    }
+  ]
+}

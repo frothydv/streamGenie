@@ -1,0 +1,90 @@
+{
+  "name": "sts2-topbar-grid-scan",
+  "imagePath": "tests/fixtures/sts2sc.png",
+  "gameId": "slay-the-spire-2",
+  "profileId": "community",
+  "videoWidth": 1920,
+  "gridStep": 5,
+  "defaultRegion": {
+    "name": "uncategorized",
+    "type": "ignore"
+  },
+  "regions": [
+    {
+      "name": "health-negative",
+      "type": "negative",
+      "x": 70,
+      "y": 0,
+      "w": 210,
+      "h": 90
+    },
+    {
+      "name": "gold",
+      "type": "expect",
+      "triggerId": "coin-gold",
+      "x": 300,
+      "y": 0,
+      "w": 170,
+      "h": 95
+    },
+    {
+      "name": "potion-slots-negative",
+      "type": "negative",
+      "x": 540,
+      "y": 0,
+      "w": 300,
+      "h": 95
+    },
+    {
+      "name": "regular-combat",
+      "type": "expect",
+      "triggerId": "regular-combat",
+      "x": 1135,
+      "y": 0,
+      "w": 105,
+      "h": 95
+    },
+    {
+      "name": "current-floor",
+      "type": "expect",
+      "triggerId": "current-floor",
+      "x": 1235,
+      "y": 0,
+      "w": 205,
+      "h": 95
+    },
+    {
+      "name": "map",
+      "type": "expect",
+      "triggerId": "map-icon",
+      "x": 2260,
+      "y": 0,
+      "w": 220,
+      "h": 100
+    },
+    {
+      "name": "left-relics-negative",
+      "type": "negative",
+      "x": 20,
+      "y": 70,
+      "w": 280,
+      "h": 180
+    },
+    {
+      "name": "upper-cards-negative",
+      "type": "negative",
+      "x": 760,
+      "y": 170,
+      "w": 520,
+      "h": 260
+    },
+    {
+      "name": "lower-cards-negative",
+      "type": "negative",
+      "x": 980,
+      "y": 720,
+      "w": 520,
+      "h": 260
+    }
+  ]
+}
