@@ -2056,8 +2056,95 @@
   // --- Messages from background ---------------------------------------------
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (msg && msg.type === "capture-trigger") { startCaptureMode(); sendResponse({ ok: true }); }
+    console.log("[content] Received message:", msg);
+
+    // Handle ping message
+    if (msg && msg.type === "ping") {
+      console.log("[content] Ping received, responding");
+      sendResponse({ pong: true, loaded: true });
+      return true;
+    }
+
+    if (msg && msg.type === "capture-trigger") {
+      if (video && !editorModalOpen) {
+        startCaptureMode();
+        sendResponse({ ok: true });
+      } else {
+        sendResponse({ ok: false, error: "No video or editor open" });
+      }
+    }
     if (msg && msg.type === "get-game") { sendResponse({ game: detectedGame }); }
+    if (msg && msg.type === "edit-trigger") {
+      console.log("[content] Edit trigger request received");
+      if (!editorModalOpen) {
+        const trigger = msg.trigger;
+        console.log("[content] Full trigger object:", JSON.stringify(trigger, null, 2));
+        console.log("[content] Processing trigger for edit:", trigger.id);
+        // Load the reference image
+        const ref = trigger.references?.[0];
+        if (ref) {
+          console.log("[content] Found reference:", JSON.stringify(ref, null, 2));
+
+          // Try different possible URL properties
+          let imageUrl = ref.dataUrl || ref.imageDataUrl;
+
+          // If no dataUrl but we have a filename, construct the URL
+          if (!imageUrl && ref.file) {
+            // Get the profile URL to construct the base path
+            const profileUrl = activeProfile?.url || DEFAULT_PROFILE.url;
+            const baseUrl = profileBaseUrl(profileUrl);
+            imageUrl = baseUrl + "references/" + ref.file;
+            console.log("[content] Constructed URL from filename:", imageUrl);
+          }
+
+          console.log("[content] Image URL to load:", imageUrl);
+
+          // Create a canvas to draw the reference at the original size
+          const canvas = document.createElement("canvas");
+          canvas.width = ref.w || ref.origW || 160;
+          canvas.height = ref.h || ref.origH || 160;
+          const ctx = canvas.getContext("2d");
+
+          // Draw the reference image
+          const img = new Image();
+          img.crossOrigin = "anonymous"; // Allow loading from CDN
+          img.onload = () => {
+            console.log("[content] Image loaded successfully");
+            ctx.drawImage(img, 0, 0);
+            const dataUrl = canvas.toDataURL("image/png");
+            console.log("[content] Canvas converted to data URL");
+
+            // Open the editor with the trigger data
+            openTriggerEditor(dataUrl, {
+              videoW: ref.srcW || 1920,
+              videoH: ref.srcH || 1080,
+              cropW: ref.w || ref.origW || 160,
+              cropH: ref.h || ref.origH || 160,
+            }, { mode: "edit", trigger });
+            sendResponse({ success: true });
+          };
+          img.onerror = (err) => {
+            console.error("[content] Failed to load reference image:", err);
+            // Try to construct a URL for web-accessible resources
+            if (ref.file && !ref.file.startsWith('http')) {
+              const fullUrl = chrome.runtime.getURL('references/' + ref.file);
+              console.log("[content] Trying web accessible resource:", fullUrl);
+              img.src = fullUrl;
+            } else {
+              sendResponse({ success: false, error: "Failed to load reference image" });
+            }
+          };
+          img.src = imageUrl;
+        } else {
+          console.error("[content] No reference image found in trigger.references");
+          console.log("[content] Available trigger properties:", Object.keys(trigger));
+          sendResponse({ success: false, error: "No reference image found" });
+        }
+      } else {
+        console.error("[content] Cannot edit trigger: Editor already open");
+        sendResponse({ success: false, error: "Editor already open" });
+      }
+    }
     return true;
   });
 

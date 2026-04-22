@@ -140,6 +140,7 @@ const contributorCodeKey = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
   const newProfileCancel   = document.getElementById("new-profile-cancel");
   const newProfileNote     = document.getElementById("new-profile-note");
 
+
   // Match detectedSlug against gameId OR twitchSlug (Twitch slugs often differ from our IDs).
   const catalogMatch = detectedSlug
     ? CATALOG.find(g => g.gameId === detectedSlug || g.twitchSlug === detectedSlug)
@@ -455,25 +456,50 @@ const contributorCodeKey = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
     labelEl.textContent = prof?.name || active.name;
     listEl.innerHTML = "";
 
+    // Get local triggers
     const key = userTriggersKey(gId, pId);
     const res = await chrome.storage.local.get(key);
-    const triggers = res[key] || [];
+    const localTriggers = res[key] || [];
 
-    if (triggers.length === 0) {
+    // Load remote profile triggers
+    let remoteTriggers = [];
+    try {
+      if (prof?.url) {
+        const profileRes = await fetch(prof.url, { cache: "no-cache" });
+        if (profileRes.ok) {
+          const profileData = await profileRes.json();
+          remoteTriggers = profileData.triggers || [];
+        }
+      }
+    } catch (err) {
+      console.warn("[overlay/popup] Failed to load remote profile:", err);
+    }
+
+    // Combine all triggers, marking local ones
+    const allTriggers = [
+      ...remoteTriggers.map(t => ({ ...t, source: "profile" })),
+      ...localTriggers.map(t => ({ ...t, source: "local" }))
+    ];
+
+    if (allTriggers.length === 0) {
       const note = document.createElement("div");
       note.className = "empty-note";
-      note.textContent = "No saved triggers yet.";
+      note.textContent = "No triggers found.";
       listEl.appendChild(note);
       return;
     }
 
-    triggers.forEach((trigger, idx) => {
+    allTriggers.forEach((trigger, idx) => {
       const first = (trigger.payloads || [])[0] || {};
       const label = first.title || first.text || trigger.id;
       const extras = (trigger.payloads || []).length - 1;
+      const sourceBadge = trigger.source === "local" ? "[Local]" : "[Profile]";
 
       const row = document.createElement("div");
       row.className = "trigger-row";
+
+      const labelContainer = document.createElement("div");
+      labelContainer.style.cssText = "display:flex;align-items:center;gap:6px;flex:1;";
 
       const labelEl = document.createElement("div");
       labelEl.className = "trigger-label";
@@ -484,12 +510,26 @@ const contributorCodeKey = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
         labelEl.appendChild(sm);
       }
 
+      const sourceEl = document.createElement("small");
+      sourceEl.textContent = sourceBadge;
+      sourceEl.style.cssText = "color:" + (trigger.source === "local" ? "#00f593" : "#adadb8");
+
+      labelContainer.appendChild(labelEl);
+      labelContainer.appendChild(sourceEl);
+
+      const editBtn = document.createElement("button");
+      editBtn.className = "edit-btn";
+      editBtn.textContent = "Edit";
+      editBtn.onclick = () => openTriggerEditorFromPopup(trigger);
+
       const delBtn = document.createElement("button");
       delBtn.className = "delete-btn";
       delBtn.textContent = "Delete";
-      delBtn.onclick = () => showDeleteConfirm(row, trigger, idx, key);
+      delBtn.style.display = trigger.source === "local" ? "block" : "none";
+      delBtn.onclick = () => showDeleteConfirm(row, trigger, localTriggers.indexOf(trigger), key);
 
-      row.appendChild(labelEl);
+      row.appendChild(labelContainer);
+      row.appendChild(editBtn);
       row.appendChild(delBtn);
       listEl.appendChild(row);
     });
@@ -515,5 +555,60 @@ const contributorCodeKey = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
         });
       }
     });
+  }
+
+  async function openTriggerEditorFromPopup(trigger) {
+    if (!currentTab) {
+      alert("No active tab found. Please open a Twitch page first.");
+      return;
+    }
+
+    console.log("[popup] Attempting to open trigger editor for trigger:", trigger.id);
+    console.log("[popup] Current tab URL:", currentTab.url);
+
+    try {
+      // First, check if the content script is loaded by trying to get a simple response
+      console.log("[popup] Checking if content script is loaded...");
+      const checkResponse = await new Promise((resolve, reject) => {
+        chrome.tabs.sendMessage(currentTab.id, { type: "ping" }, (r) => {
+          if (chrome.runtime.lastError) {
+            reject(chrome.runtime.lastError);
+          } else {
+            resolve(r);
+          }
+        });
+      });
+
+      console.log("[popup] Content script check response:", checkResponse);
+      console.log("[popup] Sending trigger object:", JSON.stringify(trigger, null, 2));
+
+      // Now try to send the edit trigger message
+      const resp = await new Promise((resolve, reject) => {
+        console.log("[popup] Sending edit-trigger message to tab", currentTab.id);
+        chrome.tabs.sendMessage(currentTab.id, {
+          type: "edit-trigger",
+          trigger: trigger
+        }, (r) => {
+          console.log("[popup] Response received:", r, "Error:", chrome.runtime.lastError);
+          if (chrome.runtime.lastError) {
+            console.error("[popup] Runtime error:", chrome.runtime.lastError.message);
+            reject(chrome.runtime.lastError);
+          } else {
+            resolve(r);
+          }
+        });
+      });
+
+      if (resp?.success) {
+        window.close(); // Close popup after opening editor
+      } else {
+        console.error("[popup] Failed response:", resp);
+        alert("Failed to open trigger editor: " + (resp?.error || "Unknown error"));
+      }
+    } catch (err) {
+      console.error("[popup] Failed to open trigger editor:", err);
+      console.error("[popup] Error details:", err.message);
+      alert("Failed to open trigger editor. Make sure you're on a Twitch page with the extension active.\nError: " + err.message);
+    }
   }
 })();
