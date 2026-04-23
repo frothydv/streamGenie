@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Stream Genie (pre-alpha)",
-  "version": "0.6.0",
+  "version": "0.6.5",
   "description": "Hover-to-reveal overlays for Twitch streams. Pre-alpha build.",
   "permissions": [
     "activeTab",
@@ -10,6 +10,7 @@
   "host_permissions": [
     "https://*.twitch.tv/*",
     "https://cdn.jsdelivr.net/*",
+    "https://raw.githubusercontent.com/*",
     "https://*.workers.dev/*"
   ],
   "background": {
