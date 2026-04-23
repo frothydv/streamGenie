@@ -45,9 +45,10 @@
     url:       "https://cdn.jsdelivr.net/gh/frothydv/streamGenieProfiles@main/games/slay-the-spire-2/profiles/community/profile.json",
   };
 
-  const profileCacheKey    = (gId, pId) => `streamGenie_profile_${gId}_${pId}`;
-  const userTriggersKey    = (gId, pId) => `streamGenie_triggers_${gId}_${pId}`;
-  const contributorCodeKey = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
+  const profileCacheKey        = (gId, pId) => `streamGenie_profile_${gId}_${pId}`;
+  const userTriggersKey        = (gId, pId) => `streamGenie_triggers_${gId}_${pId}`;
+  const modifiedTriggersKey     = (gId, pId) => `streamGenie_modified_${gId}_${pId}`;
+  const contributorCodeKey     = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
 
   // --- Worker config --------------------------------------------------------
   // Set WORKER_URL after deploying the Cloudflare Worker (`wrangler deploy`).
@@ -435,6 +436,12 @@
     for (const trigger of TRIGGERS) {
       if (!trigger.references) continue;
       for (const ref of trigger.references) {
+        // Skip if no file and no dataUrl
+        if (!ref.file && !ref.dataUrl) {
+          console.warn(`[DEBUG] Skipping reference with no file and no dataUrl`);
+          continue;
+        }
+
         const img = new Image();
         img.crossOrigin = "anonymous";
         img.onload = () => {
@@ -443,7 +450,7 @@
           ref.origH = img.naturalHeight;
           const finish = () => {
             rehashRef(ref);
-            console.log(`[overlay/content] reference loaded: ${ref.file} (${ref.origW}x${ref.origH})`);
+            console.log(`[overlay/content] reference loaded: ${ref.file || 'data-url'} (${ref.origW}x${ref.origH})`);
             updateDebugPanelStatus();
           };
           if (ref.maskDataUrl) {
@@ -455,17 +462,59 @@
             finish();
           }
         };
-        img.onerror = () => console.warn(`[overlay/content] failed to load reference: ${ref.file}`);
-        img.src = baseUrl + "references/" + ref.file;
+        img.onerror = () => {
+  console.warn(`[overlay/content] failed to load reference: ${ref.file || 'undefined'}`);
+  console.warn(`[DEBUG] ref object:`, {
+    file: ref.file,
+    dataUrl: ref.dataUrl ? 'exists' : 'missing',
+    maskDataUrl: ref.maskDataUrl ? 'exists' : 'missing',
+    w: ref.w,
+    h: ref.h
+  });
+};
+
+        // Use dataUrl if available, otherwise fetch from CDN
+        if (ref.dataUrl) {
+          img.src = ref.dataUrl;
+        } else if (ref.file) {
+          img.src = baseUrl + "references/" + ref.file;
+        } else {
+          console.warn(`[DEBUG] Reference has no dataUrl or file:`, ref);
+        }
       }
     }
   }
 
-  function applyProfile(profile, sourceUrl) {
-    // Preserve in-memory user triggers so background CDN refreshes don't wipe them.
+  async function applyProfile(profile, sourceUrl) {
+    const profileTriggers = profile.triggers.map(t => ({ ...t, source: "profile" }));
     const userTriggers = TRIGGERS.filter(t => t.id && t.id.startsWith("user-"));
-    TRIGGERS = [...profile.triggers.map(t => ({ ...t })), ...userTriggers];
-    console.log(`[overlay/content] profile loaded: ${profile.name} v${profile.version} (${profile.triggers.length} profile + ${userTriggers.length} user)`);
+
+    // Load modified profile triggers from storage (survives page reloads)
+    const modifiedTriggers = await loadModifiedProfileTriggers();
+
+    // Deduplicate: fresh profile triggers are overridden by locally modified versions
+    const mergedMap = new Map();
+    
+    // 1. Profile triggers from CDN (base)
+    profileTriggers.forEach(t => mergedMap.set(t.id, t));
+    
+    // 2. Locally modified profile triggers (override CDN)
+    modifiedTriggers.forEach(t => {
+      t.source = "profile"; 
+      mergedMap.set(t.id, t);
+    });
+    
+    // 3. Locally created user triggers
+    userTriggers.forEach(t => mergedMap.set(t.id, t));
+
+    TRIGGERS = Array.from(mergedMap.values());
+
+    console.log("[DEBUG] Trigger merge:");
+    console.log(`  - Profile triggers: ${profileTriggers.length}`);
+    console.log(`  - Modified triggers: ${modifiedTriggers.length}`);
+    console.log(`  - User triggers: ${userTriggers.length}`);
+    console.log(`  - Total unique: ${TRIGGERS.length}`);
+
     loadReferencesForTriggers(profileBaseUrl(sourceUrl));
     updateDebugPanelStatus();
   }
@@ -479,7 +528,7 @@
       const cached = JSON.parse(localStorage.getItem(cKey) || "null");
       if (cached && Date.now() - cached.ts < PROFILE_CACHE_TTL_MS) {
         console.log("[overlay/content] profile: using cached version");
-        applyProfile(cached.profile, activeProfile.url);
+        await applyProfile(cached.profile, activeProfile.url);
         fetchAndCacheProfile(); // background refresh
         return;
       }
@@ -492,12 +541,15 @@
     const ap = activeProfile || DEFAULT_PROFILE;
     const cKey = profileCacheKey(ap.gameId, ap.profileId);
     try {
-      const res = await fetch(ap.url);
+      // Cache-bust the CDN request to ensure fresh content
+      const url = new URL(ap.url);
+      url.searchParams.set("_cb", Date.now());
+      const res = await fetch(url.toString(), { cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const profile = await res.json();
       localStorage.setItem(cKey, JSON.stringify({ ts: Date.now(), profile }));
-      console.log("[overlay/content] profile: fetched from CDN");
-      applyProfile(profile, ap.url);
+      console.log("[overlay/content] profile: fetched from CDN (cache-busted)");
+      await applyProfile(profile, ap.url);
     } catch (err) {
       console.warn("[overlay/content] profile fetch failed:", err.message);
       try {
@@ -587,7 +639,8 @@
       const ap = activeProfile || DEFAULT_PROFILE;
       const key = userTriggersKey(ap.gameId, ap.profileId);
       const result = await chrome.storage.local.get(key);
-      const saved = result[key] || [];
+      // Only load actual user-created triggers (IDs starting with "user-")
+      const saved = (result[key] || []).filter(t => t.id && t.id.startsWith("user-"));
       for (const trigger of saved) {
         if (!TRIGGERS.find(t => t.id === trigger.id)) {
           TRIGGERS.push(trigger);
@@ -603,7 +656,9 @@
   function loadRefImages(trigger) {
     if (!trigger.references) return;
     for (const ref of trigger.references) {
-      if (!ref.dataUrl) continue;
+      // Skip if no file and no dataUrl
+      if (!ref.file && !ref.dataUrl) continue;
+
       const img = new Image();
       img.onload = () => {
         ref.sourceImg = img;
@@ -652,6 +707,59 @@
     }
   }
 
+  async function saveModifiedProfileTrigger(trigger) {
+    try {
+      const ap = activeProfile || DEFAULT_PROFILE;
+      const key = modifiedTriggersKey(ap.gameId, ap.profileId);
+      const storable = {
+        id: trigger.id,
+        payloads: trigger.payloads,
+        references: trigger.references.map(({ dataUrl, maskDataUrl, file, w, h, srcW, srcH }) => ({ dataUrl, maskDataUrl, file, w, h, srcW, srcH })),
+        _isModified: true,
+      };
+      const result = await chrome.storage.local.get(key);
+      const saved = result[key] || [];
+      const idx = saved.findIndex(t => t.id === trigger.id);
+      if (idx >= 0) saved[idx] = storable;
+      else saved.push(storable);
+      await chrome.storage.local.set({ [key]: saved });
+      console.log(`[overlay/content] modified profile trigger saved: ${trigger.id} (${saved.length} total)`);
+    } catch (e) {
+      console.warn("[overlay/content] failed to save modified trigger:", e.message);
+    }
+  }
+
+  async function loadModifiedProfileTriggers() {
+    try {
+      const ap = activeProfile || DEFAULT_PROFILE;
+      const key = modifiedTriggersKey(ap.gameId, ap.profileId);
+      const result = await chrome.storage.local.get(key);
+      const saved = result[key] || [];
+      const triggers = saved.map(t => ({ ...t, source: "profile" }));
+      console.log(`[overlay/content] modified profile triggers loaded: ${triggers.length}`);
+      return triggers;
+    } catch (e) {
+      console.warn("[overlay/content] failed to load modified triggers:", e.message);
+      return [];
+    }
+  }
+
+  async function cleanupUserTriggers() {
+    try {
+      const ap = activeProfile || DEFAULT_PROFILE;
+      const key = userTriggersKey(ap.gameId, ap.profileId);
+      const result = await chrome.storage.local.get(key);
+      const saved = result[key] || [];
+      const filtered = saved.filter(t => t.id && t.id.startsWith("user-"));
+      if (filtered.length < saved.length) {
+        await chrome.storage.local.set({ [key]: filtered });
+        console.log(`[overlay/content] cleaned up ${saved.length - filtered.length} incorrectly saved profile triggers from user storage`);
+      }
+    } catch (e) {
+      console.warn("[overlay/content] cleanup failed:", e.message);
+    }
+  }
+
   async function submitToProfile(trigger, mode = "add") {
     if (!WORKER_URL) throw new Error("Worker URL not configured");
     const ap = activeProfile || DEFAULT_PROFILE;
@@ -669,6 +777,16 @@
         ({ dataUrl, maskDataUrl, file, w, h, srcW, srcH }) => ({ dataUrl, maskDataUrl, file, w, h, srcW, srcH })
       );
     }
+
+    console.log("[overlay/submit] Submitting trigger payload:", JSON.stringify(triggerPayload, null, 2));
+
+    console.log("[overlay/submit] Sending request to:", WORKER_URL);
+    console.log("[overlay/submit] Request body:", JSON.stringify({
+      gameId: ap.gameId,
+      profileId: ap.profileId,
+      trigger: triggerPayload,
+      mode: mode
+    }, null, 2));
 
     const headers = {
       "Content-Type":    "application/json",
@@ -715,6 +833,15 @@
     const isEdit = opts.mode === "edit";
     // Profile triggers → propose update PR. User triggers → re-submit as add.
     const isProfileEdit = isEdit && !opts.trigger?.id?.startsWith("user-");
+
+    console.log("[DEBUG] === Opening Trigger Editor ===");
+    console.log("[DEBUG] Trigger ID:", opts.trigger?.id);
+    console.log("[DEBUG] Is profile edit:", isProfileEdit);
+    console.log("[DEBUG] Is modified:", !!opts.trigger?._isModified);
+    console.log("[DEBUG] Trigger mask URL:", opts.trigger?.references[0]?.maskDataUrl?.substring(0, 50) + "...");
+    console.log("[DEBUG] Trigger payload title:", opts.trigger?.payloads[0]?.title);
+    console.log("[DEBUG] Trigger payload offset:", opts.trigger?.payloads[0]?.popupOffset);
+
     let destroyMaskEditor = null;
     editorModalOpen = true;
     function closeEditor(message = "Cancelled.", level = "info") {
@@ -772,6 +899,11 @@
     modal.appendChild(refSec);
 
     const initialMaskDataUrl = (isEdit && opts.trigger?.references?.[0]?.maskDataUrl) || null;
+    console.log("[DEBUG] initialMaskDataUrl:", initialMaskDataUrl ? "exists" : "null");
+    if (initialMaskDataUrl) {
+      console.log("[DEBUG] initialMask length:", initialMaskDataUrl.length);
+      console.log("[DEBUG] initialMask preview:", initialMaskDataUrl.substring(0, 50) + "...");
+    }
     const maskSec = document.createElement("div");
     maskSec.style.cssText = "margin-bottom:16px;";
     maskSec.appendChild(editorLabel("Match Mask"));
@@ -899,35 +1031,59 @@
           })),
         };
       }
-      if (isEdit) {
-        // User trigger: preserve ID, carry existing dataUrl references so they can be re-submitted
-        const refs = (opts.trigger.references || []).map(
-          ({ dataUrl: du, maskDataUrl: existingMask, file, w, h, srcW, srcH }, idx) => ({
-            dataUrl: du,
-            maskDataUrl: idx === 0 ? maskDataUrl : (existingMask || null),
-            file,
-            w,
-            h,
-            srcW,
-            srcH,
-          })
-        );
-        return { id: opts.trigger.id, payloads, references: refs };
-      }
-      return {
-        id: "user-" + Date.now(),
+      const trigger = {
+        id: isEdit ? opts.trigger.id : "user-" + Date.now(),
         payloads,
-        references: [{ dataUrl, maskDataUrl, w: meta.cropW, h: meta.cropH, srcW: meta.videoW, srcH: meta.videoH }],
+        references: isEdit ?
+          (opts.trigger.references || []).map(
+            ({ dataUrl: du, maskDataUrl: existingMask, file, w, h, srcW, srcH }, idx) => ({
+              dataUrl: du,
+              maskDataUrl: idx === 0 ? maskDataUrl : (existingMask || null),
+              file,
+              w,
+              h,
+              srcW,
+              srcH,
+            })
+          ) :
+          [{ dataUrl, maskDataUrl, w: meta.cropW, h: meta.cropH, srcW: meta.videoW, srcH: meta.videoH }]
       };
+
+      console.log("[DEBUG] Built trigger with mask:", trigger.id);
+      console.log("[DEBUG] New mask URL:", trigger.references[0]?.maskDataUrl?.substring(0, 50) + "...");
+      console.log("[DEBUG] New payload title:", trigger.payloads[0]?.title);
+      console.log("[DEBUG] New payload offset:", trigger.payloads[0]?.popupOffset);
+
+      // Mark as modified if it's a profile trigger being edited
+      if (isEdit && !opts.trigger.id.startsWith("user-")) {
+        trigger._isModified = true;
+        console.log("[DEBUG] Marked as modified:", trigger._isModified);
+      }
+
+      return trigger;
     }
 
     async function saveLocally(trigger) {
       // Replace in-memory entry if editing an existing trigger, otherwise append.
       const existingIdx = TRIGGERS.findIndex(t => t.id === trigger.id);
-      if (existingIdx >= 0) TRIGGERS[existingIdx] = trigger;
-      else TRIGGERS.push(trigger);
+      if (existingIdx >= 0) {
+        TRIGGERS[existingIdx] = trigger;
+        // Mark as modified if it's not a user trigger
+        if (!trigger.id.startsWith("user-")) {
+          TRIGGERS[existingIdx]._isModified = true;
+        }
+      } else {
+        TRIGGERS.push(trigger);
+      }
       loadRefImages(trigger);
-      await saveUserTrigger(trigger, isEdit);
+      // Only save user-created triggers to user storage.
+      // Profile triggers are managed remotely and preserved via _isModified flag + modifiedTriggers storage.
+      if (trigger.id.startsWith("user-")) {
+        await saveUserTrigger(trigger, isEdit);
+      } else {
+        // Save modified profile trigger to separate storage so it survives page reloads.
+        await saveModifiedProfileTrigger(trigger);
+      }
     }
 
     // Footer
@@ -954,9 +1110,20 @@
         submitBtn.disabled = true;
         cancelBtn.disabled = true;
         try {
+          console.log("[content] About to submit update for trigger:", trigger.id);
+          console.log("[content] Full trigger object before submit:", JSON.stringify(trigger, null, 2));
           const result = await submitToProfile(trigger, "update");
           closeEditor(result.direct ? "Update submitted directly!" : "Update proposed! PR opened.", "ok");
           if (result.prUrl) console.log("[overlay/content] update PR:", result.prUrl);
+
+          // Save modified trigger locally so it survives CDN staleness
+          await saveModifiedProfileTrigger(trigger);
+
+          // Refresh profile cache after successful update
+          console.log("[content] Refreshing profile cache after update...");
+          const cKey = profileCacheKey(activeProfile.gameId, activeProfile.profileId);
+          localStorage.removeItem(cKey); // Clear the cache
+          await fetchAndCacheProfile(); // Fetch fresh profile
         } catch (err) {
           console.error("[overlay/content] update submit FAILED:", err.message, err);
           submitBtn.textContent = "Retry Submit";
@@ -984,6 +1151,12 @@
         const result = await submitToProfile(trigger, "add");
         closeEditor(result.direct ? "Submitted directly!" : "Submitted! PR opened.", "ok");
         if (result.prUrl) console.log("[overlay/content] add PR:", result.prUrl);
+
+        // Refresh profile cache after successful add
+        console.log("[content] Refreshing profile cache after add...");
+        const cKey = profileCacheKey(activeProfile.gameId, activeProfile.profileId);
+        localStorage.removeItem(cKey); // Clear the cache
+        await fetchAndCacheProfile(); // Fetch fresh profile
       } catch (err) {
         console.error("[overlay/content] submit FAILED:", err.message, err);
         submitBtn.textContent = "Retry Submit";
@@ -1664,6 +1837,23 @@
   }
 
   function openEditTriggerEditor(trigger) {
+    console.log("[DEBUG] === openEditTriggerEditor ===");
+    console.log("[DEBUG] Incoming trigger:", JSON.stringify({
+      id: trigger.id,
+      title: trigger.payloads[0]?.title,
+      _isModified: trigger._isModified,
+      maskUrl: trigger.references[0]?.maskDataUrl?.substring(0, 50) + "..."
+    }, null, 2));
+
+    // Find the trigger in TRIGGERS — prefer the modified version if it exists
+    const allMatches = TRIGGERS.filter(t => t.id === trigger.id);
+    const foundTrigger = allMatches.find(t => t._isModified) || allMatches[0] || null;
+    console.log("[DEBUG] Found in TRIGGERS:", foundTrigger ? "yes" : "no");
+    if (foundTrigger) {
+      console.log("[DEBUG] TRIGGERS version _isModified:", !!foundTrigger._isModified);
+      console.log("[DEBUG] TRIGGERS version title:", foundTrigger.payloads[0]?.title);
+    }
+
     const ref = trigger.references?.[0];
     if (!ref) { showToast("No reference image for this trigger.", "warn"); return; }
     const dataUrl = refToDataUrl(ref);
@@ -1674,7 +1864,7 @@
       cropW:  ref.w    || ref.origW || 0,
       cropH:  ref.h    || ref.origH || 0,
     };
-    openTriggerEditor(dataUrl, meta, { mode: "edit", trigger });
+    openTriggerEditor(dataUrl, meta, { mode: "edit", trigger: foundTrigger || trigger });
   }
 
   // --- Mouse handler --------------------------------------------------------
@@ -2245,7 +2435,10 @@
     showToast(`Click #${window.__streamOverlayClicks.length} logged. window.__streamOverlayClicks to dump.`, "info");
   }
 
-  loadProfile().then(() => loadUserTriggers());
+  // Clean up any profile triggers incorrectly saved as user triggers
+  cleanupUserTriggers().then(() => {
+    loadProfile().then(() => loadUserTriggers());
+  });
   ensureDebugPanel();
   document.addEventListener("mousemove", onDocumentMouseMove, { passive: true });
   document.addEventListener("mousedown", onDocumentClick, true);

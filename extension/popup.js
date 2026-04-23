@@ -23,8 +23,9 @@ const FALLBACK_CATALOG = [
   },
 ];
 
-const userTriggersKey    = (gId, pId) => `streamGenie_triggers_${gId}_${pId}`;
-const contributorCodeKey = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
+const userTriggersKey     = (gId, pId) => `streamGenie_triggers_${gId}_${pId}`;
+const modifiedTriggersKey = (gId, pId) => `streamGenie_modified_${gId}_${pId}`;
+const contributorCodeKey  = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
 
 (async function () {
   // --- Tab status ---
@@ -456,10 +457,13 @@ const contributorCodeKey = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
     labelEl.textContent = prof?.name || active.name;
     listEl.innerHTML = "";
 
-    // Get local triggers
-    const key = userTriggersKey(gId, pId);
-    const res = await chrome.storage.local.get(key);
-    const localTriggers = res[key] || [];
+    // Get local triggers (only show actual user-created triggers)
+    const uKey = userTriggersKey(gId, pId);
+    const mKey = modifiedTriggersKey(gId, pId);
+    const res = await chrome.storage.local.get([uKey, mKey]);
+    
+    const localTriggers = (res[uKey] || []).filter(t => t.id && t.id.startsWith("user-"));
+    const modifiedTriggers = res[mKey] || [];
 
     // Load remote profile triggers
     let remoteTriggers = [];
@@ -475,9 +479,16 @@ const contributorCodeKey = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
       console.warn("[overlay/popup] Failed to load remote profile:", err);
     }
 
-    // Combine all triggers, marking local ones
+    // Combine all triggers:
+    // 1. Profile triggers (overridden by local modifications if they exist)
+    const mergedRemote = remoteTriggers.map(rt => {
+      const mod = modifiedTriggers.find(mt => mt.id === rt.id);
+      return mod ? { ...mod, source: "profile", _isModified: true } : { ...rt, source: "profile" };
+    });
+
+    // 2. User-created triggers
     const allTriggers = [
-      ...remoteTriggers.map(t => ({ ...t, source: "profile" })),
+      ...mergedRemote,
       ...localTriggers.map(t => ({ ...t, source: "local" }))
     ];
 
