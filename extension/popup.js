@@ -1,6 +1,7 @@
 // Popup script — profile selection + saved trigger management.
 
 const CATALOG_URL        = "https://raw.githubusercontent.com/frothydv/streamGenieProfiles/main/catalog.json";
+const PROFILES_REPO_BASE = "https://raw.githubusercontent.com/frothydv/streamGenieProfiles";
 const ACTIVE_PROFILE_KEY = "streamGenie_active_profile";
 const WORKER_URL         = "https://streamgenie-submit.vbjosh.workers.dev";
 const SUBMIT_SECRET      = "YorkshireTractorFactor";
@@ -361,7 +362,9 @@ function ensureRawUrl(urlStr) {
   }
 
   async function workerPost(body) {
-    const codeKey = contributorCodeKey(active.gameId, active.profileId);
+    const gId     = body.gameId    || active.gameId;
+    const pId     = body.profileId || active.profileId;
+    const codeKey = contributorCodeKey(gId, pId);
     const stored  = await chrome.storage.local.get(codeKey);
     const code    = stored[codeKey] || null;
     const headers = { "Content-Type": "application/json", "X-Submit-Secret": SUBMIT_SECRET };
@@ -381,6 +384,277 @@ function ensureRawUrl(urlStr) {
     });
     return data.prUrl;
   }
+
+  // ---------------------------------------------------------------------------
+  // Proposal review
+  // ---------------------------------------------------------------------------
+
+  function showProposalsPanel(gId, pId) {
+    document.getElementById("triggers-section").style.display = "none";
+    const panel = document.getElementById("proposals-panel");
+    panel.style.display = "block";
+    renderProposals(gId, pId);
+  }
+
+  document.getElementById("proposals-back").addEventListener("click", (e) => {
+    e.preventDefault();
+    document.getElementById("proposals-panel").style.display = "none";
+    document.getElementById("triggers-section").style.display = "block";
+  });
+
+  async function renderProposals(gId, pId) {
+    const listEl = document.getElementById("proposals-list");
+    listEl.innerHTML = '<div class="empty-note">Loading proposals…</div>';
+
+    let proposals, existingTriggers = [];
+    try {
+      const data = await workerPost({ gameId: gId, profileId: pId, mode: "list-proposals" });
+      proposals = data.proposals || [];
+    } catch (err) {
+      listEl.innerHTML = `<div class="empty-note">Error: ${err.message}</div>`;
+      return;
+    }
+
+    // Load current profile triggers for dupe check
+    try {
+      const game = CATALOG.find(g => g.gameId === gId);
+      const prof = game?.profiles.find(p => p.id === pId);
+      if (prof?.url) {
+        const url = new URL(ensureRawUrl(prof.url));
+        url.searchParams.set("_cb", Date.now());
+        const res = await fetch(url.toString(), { cache: "no-store" });
+        if (res.ok) {
+          const profileData = await res.json();
+          existingTriggers = (profileData.triggers || []).sort((a, b) => {
+            const tA = (a.payloads?.[0]?.title || a.id).toLowerCase();
+            const tB = (b.payloads?.[0]?.title || b.id).toLowerCase();
+            return tA.localeCompare(tB);
+          });
+        }
+      }
+    } catch {}
+
+    listEl.innerHTML = "";
+    if (proposals.length === 0) {
+      listEl.innerHTML = '<div class="empty-note">No pending proposals.</div>';
+      document.getElementById("review-btn").style.display = "none";
+      return;
+    }
+
+    proposals.forEach(p => listEl.appendChild(buildProposalRow(p, gId, pId, existingTriggers, listEl)));
+  }
+
+  function buildProposalRow(proposal, gId, pId, existingTriggers, listEl) {
+    const trigger = proposal.trigger;
+    const payload = trigger.payloads?.[0] || {};
+    const ref     = trigger.references?.[0];
+    const title   = payload.title || trigger.id;
+    const actionColor = proposal.action === "add" ? "#00f593" : proposal.action === "update" ? "#f5b000" : "#ff5c5c";
+
+    const row = document.createElement("div");
+    row.className = "trigger-row";
+    row.style.cssText = "flex-direction:column; align-items:stretch; gap:0;";
+
+    // ── Header ───────────────────────────────────────────────────────────────
+    const header = document.createElement("div");
+    header.style.cssText = "display:flex; align-items:center; gap:6px;";
+
+    if (ref) {
+      const img = document.createElement("img");
+      img.className = "proposal-img-thumb";
+      img.src = `${PROFILES_REPO_BASE}/${proposal.branch}/games/${gId}/profiles/${pId}/references/${ref.file}`;
+      header.appendChild(img);
+    }
+
+    const info = document.createElement("div");
+    info.style.cssText = "flex:1; overflow:hidden;";
+    const titleEl = document.createElement("div");
+    titleEl.className = "trigger-label";
+    titleEl.textContent = title;
+    const badgeEl = document.createElement("small");
+    badgeEl.textContent = proposal.action.toUpperCase();
+    badgeEl.style.cssText = `color:${actionColor}; display:block; font-size:10px;`;
+    info.appendChild(titleEl);
+    info.appendChild(badgeEl);
+    header.appendChild(info);
+
+    const reviewBtn = document.createElement("button");
+    reviewBtn.className = "edit-btn";
+    reviewBtn.textContent = "Review";
+    header.appendChild(reviewBtn);
+    row.appendChild(header);
+
+    // ── Inline review form ───────────────────────────────────────────────────
+    const form = document.createElement("div");
+    form.className = "review-form";
+    form.style.cssText = "display:none; margin-top:8px;";
+
+    // Image preview (larger)
+    if (ref) {
+      const imgDiv = document.createElement("div");
+      imgDiv.style.cssText = "text-align:center; margin-bottom:8px;";
+      const img = document.createElement("img");
+      img.src = `${PROFILES_REPO_BASE}/${proposal.branch}/games/${gId}/profiles/${pId}/references/${ref.file}`;
+      img.style.cssText = "max-width:100%; max-height:80px; object-fit:contain; border-radius:2px;";
+      imgDiv.appendChild(img);
+      form.appendChild(imgDiv);
+    }
+
+    // Title
+    const titleLabel = document.createElement("label");
+    titleLabel.className = "field-label";
+    titleLabel.textContent = "Title";
+    form.appendChild(titleLabel);
+    const titleInput = document.createElement("input");
+    titleInput.type = "text";
+    titleInput.value = payload.title || "";
+    form.appendChild(titleInput);
+
+    // Text
+    const textLabel = document.createElement("label");
+    textLabel.className = "field-label";
+    textLabel.textContent = "Description";
+    form.appendChild(textLabel);
+    const textArea = document.createElement("textarea");
+    textArea.value = payload.text || "";
+    textArea.rows = 3;
+    form.appendChild(textArea);
+
+    // Popup offset
+    const offsetLabel = document.createElement("label");
+    offsetLabel.className = "field-label";
+    offsetLabel.textContent = "Popup Offset (X / Y)";
+    form.appendChild(offsetLabel);
+    const offsetRow = document.createElement("div");
+    offsetRow.style.cssText = "display:flex; gap:6px; margin-bottom:8px;";
+    const xInput = document.createElement("input");
+    xInput.type = "number"; xInput.value = payload.popupOffset?.x ?? 14; xInput.placeholder = "X";
+    xInput.style.marginBottom = "0";
+    const yInput = document.createElement("input");
+    yInput.type = "number"; yInput.value = payload.popupOffset?.y ?? 22; yInput.placeholder = "Y";
+    yInput.style.marginBottom = "0";
+    offsetRow.appendChild(xInput);
+    offsetRow.appendChild(yInput);
+    form.appendChild(offsetRow);
+
+    // Existing triggers (dupe check)
+    if (existingTriggers.length > 0) {
+      const dupeLabel = document.createElement("div");
+      dupeLabel.className = "field-label";
+      dupeLabel.textContent = "Existing Triggers";
+      form.appendChild(dupeLabel);
+      const dupeList = document.createElement("div");
+      dupeList.style.cssText = "max-height:80px; overflow-y:auto; background:#0e0e10; border-radius:4px; padding:4px 6px; margin-bottom:8px;";
+      existingTriggers.forEach(t => {
+        const item = document.createElement("div");
+        item.style.cssText = "font-size:10px; padding:2px 0;";
+        item.textContent = t.payloads?.[0]?.title || t.id;
+        if (t.id === trigger.id) {
+          item.style.color = "#f5b000";
+          item.textContent += " ← this one";
+        } else {
+          item.style.color = "#adadb8";
+        }
+        dupeList.appendChild(item);
+      });
+      form.appendChild(dupeList);
+    }
+
+    // PR link
+    const prLink = document.createElement("a");
+    prLink.href = proposal.prUrl;
+    prLink.target = "_blank";
+    prLink.textContent = `PR #${proposal.prNumber} ↗`;
+    prLink.style.cssText = "font-size:10px; color:#adadb8; text-decoration:none; display:block; margin-bottom:8px;";
+    form.appendChild(prLink);
+
+    // Accept / Reject
+    const noteEl = document.createElement("div");
+    noteEl.className = "note";
+    noteEl.style.marginTop = "4px";
+    const btnRow = document.createElement("div");
+    btnRow.style.cssText = "display:flex; gap:6px;";
+    const acceptBtn = document.createElement("button");
+    acceptBtn.className = "accept-btn";
+    acceptBtn.textContent = "Accept";
+    const rejectBtn = document.createElement("button");
+    rejectBtn.className = "reject-btn";
+    rejectBtn.textContent = "Reject";
+    btnRow.appendChild(acceptBtn);
+    btnRow.appendChild(rejectBtn);
+    form.appendChild(btnRow);
+    form.appendChild(noteEl);
+
+    acceptBtn.onclick = async () => {
+      acceptBtn.disabled = rejectBtn.disabled = true;
+      acceptBtn.textContent = "Accepting…";
+      noteEl.textContent = "";
+      try {
+        const newTitle = titleInput.value.trim();
+        const newText  = textArea.value.trim();
+        const newX     = parseInt(xInput.value) || 14;
+        const newY     = parseInt(yInput.value) || 22;
+        const changed  = newTitle !== (payload.title || "") ||
+                         newText  !== (payload.text  || "") ||
+                         newX     !== (payload.popupOffset?.x ?? 14) ||
+                         newY     !== (payload.popupOffset?.y ?? 22);
+        const editedTrigger = changed ? {
+          ...trigger,
+          payloads: [{ ...payload, title: newTitle, text: newText, popupOffset: { x: newX, y: newY } }],
+        } : null;
+        await workerPost({ gameId: gId, profileId: pId, mode: "accept-proposal",
+          prNumber: proposal.prNumber, branch: proposal.branch, trigger: editedTrigger });
+        row.remove();
+        updateReviewCount(listEl);
+      } catch (err) {
+        noteEl.textContent = `Error: ${err.message}`;
+        noteEl.style.color = "#ff5c5c";
+        acceptBtn.disabled = rejectBtn.disabled = false;
+        acceptBtn.textContent = "Accept";
+      }
+    };
+
+    rejectBtn.onclick = async () => {
+      rejectBtn.disabled = acceptBtn.disabled = true;
+      rejectBtn.textContent = "Rejecting…";
+      noteEl.textContent = "";
+      try {
+        await workerPost({ gameId: gId, profileId: pId, mode: "reject-proposal", prNumber: proposal.prNumber });
+        row.remove();
+        updateReviewCount(listEl);
+      } catch (err) {
+        noteEl.textContent = `Error: ${err.message}`;
+        noteEl.style.color = "#ff5c5c";
+        rejectBtn.disabled = acceptBtn.disabled = false;
+        rejectBtn.textContent = "Reject";
+      }
+    };
+
+    reviewBtn.onclick = () => {
+      const open = form.style.display !== "none";
+      form.style.display = open ? "none" : "block";
+      reviewBtn.textContent = open ? "Review" : "Close";
+    };
+
+    row.appendChild(form);
+    return row;
+  }
+
+  function updateReviewCount(listEl) {
+    const remaining = listEl.querySelectorAll(".trigger-row").length;
+    const btn = document.getElementById("review-btn");
+    if (remaining === 0) {
+      const empty = document.createElement("div");
+      empty.className = "empty-note";
+      empty.textContent = "All proposals reviewed.";
+      listEl.appendChild(empty);
+      btn.style.display = "none";
+    } else {
+      btn.textContent = `Review Proposed Triggers (${remaining})`;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
 
   function showDeleteConfirm(row, trigger, idx, key) {
     const name = (trigger.payloads?.[0]?.title || trigger.payloads?.[0]?.text || trigger.id);
@@ -437,8 +711,21 @@ function ensureRawUrl(urlStr) {
       codeClearEl.onclick = async (e) => {
         e.preventDefault();
         await chrome.storage.local.remove(codeKey);
+        document.getElementById("review-btn").style.display = "none";
         renderContributorStatus();
       };
+      // Fetch open proposal count and wire review button
+      const reviewBtn = document.getElementById("review-btn");
+      reviewBtn.style.display = "none";
+      try {
+        const data = await workerPost({ gameId: gId, profileId: pId, mode: "list-proposals" });
+        const count = (data.proposals || []).length;
+        if (count > 0) {
+          reviewBtn.textContent = `Review Proposed Triggers (${count})`;
+          reviewBtn.style.display = "block";
+          reviewBtn.onclick = () => showProposalsPanel(gId, pId);
+        }
+      } catch { /* network unavailable — just hide the button */ }
     } else {
       trustedEl.style.display = "none";
       prEl.style.display = "block";

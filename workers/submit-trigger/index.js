@@ -28,21 +28,21 @@ const BASE  = "main";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, X-Submit-Secret, X-Contributor-Key",
 };
 
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") return new Response(null, { headers: CORS });
-    if (request.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
+    if (request.method !== "POST" && request.method !== "GET") return json({ ok: false, error: "Method not allowed" }, 405);
 
     if (request.headers.get("X-Submit-Secret") !== env.SUBMIT_SECRET) {
       return json({ ok: false, error: "Unauthorized" }, 401);
     }
 
     let body;
-    try { body = await request.json(); }
+    try { body = request.method === "GET" ? Object.fromEntries(new URL(request.url).searchParams) : await request.json(); }
     catch { return json({ ok: false, error: "Invalid JSON" }, 400); }
 
     const {
@@ -57,6 +57,56 @@ export default {
       if (!gameId || !profileId) return json({ ok: false, error: "Missing gameId/profileId" }, 400);
       const trusted = await isTrustedContributor(env, contributorKey, gameId, profileId);
       return json({ ok: true, trusted });
+    }
+
+    // --- list-proposals mode ------------------------------------------------
+    if (mode === "list-proposals") {
+      if (!gameId || !profileId) return json({ ok: false, error: "Missing gameId/profileId" }, 400);
+      const trusted = await isTrustedContributor(env, contributorKey, gameId, profileId);
+      if (!trusted) return json({ ok: false, error: "Unauthorized" }, 403);
+      try {
+        const gh = githubClient(env.GITHUB_TOKEN);
+        const proposals = await listProposals(gh, gameId, profileId);
+        return json({ ok: true, proposals });
+      } catch (err) {
+        console.error("listProposals failed:", err.message);
+        return json({ ok: false, error: err.message }, 500);
+      }
+    }
+
+    // --- accept-proposal mode -----------------------------------------------
+    if (mode === "accept-proposal") {
+      if (!gameId || !profileId) return json({ ok: false, error: "Missing gameId/profileId" }, 400);
+      const trusted = await isTrustedContributor(env, contributorKey, gameId, profileId);
+      if (!trusted) return json({ ok: false, error: "Unauthorized" }, 403);
+      const { prNumber, branch, trigger: editedTrigger } = body;
+      if (!prNumber || !branch) return json({ ok: false, error: "Missing prNumber or branch" }, 400);
+      try {
+        const gh   = githubClient(env.GITHUB_TOKEN);
+        const hint = contributorHint(contributorKey);
+        await acceptProposal(gh, gameId, profileId, prNumber, branch, editedTrigger || null, hint);
+        return json({ ok: true });
+      } catch (err) {
+        console.error("acceptProposal failed:", err.message);
+        return json({ ok: false, error: err.message }, 500);
+      }
+    }
+
+    // --- reject-proposal mode -----------------------------------------------
+    if (mode === "reject-proposal") {
+      if (!gameId || !profileId) return json({ ok: false, error: "Missing gameId/profileId" }, 400);
+      const trusted = await isTrustedContributor(env, contributorKey, gameId, profileId);
+      if (!trusted) return json({ ok: false, error: "Unauthorized" }, 403);
+      const { prNumber, comment } = body;
+      if (!prNumber) return json({ ok: false, error: "Missing prNumber" }, 400);
+      try {
+        const gh = githubClient(env.GITHUB_TOKEN);
+        await rejectProposal(gh, prNumber, comment || null);
+        return json({ ok: true });
+      } catch (err) {
+        console.error("rejectProposal failed:", err.message);
+        return json({ ok: false, error: err.message }, 500);
+      }
     }
 
     // --- create-profile mode ------------------------------------------------
@@ -312,6 +362,77 @@ async function createProfile(gh, env, gameId, gameName, twitchSlug, profileId, p
   }
 
   return { profileUrl, profileId, profileName, code };
+}
+
+// ---------------------------------------------------------------------------
+// Proposal review operations
+// ---------------------------------------------------------------------------
+
+async function listProposals(gh, gameId, profileId) {
+  const profilePath = `games/${gameId}/profiles/${profileId}`;
+  const prs = await gh(`repos/${OWNER}/${REPO}/pulls?state=open&base=${BASE}&per_page=100`, "GET");
+
+  const relevant = prs.filter(pr =>
+    pr.body &&
+    pr.body.includes(`**Game:** ${gameId}`) &&
+    pr.body.includes(`**Profile:** ${profileId}`)
+  );
+  if (relevant.length === 0) return [];
+
+  let mainTriggers = [];
+  try {
+    const { profile } = await readProfile(gh, profilePath, BASE);
+    mainTriggers = profile.triggers;
+  } catch {}
+  const mainById = new Map(mainTriggers.map(t => [t.id, t]));
+
+  const proposals = [];
+  for (const pr of relevant) {
+    try {
+      const branch = pr.head.ref;
+      const { profile: branchProfile } = await readProfile(gh, profilePath, branch);
+      const branchIds = new Set(branchProfile.triggers.map(t => t.id));
+
+      for (const t of branchProfile.triggers) {
+        const mainT = mainById.get(t.id);
+        if (!mainT) {
+          proposals.push({ prNumber: pr.number, prUrl: pr.html_url, branch, prTitle: pr.title, action: "add", trigger: t });
+        } else if (JSON.stringify(t.payloads) !== JSON.stringify(mainT.payloads)) {
+          proposals.push({ prNumber: pr.number, prUrl: pr.html_url, branch, prTitle: pr.title, action: "update", trigger: t, triggerBefore: mainT });
+        }
+      }
+      for (const mainT of mainTriggers) {
+        if (!branchIds.has(mainT.id)) {
+          proposals.push({ prNumber: pr.number, prUrl: pr.html_url, branch, prTitle: pr.title, action: "remove", trigger: mainT });
+        }
+      }
+    } catch (err) {
+      console.error(`[worker] Skipping PR #${pr.number}: ${err.message}`);
+    }
+  }
+  return proposals;
+}
+
+async function acceptProposal(gh, gameId, profileId, prNumber, branch, editedTrigger, hint) {
+  if (editedTrigger) {
+    const profilePath = `games/${gameId}/profiles/${profileId}`;
+    const { file: profileFile, profile } = await readProfile(gh, profilePath, branch);
+    const idx = profile.triggers.findIndex(t => t.id === editedTrigger.id);
+    if (idx !== -1) {
+      profile.triggers[idx] = { ...profile.triggers[idx], payloads: normalisedPayloads(editedTrigger.payloads) };
+    }
+    const title = editedTrigger.payloads?.[0]?.title || editedTrigger.id;
+    await writeProfile(gh, profilePath, profile, profileFile.sha, branch,
+      `fix: reviewer edits for "${title}" [reviewer: ${hint}]`);
+  }
+  await gh(`repos/${OWNER}/${REPO}/pulls/${prNumber}/merge`, "PUT", { merge_method: "squash" });
+}
+
+async function rejectProposal(gh, prNumber, comment) {
+  if (comment) {
+    await gh(`repos/${OWNER}/${REPO}/issues/${prNumber}/comments`, "POST", { body: comment });
+  }
+  await gh(`repos/${OWNER}/${REPO}/pulls/${prNumber}`, "PATCH", { state: "closed" });
 }
 
 // ---------------------------------------------------------------------------

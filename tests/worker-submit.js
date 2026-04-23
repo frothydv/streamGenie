@@ -230,6 +230,71 @@ async function removeTrigger(gh, gameId, profileId, trigger, direct, hint) {
 }
 
 // ---------------------------------------------------------------------------
+// New functions: listProposals / acceptProposal / rejectProposal
+// ---------------------------------------------------------------------------
+
+async function listProposals(gh, gameId, profileId) {
+  const profilePath = `games/${gameId}/profiles/${profileId}`;
+  const prs = await gh(`repos/${OWNER}/${REPO}/pulls?state=open&base=${BASE}&per_page=100`, "GET");
+  const relevant = prs.filter(pr =>
+    pr.body &&
+    pr.body.includes(`**Game:** ${gameId}`) &&
+    pr.body.includes(`**Profile:** ${profileId}`)
+  );
+  if (relevant.length === 0) return [];
+  let mainTriggers = [];
+  try {
+    const { profile } = await readProfile(gh, profilePath, BASE);
+    mainTriggers = profile.triggers;
+  } catch {}
+  const mainById = new Map(mainTriggers.map(t => [t.id, t]));
+  const proposals = [];
+  for (const pr of relevant) {
+    try {
+      const branch = pr.head.ref;
+      const { profile: branchProfile } = await readProfile(gh, profilePath, branch);
+      const branchIds = new Set(branchProfile.triggers.map(t => t.id));
+      for (const t of branchProfile.triggers) {
+        const mainT = mainById.get(t.id);
+        if (!mainT) {
+          proposals.push({ prNumber: pr.number, prUrl: pr.html_url, branch, prTitle: pr.title, action: "add", trigger: t });
+        } else if (JSON.stringify(t.payloads) !== JSON.stringify(mainT.payloads)) {
+          proposals.push({ prNumber: pr.number, prUrl: pr.html_url, branch, prTitle: pr.title, action: "update", trigger: t, triggerBefore: mainT });
+        }
+      }
+      for (const mainT of mainTriggers) {
+        if (!branchIds.has(mainT.id)) {
+          proposals.push({ prNumber: pr.number, prUrl: pr.html_url, branch, prTitle: pr.title, action: "remove", trigger: mainT });
+        }
+      }
+    } catch (err) {}
+  }
+  return proposals;
+}
+
+async function acceptProposal(gh, gameId, profileId, prNumber, branch, editedTrigger, hint) {
+  if (editedTrigger) {
+    const profilePath = `games/${gameId}/profiles/${profileId}`;
+    const { file: profileFile, profile } = await readProfile(gh, profilePath, branch);
+    const idx = profile.triggers.findIndex(t => t.id === editedTrigger.id);
+    if (idx !== -1) {
+      profile.triggers[idx] = { ...profile.triggers[idx], payloads: normalisedPayloads(editedTrigger.payloads) };
+    }
+    const title = editedTrigger.payloads?.[0]?.title || editedTrigger.id;
+    await writeProfile(gh, profilePath, profile, profileFile.sha, branch,
+      `fix: reviewer edits for "${title}" [reviewer: ${hint}]`);
+  }
+  await gh(`repos/${OWNER}/${REPO}/pulls/${prNumber}/merge`, "PUT", { merge_method: "squash" });
+}
+
+async function rejectProposal(gh, prNumber, comment) {
+  if (comment) {
+    await gh(`repos/${OWNER}/${REPO}/issues/${prNumber}/comments`, "POST", { body: comment });
+  }
+  await gh(`repos/${OWNER}/${REPO}/pulls/${prNumber}`, "PATCH", { state: "closed" });
+}
+
+// ---------------------------------------------------------------------------
 // Mock GitHub client builder
 // Returns { gh, calls } where calls records every API call made.
 // profileContent: the profile.json object to return for GET requests.
@@ -253,6 +318,47 @@ function makeGh(profileContent = { triggers: [] }, mainSha = "deadbeef") {
     }
     if (method === "POST" && path.includes("/pulls")) {
       return { html_url: "https://github.com/frothydv/streamGenieProfiles/pull/99" };
+    }
+    if (method === "PUT" && path.includes("/pulls/") && path.includes("/merge")) {
+      return { sha: "merge-sha-789", merged: true };
+    }
+    if (method === "PATCH" && path.includes("/pulls/")) {
+      return { number: 99, state: "closed" };
+    }
+    if (method === "POST" && path.includes("/issues/") && path.includes("/comments")) {
+      return { id: 1 };
+    }
+    throw new Error(`Unexpected gh call: ${method} ${path}`);
+  };
+  return { gh, calls };
+}
+
+// makeGhWithPRs: like makeGh but returns a configurable PR list from the pulls endpoint.
+// branchProfileContent: what profile.json looks like on the PR branch.
+function makeGhWithPRs(openPRs, mainProfileContent, branchProfileContent, mainSha = "deadbeef") {
+  const calls = [];
+  const gh = async (path, method, body) => {
+    calls.push({ path: path.split("?")[0], method, body });
+    if (method === "GET" && path.includes("/pulls?")) {
+      return openPRs;
+    }
+    if (method === "GET" && path.includes("/contents/") && path.includes("profile.json")) {
+      // Distinguish main vs branch reads by ?ref= param
+      const isBranch = path.includes("?ref=") && !path.includes("?ref=main");
+      const content = isBranch ? branchProfileContent : mainProfileContent;
+      return { sha: "profile-sha-123", content: b64encode(JSON.stringify(content)) };
+    }
+    if (method === "PUT" && path.includes("/contents/")) {
+      return { commit: { sha: "new-sha-456" } };
+    }
+    if (method === "PUT" && path.includes("/pulls/") && path.includes("/merge")) {
+      return { sha: "merge-sha-789", merged: true };
+    }
+    if (method === "PATCH" && path.includes("/pulls/")) {
+      return { number: 99, state: "closed" };
+    }
+    if (method === "POST" && path.includes("/issues/") && path.includes("/comments")) {
+      return { id: 1 };
     }
     throw new Error(`Unexpected gh call: ${method} ${path}`);
   };
@@ -599,6 +705,253 @@ await test("image is stored under the profile's references/ directory", async ()
   await addTrigger(gh, "slay-the-spire-2", "community", SAMPLE_TRIGGER, true, "hint");
   const imgPut = calls.find(c => c.method === "PUT" && c.path.includes("/references/"));
   assert(imgPut.path.includes("games/slay-the-spire-2/profiles/community/references/"), "wrong path");
+});
+
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// 9. listProposals
+// ---------------------------------------------------------------------------
+
+console.log("\n— listProposals ---");
+
+const MAIN_PROFILE = {
+  triggers: [
+    { id: "map-icon", payloads: [{ title: "Map", text: "View the map.", image: null, popupOffset: { x: 14, y: 22 } }], references: [{ file: "map-icon.png" }] },
+    { id: "coin-gold", payloads: [{ title: "Gold", text: "Player gold.", image: null, popupOffset: { x: 14, y: 22 } }], references: [{ file: "coin-gold.png" }] },
+  ],
+};
+
+function makePR(number, gameId, profileId, branch, title = "Add trigger: New") {
+  return {
+    number,
+    html_url: `https://github.com/frothydv/streamGenieProfiles/pull/${number}`,
+    title,
+    head: { ref: branch },
+    body: `New trigger submitted via Stream Genie.\n\n**Game:** ${gameId}\n**Profile:** ${profileId}\n**Payloads:** 1`,
+  };
+}
+
+await test("returns empty array when no open PRs", async () => {
+  const { gh } = makeGhWithPRs([], MAIN_PROFILE, MAIN_PROFILE);
+  const proposals = await listProposals(gh, "slay-the-spire-2", "community");
+  assertEqual(proposals, []);
+});
+
+await test("filters out PRs for other game/profile", async () => {
+  const otherPR = makePR(10, "starcraft-ii", "community", "trigger/drone-123");
+  const { gh } = makeGhWithPRs([otherPR], MAIN_PROFILE, MAIN_PROFILE);
+  const proposals = await listProposals(gh, "slay-the-spire-2", "community");
+  assertEqual(proposals, []);
+});
+
+await test("detects new trigger (in branch, not in main) as 'add'", async () => {
+  const branchProfile = {
+    triggers: [
+      ...MAIN_PROFILE.triggers,
+      { id: "bronze-scales", payloads: [{ title: "Bronze Scales", text: "3 Thorns.", image: null, popupOffset: { x: 14, y: 22 } }], references: [{ file: "bronze-scales-123.png" }] },
+    ],
+  };
+  const pr = makePR(42, "slay-the-spire-2", "community", "trigger/bronze-scales-123", "Add trigger: Bronze Scales");
+  const { gh } = makeGhWithPRs([pr], MAIN_PROFILE, branchProfile);
+  const proposals = await listProposals(gh, "slay-the-spire-2", "community");
+  assertEqual(proposals.length, 1);
+  assertEqual(proposals[0].action, "add");
+  assertEqual(proposals[0].trigger.id, "bronze-scales");
+  assertEqual(proposals[0].prNumber, 42);
+  assertEqual(proposals[0].branch, "trigger/bronze-scales-123");
+});
+
+await test("detects changed payloads as 'update'", async () => {
+  const branchProfile = {
+    triggers: [
+      { id: "map-icon", payloads: [{ title: "Map Icon", text: "Updated description.", image: null, popupOffset: { x: 14, y: 22 } }], references: [{ file: "map-icon.png" }] },
+      MAIN_PROFILE.triggers[1],
+    ],
+  };
+  const pr = makePR(55, "slay-the-spire-2", "community", "update/map-icon-123", "Update trigger: Map");
+  const { gh } = makeGhWithPRs([pr], MAIN_PROFILE, branchProfile);
+  const proposals = await listProposals(gh, "slay-the-spire-2", "community");
+  assertEqual(proposals.length, 1);
+  assertEqual(proposals[0].action, "update");
+  assertEqual(proposals[0].trigger.id, "map-icon");
+  assertEqual(proposals[0].triggerBefore.payloads[0].title, "Map");
+});
+
+await test("detects trigger missing from branch as 'remove'", async () => {
+  const branchProfile = { triggers: [MAIN_PROFILE.triggers[0]] }; // coin-gold removed
+  const pr = makePR(77, "slay-the-spire-2", "community", "remove/coin-gold-123", "Remove trigger: Gold");
+  const { gh } = makeGhWithPRs([pr], MAIN_PROFILE, branchProfile);
+  const proposals = await listProposals(gh, "slay-the-spire-2", "community");
+  assertEqual(proposals.length, 1);
+  assertEqual(proposals[0].action, "remove");
+  assertEqual(proposals[0].trigger.id, "coin-gold");
+});
+
+await test("unchanged trigger in PR branch produces no proposal", async () => {
+  // Branch has same triggers as main — nothing changed
+  const pr = makePR(99, "slay-the-spire-2", "community", "trigger/stale-123");
+  const { gh } = makeGhWithPRs([pr], MAIN_PROFILE, MAIN_PROFILE);
+  const proposals = await listProposals(gh, "slay-the-spire-2", "community");
+  assertEqual(proposals, []);
+});
+
+await test("returns proposals from multiple matching PRs", async () => {
+  const branchA = { triggers: [...MAIN_PROFILE.triggers, { id: "anchor", payloads: [{ title: "Anchor", text: "", image: null, popupOffset: { x: 14, y: 22 } }], references: [] }] };
+  const branchB = { triggers: [...MAIN_PROFILE.triggers, { id: "strawberry", payloads: [{ title: "Strawberry", text: "", image: null, popupOffset: { x: 14, y: 22 } }], references: [] }] };
+  const prA = makePR(10, "slay-the-spire-2", "community", "trigger/anchor-111");
+  const prB = makePR(11, "slay-the-spire-2", "community", "trigger/strawberry-222");
+
+  // Use a gh that returns different branch profiles per PR
+  const calls = [];
+  const gh = async (path, method, body) => {
+    calls.push({ path: path.split("?")[0], method, body });
+    if (method === "GET" && path.includes("/pulls?")) return [prA, prB];
+    if (method === "GET" && path.includes("profile.json")) {
+      if (path.includes("anchor")) return { sha: "s", content: b64encode(JSON.stringify(branchA)) };
+      if (path.includes("strawberry")) return { sha: "s", content: b64encode(JSON.stringify(branchB)) };
+      return { sha: "s", content: b64encode(JSON.stringify(MAIN_PROFILE)) }; // main
+    }
+    throw new Error(`Unexpected: ${method} ${path}`);
+  };
+  const proposals = await listProposals(gh, "slay-the-spire-2", "community");
+  assertEqual(proposals.length, 2);
+  assert(proposals.some(p => p.trigger.id === "anchor"), "should include anchor");
+  assert(proposals.some(p => p.trigger.id === "strawberry"), "should include strawberry");
+});
+
+await test("skips PR that errors during branch read (no crash)", async () => {
+  const goodBranch = { triggers: [...MAIN_PROFILE.triggers, { id: "anchor", payloads: [{ title: "Anchor", text: "", image: null, popupOffset: { x: 14, y: 22 } }], references: [] }] };
+  const prGood = makePR(1, "slay-the-spire-2", "community", "trigger/anchor-111");
+  const prBad  = makePR(2, "slay-the-spire-2", "community", "trigger/broken-222");
+  let callCount = 0;
+  const gh = async (path, method) => {
+    if (method === "GET" && path.includes("/pulls?")) return [prGood, prBad];
+    if (method === "GET" && path.includes("profile.json")) {
+      callCount++;
+      if (path.includes("broken")) throw new Error("branch not found");
+      if (callCount === 1) return { sha: "s", content: b64encode(JSON.stringify(MAIN_PROFILE)) };
+      return { sha: "s", content: b64encode(JSON.stringify(goodBranch)) };
+    }
+    throw new Error(`Unexpected: ${method} ${path}`);
+  };
+  const proposals = await listProposals(gh, "slay-the-spire-2", "community");
+  assertEqual(proposals.length, 1);
+  assertEqual(proposals[0].trigger.id, "anchor");
+});
+
+// ---------------------------------------------------------------------------
+// 10. acceptProposal
+// ---------------------------------------------------------------------------
+
+console.log("\n— acceptProposal ---");
+
+await test("merges PR via PUT /pulls/:number/merge", async () => {
+  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, MAIN_PROFILE);
+  await acceptProposal(gh, "slay-the-spire-2", "community", 42, "trigger/foo-123", null, "reviewer");
+  const merge = calls.find(c => c.method === "PUT" && c.path.includes("/pulls/42/merge"));
+  assert(merge, "should PUT to merge endpoint");
+  assertEqual(merge.body.merge_method, "squash");
+});
+
+await test("merge is squash", async () => {
+  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, MAIN_PROFILE);
+  await acceptProposal(gh, "slay-the-spire-2", "community", 99, "trigger/foo-123", null, "reviewer");
+  const merge = calls.find(c => c.method === "PUT" && c.path.includes("/merge"));
+  assertEqual(merge.body.merge_method, "squash");
+});
+
+await test("no profile write when editedTrigger is null", async () => {
+  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, MAIN_PROFILE);
+  await acceptProposal(gh, "slay-the-spire-2", "community", 42, "trigger/foo-123", null, "reviewer");
+  const writes = calls.filter(c => c.method === "PUT" && c.path.includes("profile.json"));
+  assertEqual(writes.length, 0);
+});
+
+await test("writes edited payload to PR branch before merging", async () => {
+  const branchProfile = {
+    triggers: [
+      { id: "bronze-scales", payloads: [{ title: "Bronze Scales", text: "Old text.", image: null, popupOffset: { x: 14, y: 22 } }], references: [] },
+    ],
+  };
+  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, branchProfile);
+  const editedTrigger = {
+    id: "bronze-scales",
+    payloads: [{ title: "Bronze Scales", text: "Corrected description.", image: null, popupOffset: { x: 14, y: 22 } }],
+  };
+  await acceptProposal(gh, "slay-the-spire-2", "community", 42, "trigger/bronze-123", editedTrigger, "reviewer");
+  const write = calls.find(c => c.method === "PUT" && c.path.includes("profile.json"));
+  assert(write, "should write profile.json to branch");
+  assertEqual(write.body.branch, "trigger/bronze-123");
+  const written = JSON.parse(b64decode(write.body.content));
+  assertEqual(written.triggers[0].payloads[0].text, "Corrected description.");
+});
+
+await test("profile write happens before merge", async () => {
+  const branchProfile = {
+    triggers: [{ id: "foo", payloads: [{ title: "Foo", text: "", image: null, popupOffset: { x: 14, y: 22 } }], references: [] }],
+  };
+  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, branchProfile);
+  const editedTrigger = { id: "foo", payloads: [{ title: "Foo", text: "Edited.", image: null, popupOffset: { x: 14, y: 22 } }] };
+  await acceptProposal(gh, "slay-the-spire-2", "community", 5, "trigger/foo-123", editedTrigger, "r");
+  const writeIdx = calls.findIndex(c => c.method === "PUT" && c.path.includes("profile.json"));
+  const mergeIdx = calls.findIndex(c => c.method === "PUT" && c.path.includes("/merge"));
+  assert(writeIdx < mergeIdx, "profile write should precede merge");
+});
+
+await test("reviewer hint appears in commit message", async () => {
+  const branchProfile = {
+    triggers: [{ id: "foo", payloads: [{ title: "Foo", text: "", image: null, popupOffset: { x: 14, y: 22 } }], references: [] }],
+  };
+  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, branchProfile);
+  const editedTrigger = { id: "foo", payloads: [{ title: "Foo", text: "X" }] };
+  await acceptProposal(gh, "slay-the-spire-2", "community", 5, "trigger/foo-123", editedTrigger, "f61d1f28");
+  const write = calls.find(c => c.method === "PUT" && c.path.includes("profile.json"));
+  assert(write.body.message.includes("f61d1f28"), "commit should include reviewer hint");
+});
+
+// ---------------------------------------------------------------------------
+// 11. rejectProposal
+// ---------------------------------------------------------------------------
+
+console.log("\n— rejectProposal ---");
+
+await test("closes PR via PATCH /pulls/:number", async () => {
+  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, MAIN_PROFILE);
+  await rejectProposal(gh, 42, null);
+  const close = calls.find(c => c.method === "PATCH" && c.path.includes("/pulls/42"));
+  assert(close, "should PATCH to close PR");
+  assertEqual(close.body.state, "closed");
+});
+
+await test("no comment posted when comment is null", async () => {
+  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, MAIN_PROFILE);
+  await rejectProposal(gh, 42, null);
+  const comment = calls.find(c => c.method === "POST" && c.path.includes("/comments"));
+  assert(!comment, "should not post a comment");
+});
+
+await test("posts comment before closing PR when comment provided", async () => {
+  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, MAIN_PROFILE);
+  await rejectProposal(gh, 42, "Duplicate of existing trigger.");
+  const comment = calls.find(c => c.method === "POST" && c.path.includes("/issues/42/comments"));
+  assert(comment, "should post comment");
+  assertEqual(comment.body.body, "Duplicate of existing trigger.");
+});
+
+await test("comment is posted before close", async () => {
+  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, MAIN_PROFILE);
+  await rejectProposal(gh, 42, "Reason for rejection.");
+  const commentIdx = calls.findIndex(c => c.method === "POST" && c.path.includes("/comments"));
+  const closeIdx   = calls.findIndex(c => c.method === "PATCH" && c.path.includes("/pulls/"));
+  assert(commentIdx < closeIdx, "comment should come before close");
+});
+
+await test("rejects correct PR number", async () => {
+  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, MAIN_PROFILE);
+  await rejectProposal(gh, 123, null);
+  const close = calls.find(c => c.method === "PATCH");
+  assert(close.path.includes("/pulls/123"), "should target PR #123");
 });
 
 // ---------------------------------------------------------------------------
