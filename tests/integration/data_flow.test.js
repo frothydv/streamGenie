@@ -77,6 +77,17 @@ async function applyProfile(profile) {
     return TRIGGERS;
 }
 
+const userTriggersKey = (gId, pId) => `streamGenie_triggers_${gId}_${pId}`;
+
+async function deleteLocally(key, triggerId) {
+    const res = await mockStorage.get(key);
+    const saved = res[key] || [];
+    const filtered = saved.filter(t => t.id !== triggerId);
+    await mockStorage.set({ [key]: filtered });
+    // In real app, we'd call renderTriggers() which re-fetches from storage
+    return filtered;
+}
+
 // --- Tests ---
 
 async function runTests() {
@@ -176,6 +187,24 @@ async function runTests() {
     const result = TRIGGERS.find(t => t.id === "match-me");
     assert.strictEqual(result.payloads[0].title, "Edited Target");
     console.log("✓ Match result uses edited payload");
+
+    // 6. Deletion Flow
+    console.log("\nTest 6: Deletion Flow");
+    const uKey = userTriggersKey("game-1", "prof-1");
+    const userTrigger = { id: "user-123", payloads: [{ title: "User Trigger" }], references: [] };
+    await mockStorage.set({ [uKey]: [userTrigger] });
+    
+    // Verify it exists
+    let storageRes = await mockStorage.get(uKey);
+    assert.strictEqual(storageRes[uKey].length, 1);
+    
+    // Delete it
+    await deleteLocally(uKey, "user-123");
+    
+    // Verify it's gone
+    storageRes = await mockStorage.get(uKey);
+    assert.strictEqual(storageRes[uKey].length, 0);
+    console.log("✓ Local deletion successful and robust (ID-based)");
 
     console.log("\n🎉 ALL DATA FLOW TESTS PASSED!");
 }
