@@ -72,4 +72,10 @@ assert(!contentJs.match(/^let video\b/m), 'content.js should NOT have a global "
 assert(contentJs.match(/^let currentVideo\b/m), 'content.js should have a global "currentVideo" variable');
 console.log('✓ Variable naming consistent');
 
+// 5. Cache-busting in popup.js
+console.log('\nCheck 5: Cache-busting in popup.js');
+assert(popupJs.includes('url.searchParams.set("_cb", Date.now())'), 'popup.js must use cache-busting parameter');
+assert(popupJs.includes('cache: "no-store"'), 'popup.js must use cache: "no-store"');
+console.log('✓ Cache-busting implemented in popup.js');
+
 console.log('\n🎉 ALL STATIC ANALYSIS CHECKS PASSED!');

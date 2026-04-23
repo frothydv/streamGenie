@@ -304,6 +304,24 @@ const contributorCodeKey  = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
   });
 
   // --- Contribute button ---
+  document.getElementById("refresh-profile-btn").addEventListener("click", async (e) => {
+    e.preventDefault();
+    const gId = gameSelect.value || active.gameId;
+    const pId = profileSelect.value || active.profileId;
+    const cKey = `streamGenie_profile_${gId}_${pId}`;
+    
+    // Clear the cache
+    localStorage.removeItem(cKey);
+    
+    // Notify content script if active
+    if (currentTab) {
+      chrome.tabs.sendMessage(currentTab.id, { type: "reload-profile" }).catch(() => {});
+    }
+    
+    // Re-render UI
+    renderTriggers();
+  });
+
   document.getElementById("contribute-btn").addEventListener("click", async () => {
     if (!currentTab) return;
     try {
@@ -469,7 +487,9 @@ const contributorCodeKey  = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
     let remoteTriggers = [];
     try {
       if (prof?.url) {
-        const profileRes = await fetch(prof.url, { cache: "no-cache" });
+        const url = new URL(prof.url);
+        url.searchParams.set("_cb", Date.now());
+        const profileRes = await fetch(url.toString(), { cache: "no-store" });
         if (profileRes.ok) {
           const profileData = await profileRes.json();
           remoteTriggers = profileData.triggers || [];
