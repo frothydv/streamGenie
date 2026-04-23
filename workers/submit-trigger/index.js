@@ -204,6 +204,10 @@ async function updateTrigger(gh, gameId, profileId, trigger, direct, hint) {
 
   const nextTrigger = { ...profile.triggers[idx], payloads: normalisedPayloads(trigger.payloads) };
   if (trigger.references?.length) {
+    console.log("[worker] Updating references for trigger:", trigger.id);
+    console.log("[worker] Original reference:", JSON.stringify(profile.triggers[idx].references?.[0] || {}, null, 2));
+    console.log("[worker] New reference data:", JSON.stringify(trigger.references[0], null, 2));
+
     nextTrigger.references = trigger.references.map((ref, idx2) => ({
       ...(profile.triggers[idx].references?.[idx2] || {}),
       file: ref.file ?? profile.triggers[idx].references?.[idx2]?.file ?? null,
@@ -213,10 +217,13 @@ async function updateTrigger(gh, gameId, profileId, trigger, direct, hint) {
       srcH: ref.srcH ?? profile.triggers[idx].references?.[idx2]?.srcH ?? null,
       maskDataUrl: ref.maskDataUrl ?? null,
     }));
+
+    console.log("[worker] Final reference after merge:", JSON.stringify(nextTrigger.references[0], null, 2));
   }
   profile.triggers[idx] = nextTrigger;
   const title = trigger.payloads[0]?.title || triggerId;
 
+  console.log("[worker] Writing updated profile with trigger:", JSON.stringify(profile.triggers[idx], null, 2));
   await writeProfile(gh, profilePath, profile, profileFile.sha, branch,
     `fix: update trigger "${title}" [contributor: ${hint}]`);
 

@@ -36,19 +36,31 @@
 
   // --- Profile config -------------------------------------------------------
 
-  const PROFILE_CACHE_TTL_MS = 60 * 60 * 1000;
+  const PROFILE_CACHE_TTL_MS = 2 * 60 * 1000;  // 2 minutes (frequent refresh for pre-alpha)
   const ACTIVE_PROFILE_KEY = "streamGenie_active_profile";
   const DEFAULT_PROFILE = {
     gameId:    "slay-the-spire-2",
     profileId: "community",
     name:      "STS2 Community",
-    url:       "https://cdn.jsdelivr.net/gh/frothydv/streamGenieProfiles@main/games/slay-the-spire-2/profiles/community/profile.json",
+    url:       "https://raw.githubusercontent.com/frothydv/streamGenieProfiles/main/games/slay-the-spire-2/profiles/community/profile.json",
   };
 
   const profileCacheKey        = (gId, pId) => `streamGenie_profile_${gId}_${pId}`;
   const userTriggersKey        = (gId, pId) => `streamGenie_triggers_${gId}_${pId}`;
   const modifiedTriggersKey     = (gId, pId) => `streamGenie_modified_${gId}_${pId}`;
   const contributorCodeKey     = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
+
+  /**
+   * Ensures a URL for our profile repo uses raw.githubusercontent.com instead of jsdelivr.
+   * This bypasses CDN branch lag during active development.
+   */
+  function ensureRawUrl(urlStr) {
+    if (!urlStr) return urlStr;
+    if (urlStr.includes("cdn.jsdelivr.net/gh/frothydv/streamGenieProfiles@main")) {
+      return urlStr.replace("cdn.jsdelivr.net/gh/frothydv/streamGenieProfiles@main", "raw.githubusercontent.com/frothydv/streamGenieProfiles/main");
+    }
+    return urlStr;
+  }
 
   // --- Worker config --------------------------------------------------------
   // Set WORKER_URL after deploying the Cloudflare Worker (`wrangler deploy`).
@@ -542,7 +554,7 @@
     const cKey = profileCacheKey(ap.gameId, ap.profileId);
     try {
       // Cache-bust the CDN request to ensure fresh content
-      const url = new URL(ap.url);
+      const url = new URL(ensureRawUrl(ap.url));
       url.searchParams.set("_cb", Date.now());
       const res = await fetch(url.toString(), { cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -2334,6 +2346,11 @@
         console.error("[content] Cannot edit trigger: Editor already open");
         sendResponse({ success: false, error: "Editor already open" });
       }
+    }
+    if (msg && msg.type === "reload-profile") {
+      console.log("[content] Reload profile request received");
+      loadProfile();
+      sendResponse({ ok: true });
     }
     return true;
   });

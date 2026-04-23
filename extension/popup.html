@@ -61,6 +61,9 @@
       }
       .edit-btn:hover { border-color: #9146ff; color: #9146ff; }
       .empty-note { font-size: 11px; color: #555; font-style: italic; }
+      #triggers-list { max-height: 400px; overflow-y: auto; margin-right: -4px; padding-right: 4px; }
+      #triggers-list::-webkit-scrollbar { width: 4px; }
+      #triggers-list::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
       .hint { font-size: 10px; color: #adadb8; margin-top: 6px; }
       code { background: #0e0e10; padding: 1px 4px; border-radius: 2px; font-size: 10px; }
       .detected-note {
@@ -151,7 +154,10 @@
 
     <button class="contribute-btn" id="contribute-btn">+ Contribute a Trigger</button>
 
-    <div class="section-title">Saved Triggers (<span id="profile-label">—</span>)</div>
+    <div class="section-title" style="display:flex; justify-content:space-between; align-items:center;">
+      <span>Saved Triggers (<span id="profile-label">—</span>)</span>
+      <a href="#" id="refresh-profile-btn" style="text-transform:none; color:#9146ff; text-decoration:none; font-size:11px;">↻ refresh</a>
+    </div>
     <div id="triggers-list"></div>
 
     <hr class="divider" />

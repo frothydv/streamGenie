@@ -1,6 +1,6 @@
 // Popup script — profile selection + saved trigger management.
 
-const CATALOG_URL        = "https://cdn.jsdelivr.net/gh/frothydv/streamGenieProfiles@main/catalog.json";
+const CATALOG_URL        = "https://raw.githubusercontent.com/frothydv/streamGenieProfiles/main/catalog.json";
 const ACTIVE_PROFILE_KEY = "streamGenie_active_profile";
 const WORKER_URL         = "https://streamgenie-submit.vbjosh.workers.dev";
 const SUBMIT_SECRET      = "YorkshireTractorFactor";
@@ -9,7 +9,7 @@ const DEFAULT_PROFILE = {
   gameId:    "slay-the-spire-2",
   profileId: "community",
   name:      "STS2 Community",
-  url:       "https://cdn.jsdelivr.net/gh/frothydv/streamGenieProfiles@main/games/slay-the-spire-2/profiles/community/profile.json",
+  url:       "https://raw.githubusercontent.com/frothydv/streamGenieProfiles/main/games/slay-the-spire-2/profiles/community/profile.json",
 };
 
 const FALLBACK_CATALOG = [
@@ -26,6 +26,18 @@ const FALLBACK_CATALOG = [
 const userTriggersKey     = (gId, pId) => `streamGenie_triggers_${gId}_${pId}`;
 const modifiedTriggersKey = (gId, pId) => `streamGenie_modified_${gId}_${pId}`;
 const contributorCodeKey  = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
+
+/**
+ * Ensures a URL for our profile repo uses raw.githubusercontent.com instead of jsdelivr.
+ * This bypasses CDN branch lag during active development.
+ */
+function ensureRawUrl(urlStr) {
+  if (!urlStr) return urlStr;
+  if (urlStr.includes("cdn.jsdelivr.net/gh/frothydv/streamGenieProfiles@main")) {
+    return urlStr.replace("cdn.jsdelivr.net/gh/frothydv/streamGenieProfiles@main", "raw.githubusercontent.com/frothydv/streamGenieProfiles/main");
+  }
+  return urlStr;
+}
 
 (async function () {
   // --- Tab status ---
@@ -52,14 +64,22 @@ const contributorCodeKey  = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
   // --- Load catalog from CDN (fall back to hardcoded if unavailable) ---
   let CATALOG = FALLBACK_CATALOG;
   try {
-    const res = await fetch(CATALOG_URL, { cache: "no-cache" });
+    const url = new URL(CATALOG_URL);
+    url.searchParams.set("_cb", Date.now());
+    console.log("[overlay/popup] Fetching catalog:", url.toString());
+    const res = await fetch(url.toString(), { cache: "no-store" });
     if (res.ok) {
       const raw = await res.json();
       CATALOG = raw.games.map(g => ({
         gameId:      g.id,
         gameName:    g.name,
         twitchSlug:  g.twitchSlug  || null,
-        profiles:    g.profiles.map(p => ({ id: p.id, name: p.name, verified: p.verified ?? false, url: p.url })),
+        profiles:    g.profiles.map(p => ({ 
+          id: p.id, 
+          name: p.name, 
+          verified: p.verified ?? false, 
+          url: ensureRawUrl(p.url) 
+        })),
       }));
     }
   } catch (_) {
@@ -486,9 +506,11 @@ const contributorCodeKey  = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
     // Load remote profile triggers
     let remoteTriggers = [];
     try {
-      if (prof?.url) {
-        const url = new URL(prof.url);
+      const pUrl = ensureRawUrl(prof?.url);
+      if (pUrl) {
+        const url = new URL(pUrl);
         url.searchParams.set("_cb", Date.now());
+        console.log("[overlay/popup] Fetching profile:", url.toString());
         const profileRes = await fetch(url.toString(), { cache: "no-store" });
         if (profileRes.ok) {
           const profileData = await profileRes.json();
@@ -499,18 +521,27 @@ const contributorCodeKey  = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
       console.warn("[overlay/popup] Failed to load remote profile:", err);
     }
 
-    // Combine all triggers:
-    // 1. Profile triggers (overridden by local modifications if they exist)
-    const mergedRemote = remoteTriggers.map(rt => {
+    // Combine and deduplicate:
+    // 1. Profile triggers (deduplicated by ID, latest wins)
+    const remoteMap = new Map();
+    remoteTriggers.forEach(rt => {
       const mod = modifiedTriggers.find(mt => mt.id === rt.id);
-      return mod ? { ...mod, source: "profile", _isModified: true } : { ...rt, source: "profile" };
+      const merged = mod ? { ...mod, source: "profile", _isModified: true } : { ...rt, source: "profile" };
+      remoteMap.set(merged.id, merged);
     });
+    const mergedRemote = Array.from(remoteMap.values());
 
     // 2. User-created triggers
     const allTriggers = [
       ...mergedRemote,
       ...localTriggers.map(t => ({ ...t, source: "local" }))
     ];
+
+    allTriggers.sort((a, b) => {
+      const tA = (a.payloads?.[0]?.title || a.id || "").toLowerCase();
+      const tB = (b.payloads?.[0]?.title || b.id || "").toLowerCase();
+      return tA.localeCompare(tB);
+    });
 
     if (allTriggers.length === 0) {
       const note = document.createElement("div");

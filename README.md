@@ -59,7 +59,7 @@ You do **not** need to remove and reinstall — reload is enough. Your saved pro
 More games and profiles can be added by anyone — see [Contributing triggers](#contributing-triggers) above.
 
 ## Known limitations
-
-- Matching works best at 1080p. At 720p some small UI elements may miss; at 480p and below most small elements won't match.
-- The debug panel (top-right) is visible on all Twitch pages. Toggle it with the hotkey or ignore it.
-- Chrome only for now. Firefox support is planned.
+- **Matching resolution:** Matching works best at 1080p. At 720p some small UI elements may miss; at 480p and below most small elements won't match.
+- **Sync delay:** The extension caches profiles for **2 minutes**. If someone merges a change to the GitHub repository, it may take up to 2 minutes (plus CDN propagation time) for other users to see it automatically. Refreshing the page will fetch the latest if the cache is older than 2 minutes.
+- **Debug panel:** The debug panel (top-right) is visible on all Twitch pages. Toggle it with the hotkey or ignore it.
+- **Browser support:** Chrome only for now. Firefox support is planned.
