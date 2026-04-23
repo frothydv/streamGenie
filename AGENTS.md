@@ -44,7 +44,7 @@ Manifest V3 Chrome extension. YouTube support planned for milestone 5 (same code
 
 ## Current state
 
-The extension is at **v0.6.0**, having completed the core contribution and profile management flows. Milestones completed:
+The extension is at **v0.6.5**, having resolved synchronization and list UX issues. Milestones completed:
 
 - **M1 (v0.1.0):** Hello-world extension. Manifest, service worker, content script.
 - **M2 (v0.2.0):** Hover detection + pixel capture. Document-level mouse tracking to bypass Twitch overlay divs.
@@ -53,6 +53,7 @@ The extension is at **v0.6.0**, having completed the core contribution and profi
 - **M5 (v0.5.0):** Game detection via Twitch category scraping. Profile selection UI.
 - **M6 (v0.5.5):** First real profile (Slay the Spire 2). Masked matching support for non-rectangular icons.
 - **M7 (v0.6.0):** Complete contribution flow. Integrated capture -> editor -> PR submission via Cloudflare Worker.
+- **M8 (v0.6.5):** Robust synchronization. Auto-rewriting CDN URLs to GitHub Raw; ID-based deduplication; alphabetical sorting.
 
 ## File layout
 
@@ -70,17 +71,17 @@ tests/
   integration/          # Data flow and worker integration tests
 ```
 
-## Known limitations (as of v0.6.0)
+## Known limitations (as of v0.6.5)
 
-### CDN Caching
-Updates merged to the GitHub repository can take 1-5 minutes to propagate through jsDelivr. The extension also caches profiles locally in `localStorage` for 1 hour to ensure fast page loads, which can further delay the visibility of new updates for existing users.
+### Propagation Delay
+While the extension now uses GitHub Raw and cache-busting to minimize lag, updates merged to the repository can still take 1–5 minutes to become visible in the raw file feed. The popup's "refresh" button can be used to force an immediate update.
 
 ### Low-resolution matching
 Matching quality degrades at sub-720p resolutions. 1080p is the target.
 
 ## Planned milestones
 
-- **M8:** Multi-region/Multi-reference support per trigger (capture variations for different resolutions/skins).
-- **M9:** YouTube support.
-- **M10:** Firefox support.
-- **M11:** Advanced community tools (voting on PRs, reputation system).
+- **M9:** Multi-region/Multi-reference support per trigger (capture variations for different resolutions/skins).
+- **M10:** YouTube support.
+- **M11:** Firefox support.
+- **M12:** Advanced community tools (voting on PRs, reputation system).

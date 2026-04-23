@@ -1,4 +1,4 @@
-# Stream Genie — pre-alpha
+# Stream Genie — pre-alpha (v0.6.5)
 
 Hover-to-reveal overlays for Twitch streams. Point your cursor at something on screen — a card, a relic, a UI icon — and a popup tells you what it is. No streamer setup required; it all runs in your browser.
 
