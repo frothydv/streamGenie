@@ -314,11 +314,11 @@ const contributorCodeKey  = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
 
   // --- Delete confirmation ---
 
-  async function deleteLocally(key, idx) {
-    const r2 = await chrome.storage.local.get(key);
-    const saved = r2[key] || [];
-    saved.splice(idx, 1);
-    await chrome.storage.local.set({ [key]: saved });
+  async function deleteLocally(key, triggerId) {
+    const res = await chrome.storage.local.get(key);
+    const saved = res[key] || [];
+    const filtered = saved.filter(t => t.id !== triggerId);
+    await chrome.storage.local.set({ [key]: filtered });
     renderTriggers();
   }
 
@@ -367,7 +367,7 @@ const contributorCodeKey  = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
     const localBtn = document.createElement("button");
     localBtn.className = "delete-btn";
     localBtn.textContent = "Delete locally";
-    localBtn.onclick = () => deleteLocally(key, idx);
+    localBtn.onclick = () => deleteLocally(key, trigger.id);
 
     btns.appendChild(cancelBtn);
     btns.appendChild(localBtn);
@@ -537,7 +537,7 @@ const contributorCodeKey  = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
       delBtn.className = "delete-btn";
       delBtn.textContent = "Delete";
       delBtn.style.display = trigger.source === "local" ? "block" : "none";
-      delBtn.onclick = () => showDeleteConfirm(row, trigger, localTriggers.indexOf(trigger), key);
+      delBtn.onclick = () => showDeleteConfirm(row, trigger, trigger.id, uKey);
 
       row.appendChild(labelContainer);
       row.appendChild(editBtn);

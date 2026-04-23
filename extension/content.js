@@ -2256,7 +2256,7 @@
     }
 
     if (msg && msg.type === "capture-trigger") {
-      if (video && !editorModalOpen) {
+      if (currentVideo && !editorModalOpen) {
         startCaptureMode();
         sendResponse({ ok: true });
       } else {
