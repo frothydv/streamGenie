@@ -1042,6 +1042,64 @@ await test("rejects correct PR number", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// 12. Game routing — cross-game isolation
+// Regression for: trigger submitted to "backpack-battles" being written to
+// "slay-the-spire-2" when content.js has a stale activeProfile in storage.
+// ---------------------------------------------------------------------------
+
+console.log("\n— Game routing: cross-game isolation ---");
+
+await test("addTrigger for game A writes only to game A path", async () => {
+  const { gh, calls } = makeGh();
+  await addTrigger(gh, "backpack-battles", "community", SAMPLE_TRIGGER, true, "hint");
+  const profileWrites = calls.filter(c => c.method === "PUT" && c.path.includes("profile.json"));
+  for (const w of profileWrites) {
+    assert(w.path.includes("backpack-battles"), `expected backpack-battles in path, got ${w.path}`);
+    assert(!w.path.includes("slay-the-spire-2"), `should NOT write to slay-the-spire-2 path, got ${w.path}`);
+  }
+});
+
+await test("addTrigger for game A does not write any images to game B path", async () => {
+  const { gh, calls } = makeGh();
+  await addTrigger(gh, "backpack-battles", "community", SAMPLE_TRIGGER, true, "hint");
+  const imgWrites = calls.filter(c => c.method === "PUT" && c.path.includes("/references/"));
+  for (const w of imgWrites) {
+    assert(w.path.includes("backpack-battles"), `expected backpack-battles in path, got ${w.path}`);
+    assert(!w.path.includes("slay-the-spire-2"), `image should NOT go to slay-the-spire-2 path, got ${w.path}`);
+  }
+});
+
+await test("PR body for game A is tagged with game A (listProposals isolation)", async () => {
+  const { gh, calls } = makeGh();
+  await addTrigger(gh, "backpack-battles", "community", SAMPLE_TRIGGER, false, "anonymous");
+  const prCall = calls.find(c => c.method === "POST" && c.path.includes("/pulls"));
+  assert(prCall, "should create a PR");
+  assert(prCall.body.body.includes("**Game:** backpack-battles"), "PR body should tag backpack-battles");
+  assert(!prCall.body.body.includes("slay-the-spire-2"), "PR body must not reference slay-the-spire-2");
+});
+
+await test("listProposals for game A ignores PRs tagged for game B", async () => {
+  const bbBranchProfile = {
+    triggers: [
+      { id: "piggy-bank", payloads: [{ title: "Piggy Bank", text: "Store coins.", image: null, popupOffset: { x: 14, y: 22 } }], references: [] },
+    ],
+  };
+  const bbPR  = makePR(1, "backpack-battles", "community", "trigger/piggy-bank-111");
+  const stsPR = makePR(2, "slay-the-spire-2", "community", "trigger/map-icon-222");
+  const { gh } = makeGhWithPRs([bbPR, stsPR], { triggers: [] }, bbBranchProfile);
+  const proposals = await listProposals(gh, "backpack-battles", "community");
+  assert(proposals.length === 1, `expected 1 proposal for backpack-battles, got ${proposals.length}`);
+  assertEqual(proposals[0].trigger.id, "piggy-bank");
+});
+
+await test("listProposals for game B ignores PRs tagged for game A", async () => {
+  const bbPR = makePR(1, "backpack-battles", "community", "trigger/piggy-bank-111");
+  const { gh } = makeGhWithPRs([bbPR], MAIN_PROFILE, MAIN_PROFILE);
+  const proposals = await listProposals(gh, "slay-the-spire-2", "community");
+  assertEqual(proposals.length, 0);
+});
+
+// ---------------------------------------------------------------------------
 
 // Wait for all async tests to settle
 await new Promise(r => setTimeout(r, 50));

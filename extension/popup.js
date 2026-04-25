@@ -286,6 +286,7 @@ function ensureRawUrl(urlStr) {
     active = { gameId, profileId: data.profileId, name: data.profileName, url: data.profileUrl };
     await chrome.storage.local.set({ [ACTIVE_PROFILE_KEY]: active });
     renderTriggers();
+    renderContributorStatus();
     console.log("[overlay/popup] profile created:", data.profileUrl);
   }
 
@@ -345,8 +346,18 @@ function ensureRawUrl(urlStr) {
 
   document.getElementById("contribute-btn").addEventListener("click", async () => {
     if (!currentTab) return;
+    const gId  = gameSelect.value  || active.gameId;
+    const pId  = profileSelect.value || active.profileId;
+    const game = CATALOG.find(g => g.gameId === gId);
+    const prof = game?.profiles.find(p => p.id === pId);
     try {
-      await chrome.tabs.sendMessage(currentTab.id, { type: "capture-trigger" });
+      await chrome.tabs.sendMessage(currentTab.id, {
+        type:        "capture-trigger",
+        gameId:      gId,
+        profileId:   pId,
+        profileUrl:  prof?.url  || active.url,
+        profileName: prof?.name || active.name,
+      });
     } catch (_) {}
     window.close();
   });
@@ -577,6 +588,16 @@ function ensureRawUrl(urlStr) {
       trustedEl.style.display = "block";
       prEl.style.display = "none";
       codeHintEl.textContent = `(${code.replace(/-/g, "").slice(0, 8)}…)`;
+      const copyLinkEl = document.getElementById("contributor-copy");
+      if (copyLinkEl) {
+        copyLinkEl.onclick = async (e) => {
+          e.preventDefault();
+          await navigator.clipboard.writeText(code);
+          const prev = copyLinkEl.textContent;
+          copyLinkEl.textContent = "Copied!";
+          setTimeout(() => { copyLinkEl.textContent = prev; }, 1500);
+        };
+      }
       codeClearEl.onclick = async (e) => {
         e.preventDefault();
         await chrome.storage.local.remove(codeKey);

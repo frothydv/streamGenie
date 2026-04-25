@@ -772,9 +772,9 @@
     }
   }
 
-  async function submitToProfile(trigger, mode = "add") {
+  async function submitToProfile(trigger, mode = "add", profileHint = null) {
     if (!WORKER_URL) throw new Error("Worker URL not configured");
-    const ap = activeProfile || DEFAULT_PROFILE;
+    const ap = profileHint || activeProfile || DEFAULT_PROFILE;
 
     const codeStore = await chrome.storage.local.get(contributorCodeKey(ap.gameId, ap.profileId));
     const contributorCode = codeStore[contributorCodeKey(ap.gameId, ap.profileId)] || null;
@@ -864,6 +864,8 @@
     const isProfileEdit = isEdit && !opts.trigger?.id?.startsWith("user-");
     // sourceTrigger: the trigger being edited or reviewed.
     const sourceTrigger = isReview ? opts.proposal?.trigger : opts.trigger;
+    // Profile to submit to — may differ from activeProfile when popup has a different game selected.
+    const profileHint = opts.profileHint || null;
 
     console.log("[DEBUG] === Opening Trigger Editor ===");
     console.log("[DEBUG] Trigger ID:", sourceTrigger?.id);
@@ -1194,7 +1196,7 @@
         try {
           console.log("[content] About to submit update for trigger:", trigger.id);
           console.log("[content] Full trigger object before submit:", JSON.stringify(trigger, null, 2));
-          const result = await submitToProfile(trigger, "update");
+          const result = await submitToProfile(trigger, "update", profileHint);
           closeEditor(result.direct ? "Update submitted directly!" : "Update proposed! PR opened.", "ok");
           if (result.prUrl) console.log("[overlay/content] update PR:", result.prUrl);
 
@@ -1230,7 +1232,7 @@
       cancelBtn.disabled = true;
 
       try {
-        const result = await submitToProfile(trigger, "add");
+        const result = await submitToProfile(trigger, "add", profileHint);
         closeEditor(result.direct ? "Submitted directly!" : "Submitted! PR opened.", "ok");
         if (result.prUrl) console.log("[overlay/content] add PR:", result.prUrl);
 
@@ -2176,7 +2178,7 @@
 
   let captureMode = null;
 
-  function startCaptureMode() {
+  function startCaptureMode(profileHint = null) {
     if (captureMode) return;
     if (!currentVideo || !currentVideo.videoWidth) {
       showToast("Can't capture — no video playing.", "warn");
@@ -2230,7 +2232,7 @@
     overlay.appendChild(selection);
 
     document.body.appendChild(overlay);
-    captureMode = { overlay, snapshot, videoRect: rect, selection, dragStart: null };
+    captureMode = { overlay, snapshot, videoRect: rect, selection, dragStart: null, profileHint };
 
     overlay.addEventListener("mousedown", onCaptureMouseDown);
     overlay.addEventListener("mousemove", onCaptureMouseMove);
@@ -2274,7 +2276,7 @@
     if (!captureMode || !captureMode.dragStart) return;
     const r = captureMode.overlay.getBoundingClientRect();
     const x = e.clientX - r.left, y = e.clientY - r.top;
-    const { dragStart, snapshot } = captureMode;
+    const { dragStart, snapshot, profileHint } = captureMode;
     const dispX = Math.min(dragStart.x, x), dispY = Math.min(dragStart.y, y);
     const dispW = Math.abs(x - dragStart.x), dispH = Math.abs(y - dragStart.y);
 
@@ -2291,7 +2293,7 @@
     cancelCaptureMode();
     openTriggerEditor(crop.toDataURL("image/png"), {
       videoW: snapshot.width, videoH: snapshot.height, cropW: sw, cropH: sh,
-    });
+    }, { profileHint });
   }
 
   // --- Toast ----------------------------------------------------------------
@@ -2339,7 +2341,10 @@
 
     if (msg && msg.type === "capture-trigger") {
       if (currentVideo && !editorModalOpen) {
-        startCaptureMode();
+        const hint = (msg.gameId && msg.profileId)
+          ? { gameId: msg.gameId, profileId: msg.profileId, url: msg.profileUrl, name: msg.profileName }
+          : null;
+        startCaptureMode(hint);
         sendResponse({ ok: true });
       } else {
         sendResponse({ ok: false, error: "No video or editor open" });
