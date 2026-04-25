@@ -72,6 +72,9 @@
     return angles.map(angleDeg => {
       const rotated = rotatePixels(refPixels, refW, refH, angleDeg);
       const scratch = new Float32Array(72);
+      // Collect sample positions so we can check alpha (in-bounds) per-bit below.
+      const samplePX = new Int32Array(72);
+      const samplePY = new Int32Array(72);
       for (let dy = 0; dy < 8; dy++) {
         for (let dx = 0; dx < 9; dx++) {
           // Mirror buildHashSamples: map through canonical coords first so
@@ -80,17 +83,31 @@
           const cy = Math.floor((dy * cs) / 8);
           const px = Math.floor((cx * refW) / cs);
           const py = Math.floor((cy * refH) / cs);
+          const idx = dy * 9 + dx;
+          samplePX[idx] = px;
+          samplePY[idx] = py;
           const i = (py * refW + px) * 4;
-          scratch[dy * 9 + dx] = 0.299 * rotated[i] + 0.587 * rotated[i + 1] + 0.114 * rotated[i + 2];
+          scratch[idx] = 0.299 * rotated[i] + 0.587 * rotated[i + 1] + 0.114 * rotated[i + 2];
         }
       }
+      // Build hash bits and a clip mask.  Each dHash bit compares scratch[y*9+x] vs
+      // scratch[y*9+x+1].  If either sample pixel was outside the rotation bounds
+      // (alpha === 0 from rotatePixels), the comparison is against black — unreliable.
+      // Mask those bits out so they don't count as mismatches when matched to the scene.
       const bits = new Uint8Array(64);
+      const clipMask = new Uint8Array(64);
       for (let y = 0; y < 8; y++) {
         for (let x = 0; x < 8; x++) {
-          bits[y * 8 + x] = scratch[y * 9 + x + 1] > scratch[y * 9 + x] ? 1 : 0;
+          const lIdx = y * 9 + x;
+          const rIdx = lIdx + 1;
+          const lAlpha = rotated[(samplePY[lIdx] * refW + samplePX[lIdx]) * 4 + 3];
+          const rAlpha = rotated[(samplePY[rIdx] * refW + samplePX[rIdx]) * 4 + 3];
+          const bitIdx = y * 8 + x;
+          bits[bitIdx] = scratch[rIdx] > scratch[lIdx] ? 1 : 0;
+          clipMask[bitIdx] = (lAlpha === 255 && rAlpha === 255) ? 1 : 0;
         }
       }
-      return { angle: angleDeg, hash: bits };
+      return { angle: angleDeg, hash: bits, clipMask };
     });
   }
 
@@ -401,7 +418,13 @@
         let bestRotAngle = 0;
         for (const rotHash of ref.rotatedHashes) {
           const rotRef = Object.assign(Object.create(null), ref, {
-            refHash: rotHash.hash, refBitMask: null, refValidBits: 64, refVerifyValues: null,
+            refHash: rotHash.hash,
+            // clipMask zeroes bits where rotation put out-of-bounds (black) pixels —
+            // those positions don't match scene content and would burn the bit budget.
+            // Keep refValidBits=64 so matchThresholdForRef uses the loose unmasked ratio.
+            refBitMask: rotHash.clipMask || null,
+            refValidBits: 64,
+            refVerifyValues: null,
           });
           const rotResult = slidingWindowMatch(rotRef, capturePixels, captureGray);
           if (
@@ -473,6 +496,7 @@
             threshold: ranked[0].threshold,
             verifyScore: ranked[0].verifyScore,
             verifyThreshold: ranked[0].verifyThreshold,
+            angle: ranked[0].angle ?? 0,
             matched: ranked[0].matched,
           }
         : null;
@@ -486,6 +510,7 @@
           threshold: entry.threshold,
           verifyScore: entry.verifyScore,
           verifyThreshold: entry.verifyThreshold,
+          angle: entry.angle ?? 0,
           matched: entry.matched,
           score: entry.score,
         })),

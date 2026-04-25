@@ -2080,6 +2080,7 @@
         threshold,
         verifyScore: best.verifyScore,
         verifyThreshold,
+        angle: best.angle ?? 0,
         candidates: matchResult.candidates,
       };
       showPopups(best.trigger.payloads || [], event.clientX, event.clientY, best.trigger);
@@ -2093,6 +2094,7 @@
         threshold,
         verifyScore: best.verifyScore,
         verifyThreshold,
+        angle: best.angle ?? 0,
         noMatch: true,
         candidates: matchResult.candidates,
       } : null;
@@ -2215,18 +2217,20 @@
     let matchLine = "";
     if (lastMatchInfo) {
       const verifyText = lastMatchInfo.verifyThreshold != null && lastMatchInfo.verifyScore != null
-        ? ` · v=${Math.round(lastMatchInfo.verifyScore * 100)}% <= ${Math.round(lastMatchInfo.verifyThreshold * 100)}%`
+        ? ` v=${Math.round(lastMatchInfo.verifyScore * 100)}%<=${Math.round(lastMatchInfo.verifyThreshold * 100)}%`
         : "";
+      const angleText = lastMatchInfo.angle ? ` @${lastMatchInfo.angle}°` : "";
       matchLine = lastMatchInfo.noMatch
-        ? `<span style="color:#adadb8">best: ${lastMatchInfo.dist}/${lastMatchInfo.validBits} (${Math.round(lastMatchInfo.ratio * 100)}%) <= ${Math.round(lastMatchInfo.threshold * 100)}%${verifyText} "${lastMatchInfo.title}"</span>`
-        : `<span style="color:#00f593">MATCH "${lastMatchInfo.title}" ${lastMatchInfo.dist}/${lastMatchInfo.validBits} (${Math.round(lastMatchInfo.ratio * 100)}%) <= ${Math.round(lastMatchInfo.threshold * 100)}%${verifyText}</span>`;
+        ? `<span style="color:#adadb8">best: ${lastMatchInfo.dist}/${lastMatchInfo.validBits} (${Math.round(lastMatchInfo.ratio * 100)}%)<=${Math.round(lastMatchInfo.threshold * 100)}%${angleText}${verifyText} "${lastMatchInfo.title}"</span>`
+        : `<span style="color:#00f593">MATCH "${lastMatchInfo.title}" ${lastMatchInfo.dist}/${lastMatchInfo.validBits} (${Math.round(lastMatchInfo.ratio * 100)}%)<=${Math.round(lastMatchInfo.threshold * 100)}%${angleText}${verifyText}</span>`;
     }
     const candidateLines = (lastMatchInfo?.candidates || [])
       .map((c, idx) => {
         const verifyText = c.verifyThreshold != null && c.verifyScore != null
-          ? ` · v${Math.round(c.verifyScore * 100)}<=${Math.round(c.verifyThreshold * 100)}`
+          ? ` v${Math.round(c.verifyScore * 100)}<=${Math.round(c.verifyThreshold * 100)}`
           : "";
-        return `#${idx + 1} ${Math.round(c.ratio * 100)}% (${c.dist}/${c.validBits}) <= ${Math.round(c.threshold * 100)}%${verifyText} ${c.title}`;
+        const angleText = c.angle ? `@${c.angle}°` : "";
+        return `#${idx + 1} ${Math.round(c.ratio * 100)}%(${c.dist}/${c.validBits})<=${Math.round(c.threshold * 100)}%${angleText}${verifyText} ${c.title}`;
       })
       .join("<br>");
     infoEl.innerHTML =
