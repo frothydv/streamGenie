@@ -62,30 +62,35 @@
     return dst;
   }
 
-  // Given canonical-size (32×32) RGBA pixels for a reference, pre-compute hashes
-  // for each rotation angle. Returns [{angle, hash}] — no mask support (unmasked only).
-  function computeRotatedHashes(refPixels, refW, refH, angles) {
+  // Given RGBA pixels for a reference at native dimensions (refW×refH), pre-compute
+  // hashes for each rotation angle. Rotation happens at native size to preserve the
+  // ref's aspect ratio. Sampling uses the same double-floor formula as buildHashSamples
+  // so comparison against scene windows is consistent.
+  // canonicalSize defaults to 32 (matches DEFAULTS.canonicalSize).
+  function computeRotatedHashes(refPixels, refW, refH, angles, canonicalSize) {
+    const cs = canonicalSize || 32;
     return angles.map(angleDeg => {
       const rotated = rotatePixels(refPixels, refW, refH, angleDeg);
-      const hash = (function () {
-        const scratch = new Float32Array(72);
-        for (let dy = 0; dy < 8; dy++) {
-          for (let dx = 0; dx < 9; dx++) {
-            const px = Math.floor((dx * refW) / 9);
-            const py = Math.floor((dy * refH) / 8);
-            const i = (py * refW + px) * 4;
-            scratch[dy * 9 + dx] = 0.299 * rotated[i] + 0.587 * rotated[i + 1] + 0.114 * rotated[i + 2];
-          }
+      const scratch = new Float32Array(72);
+      for (let dy = 0; dy < 8; dy++) {
+        for (let dx = 0; dx < 9; dx++) {
+          // Mirror buildHashSamples: map through canonical coords first so
+          // sample positions exactly match what dHashDistFromGray uses on the scene.
+          const cx = Math.floor((dx * cs) / 9);
+          const cy = Math.floor((dy * cs) / 8);
+          const px = Math.floor((cx * refW) / cs);
+          const py = Math.floor((cy * refH) / cs);
+          const i = (py * refW + px) * 4;
+          scratch[dy * 9 + dx] = 0.299 * rotated[i] + 0.587 * rotated[i + 1] + 0.114 * rotated[i + 2];
         }
-        const bits = new Uint8Array(64);
-        for (let y = 0; y < 8; y++) {
-          for (let x = 0; x < 8; x++) {
-            bits[y * 8 + x] = scratch[y * 9 + x + 1] > scratch[y * 9 + x] ? 1 : 0;
-          }
+      }
+      const bits = new Uint8Array(64);
+      for (let y = 0; y < 8; y++) {
+        for (let x = 0; x < 8; x++) {
+          bits[y * 8 + x] = scratch[y * 9 + x + 1] > scratch[y * 9 + x] ? 1 : 0;
         }
-        return bits;
-      })();
-      return { angle: angleDeg, hash };
+      }
+      return { angle: angleDeg, hash: bits };
     });
   }
 
@@ -503,7 +508,9 @@
       slidingWindowMatch,
       evaluateReference,
       findBestMatch,
-      computeRotatedHashes,
+      // Wrap to pass config.canonicalSize so callers don't need to supply it.
+      computeRotatedHashes: (px, w, h, angles) =>
+        computeRotatedHashes(px, w, h, angles, config.canonicalSize),
     };
   }
 

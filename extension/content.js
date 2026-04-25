@@ -636,9 +636,18 @@
     }
 
     // Pre-compute rotated hashes if the trigger opts into rotation-aware matching.
+    // Rotate at native dimensions (w×h) so aspect ratio is preserved — rotating a
+    // squished 32×32 canonical of a wide card produces wrong geometry.
     if (ref.rotates && ref.refHash) {
+      const nativeTmp = document.createElement("canvas");
+      nativeTmp.width = w; nativeTmp.height = h;
+      const nCtx = nativeTmp.getContext("2d");
+      nCtx.imageSmoothingEnabled = true;
+      nCtx.imageSmoothingQuality = "high";
+      nCtx.drawImage(ref.sourceImg, 0, 0, w, h);
+      const nativePx = nCtx.getImageData(0, 0, w, h).data;
       ref.rotatedHashes = matcher.computeRotatedHashes(
-        px, CANONICAL_SIZE, CANONICAL_SIZE, matcher.config.rotationAngles
+        nativePx, w, h, matcher.config.rotationAngles
       );
     } else {
       ref.rotatedHashes = null;
@@ -794,7 +803,8 @@
     console.log(`[overlay/submit] mode=${mode} game=${ap.gameId} profile=${ap.profileId} trusted=${!!contributorCode}`);
 
     const triggerPayload = {
-      id:       trigger.id,
+      id:      trigger.id,
+      rotates: !!trigger.rotates,
       payloads: trigger.payloads,
     };
     if (mode === "add" || mode === "update") {
@@ -939,9 +949,18 @@
     refImg.src = dataUrl;
     refImg.style.cssText = "max-width:120px;max-height:80px;border:1px solid #444;border-radius:4px;display:block;padding:8px;background:#0e0e10;box-sizing:border-box;";
     refSec.appendChild(refImg);
+    const refTooBig = meta.cropW > CAPTURE_SIZE || meta.cropH > CAPTURE_SIZE;
     const refMetaEl = document.createElement("div");
-    refMetaEl.style.cssText = "color:#adadb8;font-size:10px;margin-top:4px;";
-    refMetaEl.textContent = `${meta.cropW}×${meta.cropH} px · from ${meta.videoW}×${meta.videoH} source`;
+    refMetaEl.style.cssText = "font-size:10px;margin-top:4px;";
+    if (refTooBig) {
+      refMetaEl.innerHTML =
+        `<span style="color:#f5b000">${meta.cropW}×${meta.cropH} px — too large to match</span>` +
+        `<br><span style="color:#adadb8">Max size is ${CAPTURE_SIZE}×${CAPTURE_SIZE} px (the hover capture window). ` +
+        `Re-capture a smaller crop of this image.</span>`;
+    } else {
+      refMetaEl.style.color = "#adadb8";
+      refMetaEl.textContent = `${meta.cropW}×${meta.cropH} px · from ${meta.videoW}×${meta.videoH} source`;
+    }
     refSec.appendChild(refMetaEl);
     modal.appendChild(refSec);
 
@@ -1044,21 +1063,39 @@
     addBtn.onclick = () => { payloadStates.push({ title: "", text: "", ox: 14, oy: 22 }); renderPayloads(); };
     modal.appendChild(addBtn);
 
-    // Rotation checkbox (not shown during review — reviewer inherits author's choice)
+    // Rotation checkbox — pre-checked from source trigger; reviewer can override
     const rotateRow = document.createElement("label");
     rotateRow.style.cssText = "display:flex;align-items:center;gap:8px;margin:10px 0 2px;cursor:pointer;font-size:12px;color:#efeff1;user-select:none;";
     const rotateCheck = document.createElement("input");
     rotateCheck.type = "checkbox";
     rotateCheck.style.cursor = "pointer";
-    rotateCheck.checked = !!(isEdit && sourceTrigger?.rotates);
-    if (isReview) rotateRow.style.display = "none";
+    rotateCheck.checked = !!((isEdit || isReview) && sourceTrigger?.rotates);
     const rotateLabel = document.createElement("span");
     rotateLabel.innerHTML = `Can rotate on screen <span style="font-size:10px;color:#adadb8;">(e.g. cards in hand — slower matching)</span>`;
     rotateRow.appendChild(rotateCheck);
     rotateRow.appendChild(rotateLabel);
     modal.appendChild(rotateRow);
 
+    const ROTATE_SAFE = Math.floor(CAPTURE_SIZE / 1.366); // ~117px
+    const rotateWarnEl = document.createElement("div");
+    rotateWarnEl.style.cssText = "font-size:10px;color:#f5b000;margin:2px 0 6px;display:none;";
+    rotateWarnEl.textContent =
+      `Ref is ${meta.cropW}×${meta.cropH} px — corners will be clipped at full ±30° rotation. ` +
+      `Under ${ROTATE_SAFE}px matches more reliably when rotating.`;
+    modal.appendChild(rotateWarnEl);
+
+    const refMarginal = !refTooBig && (meta.cropW > ROTATE_SAFE || meta.cropH > ROTATE_SAFE);
+    function updateRotateWarn() {
+      rotateWarnEl.style.display = (refMarginal && rotateCheck.checked) ? "" : "none";
+    }
+    rotateCheck.addEventListener("change", updateRotateWarn);
+    updateRotateWarn();
+
     function validate() {
+      if (refTooBig) {
+        showToast(`Reference is ${meta.cropW}×${meta.cropH} — larger than the ${CAPTURE_SIZE}px capture window. Re-capture a smaller crop.`, "warn");
+        return false;
+      }
       if (payloadStates.every(p => !p.title.trim() && !p.text.trim())) {
         showToast("Add a title or text to at least one payload.", "warn");
         return false;
@@ -1081,7 +1118,7 @@
       if (isProfileEdit || isReview) {
         return {
           id: sourceTrigger.id,
-          rotates: isReview ? !!sourceTrigger.rotates : rotateCheck.checked,
+          rotates: rotateCheck.checked,
           payloads,
           references: (sourceTrigger.references || []).map((ref, idx) => ({
             file: ref.file ?? null,
@@ -2258,10 +2295,16 @@
       "position:absolute;border:2px solid #00f593;background:rgba(0,245,147,0.18);" +
       "box-shadow:0 0 0 9999px rgba(255,56,96,0.26);" +
       "display:none;pointer-events:none;";
+
+    const sizeLabel = document.createElement("div");
+    sizeLabel.style.cssText =
+      "position:absolute;bottom:-22px;left:0;font-family:sans-serif;font-size:11px;" +
+      "font-weight:600;padding:1px 5px;border-radius:3px;white-space:nowrap;pointer-events:none;";
+    selection.appendChild(sizeLabel);
     overlay.appendChild(selection);
 
     document.body.appendChild(overlay);
-    captureMode = { overlay, snapshot, videoRect: rect, selection, dragStart: null, profileHint };
+    captureMode = { overlay, snapshot, videoRect: rect, selection, sizeLabel, dragStart: null, profileHint };
 
     overlay.addEventListener("mousedown", onCaptureMouseDown);
     overlay.addEventListener("mousemove", onCaptureMouseMove);
@@ -2294,11 +2337,28 @@
     if (!captureMode || !captureMode.dragStart) return;
     const r = captureMode.overlay.getBoundingClientRect();
     const x = e.clientX - r.left, y = e.clientY - r.top;
-    const { dragStart, selection } = captureMode;
+    const { dragStart, selection, sizeLabel, snapshot } = captureMode;
+    const dispW = Math.abs(x - dragStart.x), dispH = Math.abs(y - dragStart.y);
     Object.assign(selection.style, {
       left: Math.min(dragStart.x, x) + "px", top: Math.min(dragStart.y, y) + "px",
-      width: Math.abs(x - dragStart.x) + "px", height: Math.abs(y - dragStart.y) + "px",
+      width: dispW + "px", height: dispH + "px",
     });
+
+    const scaleX = snapshot.width / r.width, scaleY = snapshot.height / r.height;
+    const srcW = Math.round(dispW * scaleX), srcH = Math.round(dispH * scaleY);
+    const ROTATE_SAFE = Math.floor(CAPTURE_SIZE / 1.366); // ~117px — fits at ±30° rotation
+    const tooBig   = srcW > CAPTURE_SIZE || srcH > CAPTURE_SIZE;
+    const marginal = !tooBig && (srcW > ROTATE_SAFE || srcH > ROTATE_SAFE);
+    const color = tooBig ? "#ff3860" : marginal ? "#f5b000" : "#00f593";
+    selection.style.borderColor = color;
+    selection.style.background  = tooBig   ? "rgba(255,56,96,0.15)"  :
+                                   marginal ? "rgba(245,176,0,0.13)" :
+                                              "rgba(0,245,147,0.18)";
+    sizeLabel.style.background = color;
+    sizeLabel.style.color = tooBig ? "#fff" : "#18181b";
+    sizeLabel.textContent = `${srcW}×${srcH}` +
+      (tooBig   ? ` — too large (max ${CAPTURE_SIZE})` :
+       marginal ? ` — corners clip when rotating` : "");
   }
 
   function onCaptureMouseUp(e) {

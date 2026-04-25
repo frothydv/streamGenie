@@ -89,9 +89,13 @@ function embedRotatedInScene(cardPixels, cardW, cardH, angleDeg, tx, ty) {
 
 // Build a ref object suitable for evaluateReference from pixel data.
 // px must be CANONICAL_SIZE×CANONICAL_SIZE RGBA (like what rehashRef produces).
-function makeRef(px, nativeW, nativeH, rotates = false) {
+// nativePx (optional) is the full-resolution image — used for rotation so aspect ratio is preserved.
+function makeRef(px, nativeW, nativeH, rotates = false, nativePx = null) {
   const hash = matcher.dHashFromPixels(px, CANONICAL_SIZE, 0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
   const verify = matcher.buildVerifyRefFromPixels(px, null);
+  const rotPx = nativePx || px;
+  const rotW  = nativePx ? nativeW : CANONICAL_SIZE;
+  const rotH  = nativePx ? nativeH : CANONICAL_SIZE;
   const ref = {
     w: nativeW,
     h: nativeH,
@@ -102,7 +106,7 @@ function makeRef(px, nativeW, nativeH, rotates = false) {
     refVerifyMask: verify.mask,
     refVerifyActive: verify.active,
     rotatedHashes: rotates
-      ? matcher.computeRotatedHashes(px, CANONICAL_SIZE, CANONICAL_SIZE, matcher.config.rotationAngles)
+      ? matcher.computeRotatedHashes(rotPx, rotW, rotH, matcher.config.rotationAngles)
       : null,
   };
   return ref;
@@ -250,10 +254,10 @@ function canonicalize(px, w, h) {
 
 const CARD_CANONICAL = canonicalize(CARD_PX, CARD_W, CARD_H);
 
-// Build a ref with rotation support, using CARD_W×CARD_H native dimensions
-// but a 32×32 canonical hash (same as rehashRef does).
+// Build a ref with rotation support, using CARD_W×CARD_H native dimensions.
+// Passes native pixels for rotation (matches production rehashRef behaviour).
 function makeRotatingRef(rotates = true) {
-  return makeRef(CARD_CANONICAL, CARD_W, CARD_H, rotates);
+  return makeRef(CARD_CANONICAL, CARD_W, CARD_H, rotates, CARD_PX);
 }
 
 test("unrotated card matches at 0° (sanity)", () => {

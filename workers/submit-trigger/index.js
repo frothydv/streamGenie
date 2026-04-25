@@ -217,6 +217,7 @@ async function addTrigger(gh, gameId, profileId, trigger, direct, hint) {
   const { file: profileFile, profile } = await readProfile(gh, profilePath, branch || BASE);
   const newTrigger = {
     id:         rawId,
+    ...(trigger.rotates ? { rotates: true } : {}),
     payloads:   normalisedPayloads(trigger.payloads),
     references: profileRefs,
   };
@@ -253,6 +254,7 @@ async function updateTrigger(gh, gameId, profileId, trigger, direct, hint) {
   if (idx === -1) throw new Error(`Trigger "${triggerId}" not found in profile`);
 
   const nextTrigger = { ...profile.triggers[idx], payloads: normalisedPayloads(trigger.payloads) };
+  if (trigger.rotates) { nextTrigger.rotates = true; } else { delete nextTrigger.rotates; }
   if (trigger.references?.length) {
     console.log("[worker] Updating references for trigger:", trigger.id);
     console.log("[worker] Original reference:", JSON.stringify(profile.triggers[idx].references?.[0] || {}, null, 2));
@@ -458,6 +460,7 @@ async function acceptProposal(gh, gameId, profileId, prNumber, branch, editedTri
   const existingIdx = mainProfile.triggers.findIndex(t => t.id === trigger.id);
   const finalTrigger = {
     id:         trigger.id,
+    ...(trigger.rotates ? { rotates: true } : {}),
     payloads:   normalisedPayloads(trigger.payloads),
     references: (trigger.references || []).map(({ file, w, h, srcW, srcH, maskDataUrl }) =>
                   ({ file: file || null, w: w || null, h: h || null,
