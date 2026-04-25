@@ -414,18 +414,68 @@ async function listProposals(gh, gameId, profileId) {
 }
 
 async function acceptProposal(gh, gameId, profileId, prNumber, branch, editedTrigger, hint) {
-  if (editedTrigger) {
-    const profilePath = `games/${gameId}/profiles/${profileId}`;
-    const { file: profileFile, profile } = await readProfile(gh, profilePath, branch);
-    const idx = profile.triggers.findIndex(t => t.id === editedTrigger.id);
-    if (idx !== -1) {
-      profile.triggers[idx] = { ...profile.triggers[idx], payloads: normalisedPayloads(editedTrigger.payloads) };
-    }
-    const title = editedTrigger.payloads?.[0]?.title || editedTrigger.id;
-    await writeProfile(gh, profilePath, profile, profileFile.sha, branch,
-      `fix: reviewer edits for "${title}" [reviewer: ${hint}]`);
+  const profilePath = `games/${gameId}/profiles/${profileId}`;
+
+  // Resolve the final trigger: prefer reviewer-edited version, fall back to reading from PR branch.
+  let trigger = editedTrigger;
+  if (!trigger) {
+    const { profile: branchProfile } = await readProfile(gh, profilePath, branch);
+    const { profile: mainProfile }   = await readProfile(gh, profilePath, BASE);
+    const mainIds = new Set(mainProfile.triggers.map(t => t.id));
+    trigger = branchProfile.triggers.find(t => !mainIds.has(t.id))
+           || branchProfile.triggers.find(t => {
+                const m = mainProfile.triggers.find(m => m.id === t.id);
+                return m && JSON.stringify(t.payloads) !== JSON.stringify(m.payloads);
+              });
+    if (!trigger) throw new Error("Could not identify the proposed trigger in the PR branch");
   }
-  await gh(`repos/${OWNER}/${REPO}/pulls/${prNumber}/merge`, "PUT", { merge_method: "squash" });
+
+  // Copy reference PNG files from PR branch to main.
+  for (const ref of (trigger.references || [])) {
+    if (!ref.file) continue;
+    const filePath = `${profilePath}/references/${ref.file}`;
+    try {
+      const branchFile = await gh(`repos/${OWNER}/${REPO}/contents/${filePath}?ref=${branch}`, "GET");
+      let existingSha;
+      try {
+        const mainFile = await gh(`repos/${OWNER}/${REPO}/contents/${filePath}?ref=${BASE}`, "GET");
+        existingSha = mainFile.sha;
+      } catch { /* file doesn't exist on main yet — that's fine */ }
+      const body = {
+        message: `feat: add reference image ${ref.file} [reviewer: ${hint}]`,
+        content:  branchFile.content.replace(/\n/g, ""),
+        branch:   BASE,
+      };
+      if (existingSha) body.sha = existingSha;
+      await gh(`repos/${OWNER}/${REPO}/contents/${filePath}`, "PUT", body);
+    } catch (err) {
+      console.warn(`[worker] Failed to copy reference ${ref.file}: ${err.message}`);
+    }
+  }
+
+  // Apply trigger to main profile.json.
+  const { file: mainFile, profile: mainProfile } = await readProfile(gh, profilePath, BASE);
+  const existingIdx = mainProfile.triggers.findIndex(t => t.id === trigger.id);
+  const finalTrigger = {
+    id:         trigger.id,
+    payloads:   normalisedPayloads(trigger.payloads),
+    references: (trigger.references || []).map(({ file, w, h, srcW, srcH, maskDataUrl }) =>
+                  ({ file: file || null, w: w || null, h: h || null,
+                     srcW: srcW || null, srcH: srcH || null, maskDataUrl: maskDataUrl || null })),
+  };
+  if (existingIdx !== -1) {
+    mainProfile.triggers[existingIdx] = finalTrigger;
+  } else {
+    mainProfile.triggers.push(finalTrigger);
+  }
+  const title = trigger.payloads?.[0]?.title || trigger.id;
+  await writeProfile(gh, profilePath, mainProfile, mainFile.sha, null,
+    `feat: accept "${title}" from PR #${prNumber} [reviewer: ${hint}]`);
+
+  // Close PR with acceptance comment (shown as "closed" not "merged", but clearly accepted).
+  await gh(`repos/${OWNER}/${REPO}/issues/${prNumber}/comments`, "POST",
+    { body: `✅ Accepted by reviewer \`${hint}\`. Applied directly to \`main\`.` });
+  await gh(`repos/${OWNER}/${REPO}/pulls/${prNumber}`, "PATCH", { state: "closed" });
 }
 
 async function rejectProposal(gh, prNumber, comment) {

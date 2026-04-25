@@ -481,162 +481,31 @@ function ensureRawUrl(urlStr) {
     const reviewBtn = document.createElement("button");
     reviewBtn.className = "edit-btn";
     reviewBtn.textContent = "Review";
+    reviewBtn.onclick = async () => {
+      if (!currentTab) {
+        reviewBtn.textContent = "No active tab";
+        setTimeout(() => { reviewBtn.textContent = "Review"; }, 2000);
+        return;
+      }
+      const codeKey = contributorCodeKey(gId, pId);
+      const stored = await chrome.storage.local.get(codeKey);
+      const code = stored[codeKey] || null;
+      try {
+        await chrome.tabs.sendMessage(currentTab.id, {
+          type: "review-proposal",
+          proposal,
+          gameId: gId,
+          profileId: pId,
+          contributorCode: code,
+        });
+        window.close();
+      } catch (err) {
+        reviewBtn.textContent = "Open Twitch first";
+        setTimeout(() => { reviewBtn.textContent = "Review"; }, 2000);
+      }
+    };
     header.appendChild(reviewBtn);
     row.appendChild(header);
-
-    // ── Inline review form ───────────────────────────────────────────────────
-    const form = document.createElement("div");
-    form.className = "review-form";
-    form.style.cssText = "display:none; margin-top:8px;";
-
-    // Image preview (larger)
-    if (ref) {
-      const imgDiv = document.createElement("div");
-      imgDiv.style.cssText = "text-align:center; margin-bottom:8px;";
-      const img = document.createElement("img");
-      img.src = `${PROFILES_REPO_BASE}/${proposal.branch}/games/${gId}/profiles/${pId}/references/${ref.file}`;
-      img.style.cssText = "max-width:100%; max-height:80px; object-fit:contain; border-radius:2px;";
-      imgDiv.appendChild(img);
-      form.appendChild(imgDiv);
-    }
-
-    // Title
-    const titleLabel = document.createElement("label");
-    titleLabel.className = "field-label";
-    titleLabel.textContent = "Title";
-    form.appendChild(titleLabel);
-    const titleInput = document.createElement("input");
-    titleInput.type = "text";
-    titleInput.value = payload.title || "";
-    form.appendChild(titleInput);
-
-    // Text
-    const textLabel = document.createElement("label");
-    textLabel.className = "field-label";
-    textLabel.textContent = "Description";
-    form.appendChild(textLabel);
-    const textArea = document.createElement("textarea");
-    textArea.value = payload.text || "";
-    textArea.rows = 3;
-    form.appendChild(textArea);
-
-    // Popup offset
-    const offsetLabel = document.createElement("label");
-    offsetLabel.className = "field-label";
-    offsetLabel.textContent = "Popup Offset (X / Y)";
-    form.appendChild(offsetLabel);
-    const offsetRow = document.createElement("div");
-    offsetRow.style.cssText = "display:flex; gap:6px; margin-bottom:8px;";
-    const xInput = document.createElement("input");
-    xInput.type = "number"; xInput.value = payload.popupOffset?.x ?? 14; xInput.placeholder = "X";
-    xInput.style.marginBottom = "0";
-    const yInput = document.createElement("input");
-    yInput.type = "number"; yInput.value = payload.popupOffset?.y ?? 22; yInput.placeholder = "Y";
-    yInput.style.marginBottom = "0";
-    offsetRow.appendChild(xInput);
-    offsetRow.appendChild(yInput);
-    form.appendChild(offsetRow);
-
-    // Existing triggers (dupe check)
-    if (existingTriggers.length > 0) {
-      const dupeLabel = document.createElement("div");
-      dupeLabel.className = "field-label";
-      dupeLabel.textContent = "Existing Triggers";
-      form.appendChild(dupeLabel);
-      const dupeList = document.createElement("div");
-      dupeList.style.cssText = "max-height:80px; overflow-y:auto; background:#0e0e10; border-radius:4px; padding:4px 6px; margin-bottom:8px;";
-      existingTriggers.forEach(t => {
-        const item = document.createElement("div");
-        item.style.cssText = "font-size:10px; padding:2px 0;";
-        item.textContent = t.payloads?.[0]?.title || t.id;
-        if (t.id === trigger.id) {
-          item.style.color = "#f5b000";
-          item.textContent += " ← this one";
-        } else {
-          item.style.color = "#adadb8";
-        }
-        dupeList.appendChild(item);
-      });
-      form.appendChild(dupeList);
-    }
-
-    // PR link
-    const prLink = document.createElement("a");
-    prLink.href = proposal.prUrl;
-    prLink.target = "_blank";
-    prLink.textContent = `PR #${proposal.prNumber} ↗`;
-    prLink.style.cssText = "font-size:10px; color:#adadb8; text-decoration:none; display:block; margin-bottom:8px;";
-    form.appendChild(prLink);
-
-    // Accept / Reject
-    const noteEl = document.createElement("div");
-    noteEl.className = "note";
-    noteEl.style.marginTop = "4px";
-    const btnRow = document.createElement("div");
-    btnRow.style.cssText = "display:flex; gap:6px;";
-    const acceptBtn = document.createElement("button");
-    acceptBtn.className = "accept-btn";
-    acceptBtn.textContent = "Accept";
-    const rejectBtn = document.createElement("button");
-    rejectBtn.className = "reject-btn";
-    rejectBtn.textContent = "Reject";
-    btnRow.appendChild(acceptBtn);
-    btnRow.appendChild(rejectBtn);
-    form.appendChild(btnRow);
-    form.appendChild(noteEl);
-
-    acceptBtn.onclick = async () => {
-      acceptBtn.disabled = rejectBtn.disabled = true;
-      acceptBtn.textContent = "Accepting…";
-      noteEl.textContent = "";
-      try {
-        const newTitle = titleInput.value.trim();
-        const newText  = textArea.value.trim();
-        const newX     = parseInt(xInput.value) || 14;
-        const newY     = parseInt(yInput.value) || 22;
-        const changed  = newTitle !== (payload.title || "") ||
-                         newText  !== (payload.text  || "") ||
-                         newX     !== (payload.popupOffset?.x ?? 14) ||
-                         newY     !== (payload.popupOffset?.y ?? 22);
-        const editedTrigger = changed ? {
-          ...trigger,
-          payloads: [{ ...payload, title: newTitle, text: newText, popupOffset: { x: newX, y: newY } }],
-        } : null;
-        await workerPost({ gameId: gId, profileId: pId, mode: "accept-proposal",
-          prNumber: proposal.prNumber, branch: proposal.branch, trigger: editedTrigger });
-        row.remove();
-        updateReviewCount(listEl);
-      } catch (err) {
-        noteEl.textContent = `Error: ${err.message}`;
-        noteEl.style.color = "#ff5c5c";
-        acceptBtn.disabled = rejectBtn.disabled = false;
-        acceptBtn.textContent = "Accept";
-      }
-    };
-
-    rejectBtn.onclick = async () => {
-      rejectBtn.disabled = acceptBtn.disabled = true;
-      rejectBtn.textContent = "Rejecting…";
-      noteEl.textContent = "";
-      try {
-        await workerPost({ gameId: gId, profileId: pId, mode: "reject-proposal", prNumber: proposal.prNumber });
-        row.remove();
-        updateReviewCount(listEl);
-      } catch (err) {
-        noteEl.textContent = `Error: ${err.message}`;
-        noteEl.style.color = "#ff5c5c";
-        rejectBtn.disabled = acceptBtn.disabled = false;
-        rejectBtn.textContent = "Reject";
-      }
-    };
-
-    reviewBtn.onclick = () => {
-      const open = form.style.display !== "none";
-      form.style.display = open ? "none" : "block";
-      reviewBtn.textContent = open ? "Review" : "Close";
-    };
-
-    row.appendChild(form);
     return row;
   }
 

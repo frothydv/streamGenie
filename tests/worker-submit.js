@@ -273,18 +273,64 @@ async function listProposals(gh, gameId, profileId) {
 }
 
 async function acceptProposal(gh, gameId, profileId, prNumber, branch, editedTrigger, hint) {
-  if (editedTrigger) {
-    const profilePath = `games/${gameId}/profiles/${profileId}`;
-    const { file: profileFile, profile } = await readProfile(gh, profilePath, branch);
-    const idx = profile.triggers.findIndex(t => t.id === editedTrigger.id);
-    if (idx !== -1) {
-      profile.triggers[idx] = { ...profile.triggers[idx], payloads: normalisedPayloads(editedTrigger.payloads) };
-    }
-    const title = editedTrigger.payloads?.[0]?.title || editedTrigger.id;
-    await writeProfile(gh, profilePath, profile, profileFile.sha, branch,
-      `fix: reviewer edits for "${title}" [reviewer: ${hint}]`);
+  const profilePath = `games/${gameId}/profiles/${profileId}`;
+
+  let trigger = editedTrigger;
+  if (!trigger) {
+    const { profile: branchProfile } = await readProfile(gh, profilePath, branch);
+    const { profile: mainProfile }   = await readProfile(gh, profilePath, BASE);
+    const mainIds = new Set(mainProfile.triggers.map(t => t.id));
+    trigger = branchProfile.triggers.find(t => !mainIds.has(t.id))
+           || branchProfile.triggers.find(t => {
+                const m = mainProfile.triggers.find(m => m.id === t.id);
+                return m && JSON.stringify(t.payloads) !== JSON.stringify(m.payloads);
+              });
+    if (!trigger) throw new Error("Could not identify the proposed trigger in the PR branch");
   }
-  await gh(`repos/${OWNER}/${REPO}/pulls/${prNumber}/merge`, "PUT", { merge_method: "squash" });
+
+  for (const ref of (trigger.references || [])) {
+    if (!ref.file) continue;
+    const filePath = `${profilePath}/references/${ref.file}`;
+    try {
+      const branchFile = await gh(`repos/${OWNER}/${REPO}/contents/${filePath}?ref=${branch}`, "GET");
+      let existingSha;
+      try {
+        const mainFile = await gh(`repos/${OWNER}/${REPO}/contents/${filePath}?ref=${BASE}`, "GET");
+        existingSha = mainFile.sha;
+      } catch { /* file doesn't exist on main yet */ }
+      const body = {
+        message: `feat: add reference image ${ref.file} [reviewer: ${hint}]`,
+        content:  branchFile.content.replace(/\n/g, ""),
+        branch:   BASE,
+      };
+      if (existingSha) body.sha = existingSha;
+      await gh(`repos/${OWNER}/${REPO}/contents/${filePath}`, "PUT", body);
+    } catch (err) {
+      console.warn(`Failed to copy reference ${ref.file}: ${err.message}`);
+    }
+  }
+
+  const { file: mainFile, profile: mainProfile } = await readProfile(gh, profilePath, BASE);
+  const existingIdx = mainProfile.triggers.findIndex(t => t.id === trigger.id);
+  const finalTrigger = {
+    id:         trigger.id,
+    payloads:   normalisedPayloads(trigger.payloads),
+    references: (trigger.references || []).map(({ file, w, h, srcW, srcH, maskDataUrl }) =>
+                  ({ file: file || null, w: w || null, h: h || null,
+                     srcW: srcW || null, srcH: srcH || null, maskDataUrl: maskDataUrl || null })),
+  };
+  if (existingIdx !== -1) {
+    mainProfile.triggers[existingIdx] = finalTrigger;
+  } else {
+    mainProfile.triggers.push(finalTrigger);
+  }
+  const title = trigger.payloads?.[0]?.title || trigger.id;
+  await writeProfile(gh, profilePath, mainProfile, mainFile.sha, null,
+    `feat: accept "${title}" from PR #${prNumber} [reviewer: ${hint}]`);
+
+  await gh(`repos/${OWNER}/${REPO}/issues/${prNumber}/comments`, "POST",
+    { body: `✅ Accepted by reviewer \`${hint}\`. Applied directly to \`main\`.` });
+  await gh(`repos/${OWNER}/${REPO}/pulls/${prNumber}`, "PATCH", { state: "closed" });
 }
 
 async function rejectProposal(gh, prNumber, comment) {
@@ -335,24 +381,29 @@ function makeGh(profileContent = { triggers: [] }, mainSha = "deadbeef") {
 
 // makeGhWithPRs: like makeGh but returns a configurable PR list from the pulls endpoint.
 // branchProfileContent: what profile.json looks like on the PR branch.
-function makeGhWithPRs(openPRs, mainProfileContent, branchProfileContent, mainSha = "deadbeef") {
+// opts.refImageContent: base64 content to return for reference PNG GETs (default "aW1hZ2U=").
+function makeGhWithPRs(openPRs, mainProfileContent, branchProfileContent, mainSha = "deadbeef", opts = {}) {
   const calls = [];
   const gh = async (path, method, body) => {
     calls.push({ path: path.split("?")[0], method, body });
     if (method === "GET" && path.includes("/pulls?")) {
       return openPRs;
     }
+    if (method === "GET" && /\/pulls\/\d+$/.test(path)) {
+      return { mergeable_state: "clean" };
+    }
     if (method === "GET" && path.includes("/contents/") && path.includes("profile.json")) {
-      // Distinguish main vs branch reads by ?ref= param
       const isBranch = path.includes("?ref=") && !path.includes("?ref=main");
       const content = isBranch ? branchProfileContent : mainProfileContent;
       return { sha: "profile-sha-123", content: b64encode(JSON.stringify(content)) };
     }
+    // Reference PNG files on branch or main
+    if (method === "GET" && path.includes("/contents/") && path.includes("references/")) {
+      if (path.includes("?ref=main")) throw new Error("404 Not Found"); // doesn't exist on main yet
+      return { sha: "img-sha-abc", content: opts.refImageContent ?? "aW1hZ2U=" };
+    }
     if (method === "PUT" && path.includes("/contents/")) {
       return { commit: { sha: "new-sha-456" } };
-    }
-    if (method === "PUT" && path.includes("/pulls/") && path.includes("/merge")) {
-      return { sha: "merge-sha-789", merged: true };
     }
     if (method === "PATCH" && path.includes("/pulls/")) {
       return { number: 99, state: "closed" };
@@ -846,68 +897,104 @@ await test("skips PR that errors during branch read (no crash)", async () => {
 
 console.log("\n— acceptProposal ---");
 
-await test("merges PR via PUT /pulls/:number/merge", async () => {
-  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, MAIN_PROFILE);
-  await acceptProposal(gh, "slay-the-spire-2", "community", 42, "trigger/foo-123", null, "reviewer");
-  const merge = calls.find(c => c.method === "PUT" && c.path.includes("/pulls/42/merge"));
-  assert(merge, "should PUT to merge endpoint");
-  assertEqual(merge.body.merge_method, "squash");
+const BRANCH_PROFILE_WITH_NEW = {
+  triggers: [
+    ...MAIN_PROFILE.triggers,
+    { id: "bronze-scales", payloads: [{ title: "Bronze Scales", text: "Old text.", image: null, popupOffset: { x: 14, y: 22 } }], references: [{ file: "bronze-scales.png", w: 40, h: 40, srcW: 1920, srcH: 1080, maskDataUrl: null }] },
+  ],
+};
+
+const EDITED_TRIGGER = {
+  id: "bronze-scales",
+  payloads: [{ title: "Bronze Scales", text: "Corrected.", image: null, popupOffset: { x: 14, y: 22 } }],
+  references: [{ file: "bronze-scales.png", w: 40, h: 40, srcW: 1920, srcH: 1080, maskDataUrl: null }],
+};
+
+await test("does not call the GitHub merge API", async () => {
+  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, BRANCH_PROFILE_WITH_NEW);
+  await acceptProposal(gh, "slay-the-spire-2", "community", 42, "trigger/bronze-123", EDITED_TRIGGER, "reviewer");
+  const merge = calls.find(c => c.path.includes("/merge"));
+  assert(!merge, "should NOT call the merge endpoint");
 });
 
-await test("merge is squash", async () => {
-  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, MAIN_PROFILE);
-  await acceptProposal(gh, "slay-the-spire-2", "community", 99, "trigger/foo-123", null, "reviewer");
-  const merge = calls.find(c => c.method === "PUT" && c.path.includes("/merge"));
-  assertEqual(merge.body.merge_method, "squash");
-});
-
-await test("no profile write when editedTrigger is null", async () => {
-  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, MAIN_PROFILE);
-  await acceptProposal(gh, "slay-the-spire-2", "community", 42, "trigger/foo-123", null, "reviewer");
-  const writes = calls.filter(c => c.method === "PUT" && c.path.includes("profile.json"));
-  assertEqual(writes.length, 0);
-});
-
-await test("writes edited payload to PR branch before merging", async () => {
-  const branchProfile = {
-    triggers: [
-      { id: "bronze-scales", payloads: [{ title: "Bronze Scales", text: "Old text.", image: null, popupOffset: { x: 14, y: 22 } }], references: [] },
-    ],
-  };
-  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, branchProfile);
-  const editedTrigger = {
-    id: "bronze-scales",
-    payloads: [{ title: "Bronze Scales", text: "Corrected description.", image: null, popupOffset: { x: 14, y: 22 } }],
-  };
-  await acceptProposal(gh, "slay-the-spire-2", "community", 42, "trigger/bronze-123", editedTrigger, "reviewer");
+await test("writes trigger to main (no branch field)", async () => {
+  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, BRANCH_PROFILE_WITH_NEW);
+  await acceptProposal(gh, "slay-the-spire-2", "community", 42, "trigger/bronze-123", EDITED_TRIGGER, "reviewer");
   const write = calls.find(c => c.method === "PUT" && c.path.includes("profile.json"));
-  assert(write, "should write profile.json to branch");
-  assertEqual(write.body.branch, "trigger/bronze-123");
-  const written = JSON.parse(b64decode(write.body.content));
-  assertEqual(written.triggers[0].payloads[0].text, "Corrected description.");
+  assert(write, "should write profile.json");
+  assert(!write.body.branch || write.body.branch === BASE, "write should target main, not a branch");
 });
 
-await test("profile write happens before merge", async () => {
-  const branchProfile = {
-    triggers: [{ id: "foo", payloads: [{ title: "Foo", text: "", image: null, popupOffset: { x: 14, y: 22 } }], references: [] }],
-  };
-  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, branchProfile);
-  const editedTrigger = { id: "foo", payloads: [{ title: "Foo", text: "Edited.", image: null, popupOffset: { x: 14, y: 22 } }] };
-  await acceptProposal(gh, "slay-the-spire-2", "community", 5, "trigger/foo-123", editedTrigger, "r");
-  const writeIdx = calls.findIndex(c => c.method === "PUT" && c.path.includes("profile.json"));
-  const mergeIdx = calls.findIndex(c => c.method === "PUT" && c.path.includes("/merge"));
-  assert(writeIdx < mergeIdx, "profile write should precede merge");
+await test("adds trigger to main when it is new", async () => {
+  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, BRANCH_PROFILE_WITH_NEW);
+  await acceptProposal(gh, "slay-the-spire-2", "community", 42, "trigger/bronze-123", EDITED_TRIGGER, "reviewer");
+  const write = calls.find(c => c.method === "PUT" && c.path.includes("profile.json"));
+  const written = JSON.parse(b64decode(write.body.content));
+  const added = written.triggers.find(t => t.id === "bronze-scales");
+  assert(added, "bronze-scales should be in main profile");
+  assertEqual(added.payloads[0].text, "Corrected.");
+});
+
+await test("updates existing trigger in main when IDs match", async () => {
+  const editedExisting = { id: "map-icon", payloads: [{ title: "Map", text: "Updated text.", image: null, popupOffset: { x: 14, y: 22 } }], references: [] };
+  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, MAIN_PROFILE);
+  await acceptProposal(gh, "slay-the-spire-2", "community", 42, "trigger/map-123", editedExisting, "reviewer");
+  const write = calls.find(c => c.method === "PUT" && c.path.includes("profile.json"));
+  const written = JSON.parse(b64decode(write.body.content));
+  const updated = written.triggers.find(t => t.id === "map-icon");
+  assertEqual(updated.payloads[0].text, "Updated text.");
+  assertEqual(written.triggers.filter(t => t.id === "map-icon").length, 1);
 });
 
 await test("reviewer hint appears in commit message", async () => {
-  const branchProfile = {
-    triggers: [{ id: "foo", payloads: [{ title: "Foo", text: "", image: null, popupOffset: { x: 14, y: 22 } }], references: [] }],
-  };
-  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, branchProfile);
-  const editedTrigger = { id: "foo", payloads: [{ title: "Foo", text: "X" }] };
-  await acceptProposal(gh, "slay-the-spire-2", "community", 5, "trigger/foo-123", editedTrigger, "f61d1f28");
+  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, BRANCH_PROFILE_WITH_NEW);
+  await acceptProposal(gh, "slay-the-spire-2", "community", 42, "trigger/bronze-123", EDITED_TRIGGER, "f61d1f28");
   const write = calls.find(c => c.method === "PUT" && c.path.includes("profile.json"));
-  assert(write.body.message.includes("f61d1f28"), "commit should include reviewer hint");
+  assert(write.body.message.includes("f61d1f28"), "commit message should include reviewer hint");
+});
+
+await test("closes PR after writing to main", async () => {
+  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, BRANCH_PROFILE_WITH_NEW);
+  await acceptProposal(gh, "slay-the-spire-2", "community", 42, "trigger/bronze-123", EDITED_TRIGGER, "reviewer");
+  const writeIdx = calls.findIndex(c => c.method === "PUT" && c.path.includes("profile.json"));
+  const closeIdx = calls.findIndex(c => c.method === "PATCH" && c.path.includes("/pulls/"));
+  assert(writeIdx !== -1, "should write profile");
+  assert(closeIdx !== -1, "should close PR");
+  assert(writeIdx < closeIdx, "write must precede close");
+});
+
+await test("posts acceptance comment before closing PR", async () => {
+  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, BRANCH_PROFILE_WITH_NEW);
+  await acceptProposal(gh, "slay-the-spire-2", "community", 42, "trigger/bronze-123", EDITED_TRIGGER, "reviewer");
+  const commentIdx = calls.findIndex(c => c.method === "POST" && c.path.includes("/comments"));
+  const closeIdx   = calls.findIndex(c => c.method === "PATCH" && c.path.includes("/pulls/"));
+  assert(commentIdx !== -1, "should post a comment");
+  assert(commentIdx < closeIdx, "comment must precede close");
+  assert(calls[commentIdx].body.body.includes("Accepted"), "comment should say Accepted");
+});
+
+await test("copies reference PNG from PR branch to main", async () => {
+  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, BRANCH_PROFILE_WITH_NEW);
+  await acceptProposal(gh, "slay-the-spire-2", "community", 42, "trigger/bronze-123", EDITED_TRIGGER, "reviewer");
+  const imgWrite = calls.find(c => c.method === "PUT" && c.path.includes("bronze-scales.png"));
+  assert(imgWrite, "should PUT the reference PNG to main");
+  assert(!imgWrite.body.branch || imgWrite.body.branch === BASE, "image write should target main");
+});
+
+await test("skips image copy if trigger has no references", async () => {
+  const noRefTrigger = { id: "bronze-scales", payloads: [{ title: "Bronze Scales", text: "", image: null, popupOffset: { x: 14, y: 22 } }], references: [] };
+  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, BRANCH_PROFILE_WITH_NEW);
+  await acceptProposal(gh, "slay-the-spire-2", "community", 42, "trigger/bronze-123", noRefTrigger, "reviewer");
+  const imgWrites = calls.filter(c => c.method === "PUT" && c.path.includes("references/"));
+  assertEqual(imgWrites.length, 0);
+});
+
+await test("falls back to reading trigger from branch when editedTrigger is null", async () => {
+  const { gh, calls } = makeGhWithPRs([], MAIN_PROFILE, BRANCH_PROFILE_WITH_NEW);
+  await acceptProposal(gh, "slay-the-spire-2", "community", 42, "trigger/bronze-123", null, "reviewer");
+  const write = calls.find(c => c.method === "PUT" && c.path.includes("profile.json"));
+  const written = JSON.parse(b64decode(write.body.content));
+  assert(written.triggers.some(t => t.id === "bronze-scales"), "fallback should still add the trigger");
 });
 
 // ---------------------------------------------------------------------------

@@ -840,19 +840,39 @@
     el.textContent = "Submit error: " + message;
   }
 
+  async function reviewWorkerCall(body, contributorCode) {
+    const res = await fetch(WORKER_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type":      "application/json",
+        "X-Submit-Secret":   SUBMIT_SECRET,
+        "X-Contributor-Key": contributorCode,
+      },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
+    if (!data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  }
+
   // opts = { mode: 'edit', trigger: existingTrigger } for suggest-edit flow.
+  // opts = { mode: 'review', proposal, gameId, profileId, contributorCode } for proposal review.
   function openTriggerEditor(dataUrl, meta, opts = {}) {
+    const isReview = opts.mode === "review";
     const isEdit = opts.mode === "edit";
     // Profile triggers → propose update PR. User triggers → re-submit as add.
     const isProfileEdit = isEdit && !opts.trigger?.id?.startsWith("user-");
+    // sourceTrigger: the trigger being edited or reviewed.
+    const sourceTrigger = isReview ? opts.proposal?.trigger : opts.trigger;
 
     console.log("[DEBUG] === Opening Trigger Editor ===");
-    console.log("[DEBUG] Trigger ID:", opts.trigger?.id);
+    console.log("[DEBUG] Trigger ID:", sourceTrigger?.id);
     console.log("[DEBUG] Is profile edit:", isProfileEdit);
-    console.log("[DEBUG] Is modified:", !!opts.trigger?._isModified);
-    console.log("[DEBUG] Trigger mask URL:", opts.trigger?.references[0]?.maskDataUrl?.substring(0, 50) + "...");
-    console.log("[DEBUG] Trigger payload title:", opts.trigger?.payloads[0]?.title);
-    console.log("[DEBUG] Trigger payload offset:", opts.trigger?.payloads[0]?.popupOffset);
+    console.log("[DEBUG] Is review:", isReview);
+    console.log("[DEBUG] Is modified:", !!sourceTrigger?._isModified);
+    console.log("[DEBUG] Trigger mask URL:", sourceTrigger?.references[0]?.maskDataUrl?.substring(0, 50) + "...");
+    console.log("[DEBUG] Trigger payload title:", sourceTrigger?.payloads[0]?.title);
+    console.log("[DEBUG] Trigger payload offset:", sourceTrigger?.payloads[0]?.popupOffset);
 
     let destroyMaskEditor = null;
     editorModalOpen = true;
@@ -887,7 +907,7 @@
     header.style.cssText = "display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;";
     const titleEl = document.createElement("span");
     titleEl.style.cssText = "font-size:15px;font-weight:bold;color:#bf94ff;";
-    const modeLabel = isProfileEdit ? "Edit Trigger" : isEdit ? "Edit My Trigger" : "New Trigger";
+    const modeLabel = isReview ? "Review Proposal" : isProfileEdit ? "Edit Trigger" : isEdit ? "Edit My Trigger" : "New Trigger";
     titleEl.textContent = `${modeLabel} · ${(activeProfile || DEFAULT_PROFILE).name}`;
     const xBtn = document.createElement("button");
     xBtn.innerHTML = "&#10005;";
@@ -910,7 +930,7 @@
     refSec.appendChild(refMetaEl);
     modal.appendChild(refSec);
 
-    const initialMaskDataUrl = (isEdit && opts.trigger?.references?.[0]?.maskDataUrl) || null;
+    const initialMaskDataUrl = sourceTrigger?.references?.[0]?.maskDataUrl || null;
     console.log("[DEBUG] initialMaskDataUrl:", initialMaskDataUrl ? "exists" : "null");
     if (initialMaskDataUrl) {
       console.log("[DEBUG] initialMask length:", initialMaskDataUrl.length);
@@ -933,8 +953,8 @@
     const payloadsContainer = document.createElement("div");
     modal.appendChild(payloadsContainer);
 
-    const payloadStates = isEdit && opts.trigger?.payloads?.length
-      ? opts.trigger.payloads.map(p => ({
+    const payloadStates = (isEdit || isReview) && sourceTrigger?.payloads?.length
+      ? sourceTrigger.payloads.map(p => ({
           title: p.title || "",
           text:  p.text  || "",
           ox:    p.popupOffset?.x ?? 14,
@@ -1029,11 +1049,11 @@
         image: null,
         popupOffset: { x: p.ox, y: p.oy },
       }));
-      if (isProfileEdit) {
+      if (isProfileEdit || isReview) {
         return {
-          id: opts.trigger.id,
+          id: sourceTrigger.id,
           payloads,
-          references: (opts.trigger.references || []).map((ref, idx) => ({
+          references: (sourceTrigger.references || []).map((ref, idx) => ({
             file: ref.file ?? null,
             w: ref.w ?? null,
             h: ref.h ?? null,
@@ -1104,6 +1124,56 @@
 
     const cancelBtn = editorBtn("Cancel", false);
     cancelBtn.onclick = () => closeEditor();
+
+    if (isReview) {
+      const proposal = opts.proposal;
+      const acceptBtn = editorBtn("Accept", true);
+      acceptBtn.style.flex = "1";
+      const rejectBtn = editorBtn("Reject", false);
+      Object.assign(rejectBtn.style, { flex: "1", borderColor: "#ff5c5c", color: "#ff5c5c" });
+
+      acceptBtn.onclick = async () => {
+        if (!validate()) return;
+        const trigger = buildTrigger();
+        acceptBtn.disabled = rejectBtn.disabled = cancelBtn.disabled = true;
+        acceptBtn.textContent = "Accepting…";
+        try {
+          await reviewWorkerCall(
+            { gameId: opts.gameId, profileId: opts.profileId, mode: "accept-proposal",
+              prNumber: proposal.prNumber, branch: proposal.branch, trigger },
+            opts.contributorCode
+          );
+          closeEditor("Proposal accepted!", "ok");
+        } catch (err) {
+          acceptBtn.textContent = "Accept";
+          acceptBtn.disabled = rejectBtn.disabled = cancelBtn.disabled = false;
+          showSubmitError(footer, err.message);
+        }
+      };
+
+      rejectBtn.onclick = async () => {
+        rejectBtn.disabled = acceptBtn.disabled = cancelBtn.disabled = true;
+        rejectBtn.textContent = "Rejecting…";
+        try {
+          await reviewWorkerCall(
+            { gameId: opts.gameId, profileId: opts.profileId, mode: "reject-proposal",
+              prNumber: proposal.prNumber },
+            opts.contributorCode
+          );
+          closeEditor("Proposal rejected.", "info");
+        } catch (err) {
+          rejectBtn.textContent = "Reject";
+          rejectBtn.disabled = acceptBtn.disabled = cancelBtn.disabled = false;
+          showSubmitError(footer, err.message);
+        }
+      };
+
+      footer.appendChild(cancelBtn);
+      footer.appendChild(acceptBtn);
+      footer.appendChild(rejectBtn);
+      modal.appendChild(footer);
+      return;
+    }
 
     const submitLabel = isProfileEdit ? "Propose Update" : (WORKER_URL ? "Submit to Profile" : "Save Trigger");
     const submitBtn = editorBtn(submitLabel, true);
@@ -2276,6 +2346,39 @@
       }
     }
     if (msg && msg.type === "get-game") { sendResponse({ game: detectedGame }); }
+    if (msg && msg.type === "review-proposal") {
+      if (!editorModalOpen) {
+        const { proposal, gameId, profileId, contributorCode } = msg;
+        const trigger = proposal.trigger;
+        const ref = trigger.references?.[0];
+        if (!ref || !ref.file) {
+          sendResponse({ ok: false, error: "No reference image" });
+          return true;
+        }
+        const imageUrl = `https://raw.githubusercontent.com/frothydv/streamGenieProfiles/${proposal.branch}/games/${gameId}/profiles/${profileId}/references/${ref.file}`;
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.onload = () => {
+          const canvas = document.createElement("canvas");
+          canvas.width  = ref.w || 160;
+          canvas.height = ref.h || 160;
+          canvas.getContext("2d").drawImage(img, 0, 0);
+          const dataUrl = canvas.toDataURL("image/png");
+          openTriggerEditor(dataUrl, {
+            videoW: ref.srcW || 1920,
+            videoH: ref.srcH || 1080,
+            cropW:  ref.w    || 160,
+            cropH:  ref.h    || 160,
+          }, { mode: "review", proposal, gameId, profileId, contributorCode });
+        };
+        img.onerror = () => showToast("Could not load proposal reference image.", "warn");
+        img.src = imageUrl;
+        sendResponse({ ok: true });
+      } else {
+        sendResponse({ ok: false, error: "Editor already open" });
+      }
+      return true;
+    }
     if (msg && msg.type === "edit-trigger") {
       console.log("[content] Edit trigger request received");
       if (!editorModalOpen) {
