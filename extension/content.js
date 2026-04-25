@@ -634,6 +634,15 @@
       ref.refVerifyMask = verifyRef.mask;
       ref.refVerifyActive = verifyRef.active;
     }
+
+    // Pre-compute rotated hashes if the trigger opts into rotation-aware matching.
+    if (ref.rotates && ref.refHash) {
+      ref.rotatedHashes = matcher.computeRotatedHashes(
+        px, CANONICAL_SIZE, CANONICAL_SIZE, matcher.config.rotationAngles
+      );
+    } else {
+      ref.rotatedHashes = null;
+    }
   }
 
   function rehashAllTriggers() {
@@ -671,6 +680,8 @@
       // Skip if no file and no dataUrl
       if (!ref.file && !ref.dataUrl) continue;
 
+      ref.rotates = !!trigger.rotates; // propagate trigger-level flag to ref
+
       const img = new Image();
       img.onload = () => {
         ref.sourceImg = img;
@@ -699,6 +710,7 @@
       const key = userTriggersKey(ap.gameId, ap.profileId);
       const storable = {
         id: trigger.id,
+        rotates: !!trigger.rotates,
         payloads: trigger.payloads,
         references: trigger.references.map(({ dataUrl, maskDataUrl, file, w, h, srcW, srcH }) => ({ dataUrl, maskDataUrl, file, w, h, srcW, srcH })),
       };
@@ -725,6 +737,7 @@
       const key = modifiedTriggersKey(ap.gameId, ap.profileId);
       const storable = {
         id: trigger.id,
+        rotates: !!trigger.rotates,
         payloads: trigger.payloads,
         references: trigger.references.map(({ dataUrl, maskDataUrl, file, w, h, srcW, srcH }) => ({ dataUrl, maskDataUrl, file, w, h, srcW, srcH })),
         _isModified: true,
@@ -1031,6 +1044,20 @@
     addBtn.onclick = () => { payloadStates.push({ title: "", text: "", ox: 14, oy: 22 }); renderPayloads(); };
     modal.appendChild(addBtn);
 
+    // Rotation checkbox (not shown during review — reviewer inherits author's choice)
+    const rotateRow = document.createElement("label");
+    rotateRow.style.cssText = "display:flex;align-items:center;gap:8px;margin:10px 0 2px;cursor:pointer;font-size:12px;color:#efeff1;user-select:none;";
+    const rotateCheck = document.createElement("input");
+    rotateCheck.type = "checkbox";
+    rotateCheck.style.cursor = "pointer";
+    rotateCheck.checked = !!(isEdit && sourceTrigger?.rotates);
+    if (isReview) rotateRow.style.display = "none";
+    const rotateLabel = document.createElement("span");
+    rotateLabel.innerHTML = `Can rotate on screen <span style="font-size:10px;color:#adadb8;">(e.g. cards in hand — slower matching)</span>`;
+    rotateRow.appendChild(rotateCheck);
+    rotateRow.appendChild(rotateLabel);
+    modal.appendChild(rotateRow);
+
     function validate() {
       if (payloadStates.every(p => !p.title.trim() && !p.text.trim())) {
         showToast("Add a title or text to at least one payload.", "warn");
@@ -1054,6 +1081,7 @@
       if (isProfileEdit || isReview) {
         return {
           id: sourceTrigger.id,
+          rotates: isReview ? !!sourceTrigger.rotates : rotateCheck.checked,
           payloads,
           references: (sourceTrigger.references || []).map((ref, idx) => ({
             file: ref.file ?? null,
@@ -1067,6 +1095,7 @@
       }
       const trigger = {
         id: isEdit ? opts.trigger.id : "user-" + Date.now(),
+        rotates: rotateCheck.checked,
         payloads,
         references: isEdit ?
           (opts.trigger.references || []).map(

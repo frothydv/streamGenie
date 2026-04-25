@@ -20,7 +20,74 @@
     minMaskedBits: 16,
     centerBiasWeight: 0.01,
     maskedCenterBiasWeight: 0.018,
+    // Rotation: angles (degrees) tried when trigger.rotates = true.
+    // 5° steps, ±30°, skipping 0° (handled by the base hash).
+    rotationAngles: [-30, -25, -20, -15, -10, -5, 5, 10, 15, 20, 25, 30],
   };
+
+  // Pure-JS bilinear rotation of an RGBA pixel buffer.
+  // Output is the same w×h; out-of-bounds pixels are transparent/black.
+  function rotatePixels(srcPixels, srcW, srcH, angleDeg) {
+    const rad = angleDeg * Math.PI / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const cx = srcW / 2;
+    const cy = srcH / 2;
+    const dst = new Uint8Array(srcW * srcH * 4);
+    for (let y = 0; y < srcH; y++) {
+      for (let x = 0; x < srcW; x++) {
+        const dx = x - cx, dy = y - cy;
+        // Inverse-rotate to find source pixel
+        const sx = cos * dx + sin * dy + cx;
+        const sy = -sin * dx + cos * dy + cy;
+        const x0 = Math.floor(sx), y0 = Math.floor(sy);
+        const x1 = x0 + 1,        y1 = y0 + 1;
+        if (x0 < 0 || y0 < 0 || x1 >= srcW || y1 >= srcH) continue; // leaves dst as 0
+        const fx = sx - x0, fy = sy - y0;
+        const i00 = (y0 * srcW + x0) * 4;
+        const i10 = (y0 * srcW + x1) * 4;
+        const i01 = (y1 * srcW + x0) * 4;
+        const i11 = (y1 * srcW + x1) * 4;
+        const dstIdx = (y * srcW + x) * 4;
+        const w00 = (1 - fx) * (1 - fy);
+        const w10 = fx * (1 - fy);
+        const w01 = (1 - fx) * fy;
+        const w11 = fx * fy;
+        dst[dstIdx]     = Math.round(srcPixels[i00]     * w00 + srcPixels[i10]     * w10 + srcPixels[i01]     * w01 + srcPixels[i11]     * w11);
+        dst[dstIdx + 1] = Math.round(srcPixels[i00 + 1] * w00 + srcPixels[i10 + 1] * w10 + srcPixels[i01 + 1] * w01 + srcPixels[i11 + 1] * w11);
+        dst[dstIdx + 2] = Math.round(srcPixels[i00 + 2] * w00 + srcPixels[i10 + 2] * w10 + srcPixels[i01 + 2] * w01 + srcPixels[i11 + 2] * w11);
+        dst[dstIdx + 3] = 255;
+      }
+    }
+    return dst;
+  }
+
+  // Given canonical-size (32×32) RGBA pixels for a reference, pre-compute hashes
+  // for each rotation angle. Returns [{angle, hash}] — no mask support (unmasked only).
+  function computeRotatedHashes(refPixels, refW, refH, angles) {
+    return angles.map(angleDeg => {
+      const rotated = rotatePixels(refPixels, refW, refH, angleDeg);
+      const hash = (function () {
+        const scratch = new Float32Array(72);
+        for (let dy = 0; dy < 8; dy++) {
+          for (let dx = 0; dx < 9; dx++) {
+            const px = Math.floor((dx * refW) / 9);
+            const py = Math.floor((dy * refH) / 8);
+            const i = (py * refW + px) * 4;
+            scratch[dy * 9 + dx] = 0.299 * rotated[i] + 0.587 * rotated[i + 1] + 0.114 * rotated[i + 2];
+          }
+        }
+        const bits = new Uint8Array(64);
+        for (let y = 0; y < 8; y++) {
+          for (let x = 0; x < 8; x++) {
+            bits[y * 8 + x] = scratch[y * 9 + x + 1] > scratch[y * 9 + x] ? 1 : 0;
+          }
+        }
+        return bits;
+      })();
+      return { angle: angleDeg, hash };
+    });
+  }
 
   function createMatcher(options = {}) {
     const config = { ...DEFAULTS, ...options };
@@ -299,32 +366,70 @@
     }
 
     function evaluateReference(ref, capturePixels, captureGray) {
-      const result = slidingWindowMatch(ref, capturePixels, captureGray);
       const threshold = matchThresholdForRef(ref);
       const verifyThreshold = verifyThresholdForRef(ref);
-      const verify = ref.refVerifyValues
-        ? verifyScoreFromPixels(
-            capturePixels,
-            config.captureSize,
-            result.x,
-            result.y,
-            ref.refVerifyValues,
-            ref.refVerifyMask,
-            ref.refVerifyActive,
-            ref.verifySampleX,
-            ref.verifySampleY
-          )
+
+      // Phase 1: try base hash with full verify protection.
+      const baseResult = slidingWindowMatch(ref, capturePixels, captureGray);
+      const baseVerify = ref.refVerifyValues
+        ? verifyScoreFromPixels(capturePixels, config.captureSize, baseResult.x, baseResult.y,
+            ref.refVerifyValues, ref.refVerifyMask, ref.refVerifyActive,
+            ref.verifySampleX, ref.verifySampleY)
         : null;
-      const matched =
-        result.ratio <= threshold &&
-        result.validBits >= config.minMaskedBits &&
-        (verifyThreshold == null || (verify && verify.score <= verifyThreshold));
+      const baseMatched =
+        baseResult.ratio <= threshold &&
+        baseResult.validBits >= config.minMaskedBits &&
+        (verifyThreshold == null || baseVerify == null || baseVerify.score <= verifyThreshold);
+
+      if (baseMatched) {
+        return {
+          ...baseResult, angle: 0, threshold,
+          verifyScore: baseVerify ? baseVerify.score : null,
+          verifyThreshold, matched: true,
+        };
+      }
+
+      // Phase 2: base hash failed (ratio or verify). Try rotated hashes as fallback.
+      // Verify is skipped for rotated candidates — color distribution shifts with rotation.
+      if (ref.rotatedHashes && ref.rotatedHashes.length) {
+        let bestRot = null;
+        let bestRotAngle = 0;
+        for (const rotHash of ref.rotatedHashes) {
+          const rotRef = Object.assign(Object.create(null), ref, {
+            refHash: rotHash.hash, refBitMask: null, refValidBits: 64, refVerifyValues: null,
+          });
+          const rotResult = slidingWindowMatch(rotRef, capturePixels, captureGray);
+          if (
+            bestRot == null ||
+            rotResult.score < bestRot.score ||
+            (rotResult.score === bestRot.score && rotResult.ratio < bestRot.ratio)
+          ) {
+            bestRot = rotResult;
+            bestRotAngle = rotHash.angle;
+          }
+        }
+        if (bestRot && bestRot.ratio <= threshold && bestRot.validBits >= config.minMaskedBits) {
+          return {
+            ...bestRot, angle: bestRotAngle, threshold,
+            verifyScore: null, verifyThreshold: null, matched: true,
+          };
+        }
+        // Neither phase matched — return best info for debug display.
+        const useBase = !bestRot || baseResult.score <= bestRot.score;
+        return {
+          ...(useBase ? baseResult : bestRot),
+          angle: useBase ? 0 : bestRotAngle, threshold,
+          verifyScore: useBase ? (baseVerify ? baseVerify.score : null) : null,
+          verifyThreshold: useBase ? verifyThreshold : null,
+          matched: false,
+        };
+      }
+
+      // No rotation hashes — standard unmatched result.
       return {
-        ...result,
-        threshold,
-        verifyScore: verify ? verify.score : null,
-        verifyThreshold,
-        matched,
+        ...baseResult, angle: 0, threshold,
+        verifyScore: baseVerify ? baseVerify.score : null,
+        verifyThreshold, matched: false,
       };
     }
 
@@ -398,8 +503,9 @@
       slidingWindowMatch,
       evaluateReference,
       findBestMatch,
+      computeRotatedHashes,
     };
   }
 
-  return { DEFAULTS, createMatcher };
+  return { DEFAULTS, createMatcher, rotatePixels, computeRotatedHashes };
 });
