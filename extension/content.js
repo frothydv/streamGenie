@@ -595,11 +595,14 @@
       return;
     }
     // Draw reference at canonical size for consistent hash quality at all resolutions.
+    // imageSmoothingEnabled MUST be false: dHashDistFromGray samples the scene at
+    // floor-mapped pixel positions, so the ref hash must use the same floor-sampling.
+    // Bilinear blending at non-integer positions flips gradient bits, causing ~16 extra
+    // mismatches even for a perfect scene match.
     const tmp = document.createElement("canvas");
     tmp.width = CANONICAL_SIZE; tmp.height = CANONICAL_SIZE;
     const ctx = tmp.getContext("2d");
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
+    ctx.imageSmoothingEnabled = false;
     ctx.drawImage(ref.sourceImg, 0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
     const px = ctx.getImageData(0, 0, CANONICAL_SIZE, CANONICAL_SIZE).data;
     ref.refHash = dHashFromPixels(px, CANONICAL_SIZE, 0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
@@ -610,8 +613,7 @@
       const maskCtx = maskCanvas.getContext("2d");
       maskCtx.clearRect(0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
       if (ref.maskImg) {
-        maskCtx.imageSmoothingEnabled = true;
-        maskCtx.imageSmoothingQuality = "high";
+        maskCtx.imageSmoothingEnabled = false;
         maskCtx.drawImage(ref.maskImg, 0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
       } else {
         maskCtx.fillStyle = "#fff";
@@ -642,8 +644,7 @@
       const nativeTmp = document.createElement("canvas");
       nativeTmp.width = w; nativeTmp.height = h;
       const nCtx = nativeTmp.getContext("2d");
-      nCtx.imageSmoothingEnabled = true;
-      nCtx.imageSmoothingQuality = "high";
+      nCtx.imageSmoothingEnabled = false;
       nCtx.drawImage(ref.sourceImg, 0, 0, w, h);
       const nativePx = nCtx.getImageData(0, 0, w, h).data;
       ref.rotatedHashes = matcher.computeRotatedHashes(
