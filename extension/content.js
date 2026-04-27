@@ -2168,6 +2168,20 @@
     info.style.cssText = "margin-top:6px;line-height:1.4;";
     debugPanel.appendChild(info);
 
+    const saveBtn = document.createElement("button");
+    saveBtn.id = "stream-overlay-debug-save";
+    saveBtn.textContent = "save capture";
+    saveBtn.title = "Download the current 160×160 capture as PNG for offline testing";
+    saveBtn.style.cssText = [
+      "margin-top:8px;width:100%;",
+      "background:#1f1f23;color:#bf94ff;",
+      "border:1px solid #9146ff;border-radius:3px;",
+      "padding:3px 6px;font-family:monospace;font-size:11px;",
+      "cursor:pointer;pointer-events:auto;",
+    ].join("");
+    saveBtn.addEventListener("click", saveDebugCapture);
+    debugPanel.appendChild(saveBtn);
+
     document.body.appendChild(debugPanel);
     updateDebugPanelStatus();
     return debugPanel;
@@ -2242,6 +2256,24 @@
       `source: ${info.videoW}x${info.videoH}` +
       (matchLine ? `<br>${matchLine}` : "") +
       (candidateLines ? `<br><span style="color:#888">top:</span><br>${candidateLines}` : "");
+  }
+
+  // --- Debug capture save ---------------------------------------------------
+
+  function saveDebugCapture() {
+    if (!captureCanvas) {
+      showToast("No capture yet — hover over the video first.", "warn");
+      return;
+    }
+    const trigger = lastMatchInfo?.title
+      ? lastMatchInfo.title.replace(/[^a-z0-9-]/gi, "_").slice(0, 40)
+      : "none";
+    const link = document.createElement("a");
+    link.href = captureCanvas.toDataURL("image/png");
+    link.download = `streamgenie-cap-${trigger}-${Date.now()}.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   }
 
   // --- Capture mode ---------------------------------------------------------
