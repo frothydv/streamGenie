@@ -24,6 +24,10 @@
     // Rotation: angles (degrees) tried when trigger.rotates = true.
     // Fine (±1°–±5°) + coarse (±5°–±30° at 5° steps), skipping 0° (handled by base hash).
     rotationAngles: [-30, -25, -20, -15, -10, -5, -4, -3, -2, -1, 1, 2, 3, 4, 5, 10, 15, 20, 25, 30],
+    // Two-pass matching: Phase 2 rotation is only run for the K triggers whose Phase 1
+    // hash distance was closest (even though they didn't meet the Phase 1 threshold).
+    // This caps Phase 2 cost regardless of total trigger count.
+    rotationCandidateLimit: 10,
   };
 
   // Pure-JS bilinear rotation of an RGBA pixel buffer.
@@ -412,7 +416,7 @@
       return best;
     }
 
-    function evaluateReference(ref, capturePixels, captureGray) {
+    function evaluateReference(ref, capturePixels, captureGray, skipRotation) {
       const threshold = matchThresholdForRef(ref);
       const verifyThreshold = verifyThresholdForRef(ref);
 
@@ -448,7 +452,7 @@
       // ratio as dist/validCount (where validCount is the number of unclipped bits in the
       // clipMask) before comparing to rotationMatchThresholdRatio. This gives a fair ratio
       // even when rotation clips many corner bits.
-      if (ref.rotatedHashes && ref.rotatedHashes.length) {
+      if (!skipRotation && ref.rotatedHashes && ref.rotatedHashes.length) {
         const rotThreshold = config.rotationMatchThresholdRatio;
         let bestRot = null;
         let bestRotAngle = 0;
@@ -519,12 +523,13 @@
     }
 
     function findBestMatch(triggers, capturePixels, captureGray) {
+      // Pass 1: run Phase 1 (base hash only, no rotation) for every trigger.
       const ranked = [];
       for (const trigger of triggers) {
         if (!trigger.references) continue;
         for (const ref of trigger.references) {
           if (!ref.refHash) continue;
-          const result = evaluateReference(ref, capturePixels, captureGray);
+          const result = evaluateReference(ref, capturePixels, captureGray, /*skipRotation=*/true);
           ranked.push({
             trigger,
             ref,
@@ -533,6 +538,26 @@
           });
         }
       }
+
+      // If Phase 1 already found a match, skip Phase 2 entirely.
+      const phase1Match = ranked.find(e => e.matched);
+
+      if (!phase1Match) {
+        // Pass 2: rotation search for the top-K rotating triggers by Phase 1 dist.
+        // Sorting by dist surfaces the triggers most likely to be a rotated version of
+        // what's under the cursor, while capping the Phase 2 cost at K × (rotation cost).
+        const rotatingMisses = ranked
+          .filter(e => e.ref.rotatedHashes && e.ref.rotatedHashes.length)
+          .sort((a, b) => a.dist - b.dist)
+          .slice(0, config.rotationCandidateLimit);
+
+        for (const entry of rotatingMisses) {
+          const result = evaluateReference(entry.ref, capturePixels, captureGray, /*skipRotation=*/false);
+          // Overwrite the Phase 1 result for this entry with the full Phase 1+2 result.
+          Object.assign(entry, result);
+        }
+      }
+
       ranked.sort((a, b) => {
         if (a.matched !== b.matched) return a.matched ? -1 : 1;
         if (a.score !== b.score) return a.score - b.score;
