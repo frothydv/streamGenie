@@ -221,11 +221,13 @@ test("rotated hashes differ from base hash", () => {
   assert(anyDiff, "rotated hashes should differ from base hash for a non-symmetric image");
 });
 
-test("default rotation angles include 12 entries (±30° in 5° steps, no 0°)", () => {
-  assert(MatcherCore.DEFAULTS.rotationAngles.length === 12, `expected 12 angles, got ${MatcherCore.DEFAULTS.rotationAngles.length}`);
-  assert(!MatcherCore.DEFAULTS.rotationAngles.includes(0), "0° should not be in rotation angles (handled by base hash)");
-  assert(Math.min(...MatcherCore.DEFAULTS.rotationAngles) === -30, "min angle should be -30");
-  assert(Math.max(...MatcherCore.DEFAULTS.rotationAngles) === 30, "max angle should be 30");
+test("default rotation angles cover ±1°–±30°, no 0° (handled by base hash)", () => {
+  const angles = MatcherCore.DEFAULTS.rotationAngles;
+  assert(!angles.includes(0), "0° should not be in rotation angles (handled by base hash)");
+  assert(Math.min(...angles) === -30, "min angle should be -30");
+  assert(Math.max(...angles) === 30, "max angle should be 30");
+  assert(angles.includes(1) && angles.includes(-1), "fine angles ±1° should be present");
+  assert(angles.includes(5) && angles.includes(-5), "coarse angles ±5° should be present");
 });
 
 // ---------------------------------------------------------------------------
