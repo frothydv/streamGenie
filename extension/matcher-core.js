@@ -24,12 +24,14 @@
     // Rotation: angles (degrees) tried when trigger.rotates = true.
     // Fine (±1°–±5°) + coarse (±5°–±30° at 5° steps), skipping 0° (handled by base hash).
     rotationAngles: [-30, -25, -20, -15, -10, -5, -4, -3, -2, -1, 1, 2, 3, 4, 5, 10, 15, 20, 25, 30],
-    // Two-pass matching: Phase 2 rotation is only run for the K triggers whose Phase 1
-    // hash distance was closest (even though they didn't meet the Phase 1 threshold).
-    // This caps Phase 2 cost regardless of total trigger count.
-    // K=10 is safe with 8 rotating triggers (worst observed rank: 8). Set to 15 for
-    // headroom as the profile grows — re-test when rotating triggers exceed ~50.
-    rotationCandidateLimit: 15,
+    // Two-pass matching: Phase 2 rotation runs for all rotating triggers whose Phase 1
+    // dist is within rotationDistWindow bits of the closest Phase 1 miss. This is
+    // adaptive: scenes with nothing card-like have best-dist ~30+, so the window
+    // contains nothing and Phase 2 cost is zero. Scenes with a rotated card include
+    // all similar candidates automatically, regardless of total trigger count.
+    // rotationCandidateMax is a hard cap to bound worst-case cost.
+    rotationDistWindow: 10,
+    rotationCandidateMax: 50,
   };
 
   // Pure-JS bilinear rotation of an RGBA pixel buffer.
@@ -545,13 +547,20 @@
       const phase1Match = ranked.find(e => e.matched);
 
       if (!phase1Match) {
-        // Pass 2: rotation search for the top-K rotating triggers by Phase 1 dist.
-        // Sorting by dist surfaces the triggers most likely to be a rotated version of
-        // what's under the cursor, while capping the Phase 2 cost at K × (rotation cost).
-        const rotatingMisses = ranked
+        // Pass 2: rotation search for rotating triggers whose Phase 1 dist is within
+        // rotationDistWindow bits of the best Phase 1 miss. This is adaptive: when
+        // nothing card-like is under the cursor, best-dist is ~30+ and the window is
+        // empty so Phase 2 cost is zero. When a rotated card is present, the correct
+        // trigger and its nearest competitors are all included regardless of rank.
+        // rotationCandidateMax is a hard cap to bound worst-case cost.
+        const sortedRotating = ranked
           .filter(e => e.ref.rotatedHashes && e.ref.rotatedHashes.length)
-          .sort((a, b) => a.dist - b.dist)
-          .slice(0, config.rotationCandidateLimit);
+          .sort((a, b) => a.dist - b.dist);
+        const bestDist = sortedRotating[0]?.dist ?? Infinity;
+        const distCutoff = bestDist + config.rotationDistWindow;
+        const rotatingMisses = sortedRotating
+          .filter(e => e.dist <= distCutoff)
+          .slice(0, config.rotationCandidateMax);
 
         for (const entry of rotatingMisses) {
           const result = evaluateReference(entry.ref, capturePixels, captureGray, /*skipRotation=*/false);
