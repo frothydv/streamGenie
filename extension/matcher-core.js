@@ -27,7 +27,9 @@
     // Two-pass matching: Phase 2 rotation is only run for the K triggers whose Phase 1
     // hash distance was closest (even though they didn't meet the Phase 1 threshold).
     // This caps Phase 2 cost regardless of total trigger count.
-    rotationCandidateLimit: 10,
+    // K=10 is safe with 8 rotating triggers (worst observed rank: 8). Set to 15 for
+    // headroom as the profile grows — re-test when rotating triggers exceed ~50.
+    rotationCandidateLimit: 15,
   };
 
   // Pure-JS bilinear rotation of an RGBA pixel buffer.
