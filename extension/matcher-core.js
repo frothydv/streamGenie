@@ -9,7 +9,7 @@
     maskVerifyGrid: 16,
     matchThresholdRatio: 10 / 64,
     maskedMatchThresholdRatio: 6 / 64,
-    rotationMatchThresholdRatio: 6 / 64,
+    rotationMatchThresholdRatio: 7 / 64,
     maskVerifyThreshold: 0.16,
     maskVerifyThresholdMidBits: 0.14,
     maskVerifyThresholdLowBits: 0.12,
@@ -22,8 +22,8 @@
     centerBiasWeight: 0.01,
     maskedCenterBiasWeight: 0.018,
     // Rotation: angles (degrees) tried when trigger.rotates = true.
-    // 5° steps, ±30°, skipping 0° (handled by the base hash).
-    rotationAngles: [-30, -25, -20, -15, -10, -5, 5, 10, 15, 20, 25, 30],
+    // Fine (±1°–±5°) + coarse (±5°–±30° at 5° steps), skipping 0° (handled by base hash).
+    rotationAngles: [-30, -25, -20, -15, -10, -5, -4, -3, -2, -1, 1, 2, 3, 4, 5, 10, 15, 20, 25, 30],
   };
 
   // Pure-JS bilinear rotation of an RGBA pixel buffer.
@@ -439,7 +439,7 @@
       // Phase 2: base hash failed (ratio or verify). Try rotated hashes as fallback.
       // Verify is skipped for rotated candidates — color distribution shifts with rotation.
       //
-      // Threshold strategy: rotationMatchThresholdRatio (6/64) is tighter than the base
+      // Threshold strategy: rotationMatchThresholdRatio (7/64) is tighter than the base
       // matchThresholdRatio (10/64). False positives from unrelated images tend to get
       // 6-10 bit mismatches; true positives rotated to their matching angle get 0 mismatches.
       //
