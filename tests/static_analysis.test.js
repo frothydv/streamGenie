@@ -68,8 +68,8 @@ console.log('✓ deleteLocally refactored to use IDs');
 // 4. Global State hygiene: currentVideo vs video check in content.js
 // Ensure we don't have a global 'video' variable that might mask errors
 console.log('\nCheck 4: Variable hygiene in content.js');
-assert(!contentJs.match(/^let video\b/m), 'content.js should NOT have a global "video" variable (use currentVideo)');
-assert(contentJs.match(/^let currentVideo\b/m), 'content.js should have a global "currentVideo" variable');
+assert(!contentJs.match(/^\s*let video\b/m), 'content.js should NOT have a global "video" variable (use currentVideo)');
+assert(contentJs.match(/^\s*let currentVideo\b/m), 'content.js should have a global "currentVideo" variable');
 console.log('✓ Variable naming consistent');
 
 // 5. Cache-busting in popup.js

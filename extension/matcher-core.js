@@ -9,6 +9,7 @@
     maskVerifyGrid: 16,
     matchThresholdRatio: 10 / 64,
     maskedMatchThresholdRatio: 6 / 64,
+    rotationMatchThresholdRatio: 7 / 64,
     maskVerifyThreshold: 0.16,
     maskVerifyThresholdMidBits: 0.14,
     maskVerifyThresholdLowBits: 0.12,
@@ -20,7 +21,97 @@
     minMaskedBits: 16,
     centerBiasWeight: 0.01,
     maskedCenterBiasWeight: 0.018,
+    // Rotation: angles (degrees) tried when trigger.rotates = true.
+    // Fine (±1°–±5°) + coarse (±5°–±30° at 5° steps), skipping 0° (handled by base hash).
+    rotationAngles: [-30, -25, -20, -15, -10, -5, -4, -3, -2, -1, 1, 2, 3, 4, 5, 10, 15, 20, 25, 30],
   };
+
+  // Pure-JS bilinear rotation of an RGBA pixel buffer.
+  // Output is the same w×h; out-of-bounds pixels are transparent/black.
+  function rotatePixels(srcPixels, srcW, srcH, angleDeg) {
+    const rad = angleDeg * Math.PI / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const cx = srcW / 2;
+    const cy = srcH / 2;
+    const dst = new Uint8Array(srcW * srcH * 4);
+    for (let y = 0; y < srcH; y++) {
+      for (let x = 0; x < srcW; x++) {
+        const dx = x - cx, dy = y - cy;
+        // Inverse-rotate to find source pixel
+        const sx = cos * dx + sin * dy + cx;
+        const sy = -sin * dx + cos * dy + cy;
+        const x0 = Math.floor(sx), y0 = Math.floor(sy);
+        const x1 = x0 + 1,        y1 = y0 + 1;
+        if (x0 < 0 || y0 < 0 || x1 >= srcW || y1 >= srcH) continue; // leaves dst as 0
+        const fx = sx - x0, fy = sy - y0;
+        const i00 = (y0 * srcW + x0) * 4;
+        const i10 = (y0 * srcW + x1) * 4;
+        const i01 = (y1 * srcW + x0) * 4;
+        const i11 = (y1 * srcW + x1) * 4;
+        const dstIdx = (y * srcW + x) * 4;
+        const w00 = (1 - fx) * (1 - fy);
+        const w10 = fx * (1 - fy);
+        const w01 = (1 - fx) * fy;
+        const w11 = fx * fy;
+        dst[dstIdx]     = Math.round(srcPixels[i00]     * w00 + srcPixels[i10]     * w10 + srcPixels[i01]     * w01 + srcPixels[i11]     * w11);
+        dst[dstIdx + 1] = Math.round(srcPixels[i00 + 1] * w00 + srcPixels[i10 + 1] * w10 + srcPixels[i01 + 1] * w01 + srcPixels[i11 + 1] * w11);
+        dst[dstIdx + 2] = Math.round(srcPixels[i00 + 2] * w00 + srcPixels[i10 + 2] * w10 + srcPixels[i01 + 2] * w01 + srcPixels[i11 + 2] * w11);
+        dst[dstIdx + 3] = 255;
+      }
+    }
+    return dst;
+  }
+
+  // Given RGBA pixels for a reference at native dimensions (refW×refH), pre-compute
+  // hashes for each rotation angle. Rotation happens at native size to preserve the
+  // ref's aspect ratio. Sampling uses the same double-floor formula as buildHashSamples
+  // so comparison against scene windows is consistent.
+  // canonicalSize defaults to 32 (matches DEFAULTS.canonicalSize).
+  function computeRotatedHashes(refPixels, refW, refH, angles, canonicalSize) {
+    const cs = canonicalSize || 32;
+    return angles.map(angleDeg => {
+      const rotated = rotatePixels(refPixels, refW, refH, angleDeg);
+      const scratch = new Float32Array(72);
+      // Collect sample positions so we can check alpha (in-bounds) per-bit below.
+      const samplePX = new Int32Array(72);
+      const samplePY = new Int32Array(72);
+      for (let dy = 0; dy < 8; dy++) {
+        for (let dx = 0; dx < 9; dx++) {
+          // Mirror buildHashSamples: map through canonical coords first so
+          // sample positions exactly match what dHashDistFromGray uses on the scene.
+          const cx = Math.floor((dx * cs) / 9);
+          const cy = Math.floor((dy * cs) / 8);
+          const px = Math.floor((cx * refW) / cs);
+          const py = Math.floor((cy * refH) / cs);
+          const idx = dy * 9 + dx;
+          samplePX[idx] = px;
+          samplePY[idx] = py;
+          const i = (py * refW + px) * 4;
+          scratch[idx] = 0.299 * rotated[i] + 0.587 * rotated[i + 1] + 0.114 * rotated[i + 2];
+        }
+      }
+      // Build hash bits and a clip mask.  Each dHash bit compares scratch[y*9+x] vs
+      // scratch[y*9+x+1].  If either sample pixel was outside the rotation bounds
+      // (alpha === 0 from rotatePixels), the comparison is against black — unreliable.
+      // Mask those bits out so they don't count as mismatches when matched to the scene.
+      const bits = new Uint8Array(64);
+      const clipMask = new Uint8Array(64);
+      for (let y = 0; y < 8; y++) {
+        for (let x = 0; x < 8; x++) {
+          const lIdx = y * 9 + x;
+          const rIdx = lIdx + 1;
+          const lAlpha = rotated[(samplePY[lIdx] * refW + samplePX[lIdx]) * 4 + 3];
+          const rAlpha = rotated[(samplePY[rIdx] * refW + samplePX[rIdx]) * 4 + 3];
+          const bitIdx = y * 8 + x;
+          bits[bitIdx] = scratch[rIdx] > scratch[lIdx] ? 1 : 0;
+          clipMask[bitIdx] = (lAlpha === 255 && rAlpha === 255) ? 1 : 0;
+        }
+      }
+      const validCount = clipMask.reduce((s, b) => s + b, 0);
+      return { angle: angleDeg, hash: bits, clipMask, validCount };
+    });
+  }
 
   function createMatcher(options = {}) {
     const config = { ...DEFAULTS, ...options };
@@ -242,7 +333,10 @@
       const coarse = [];
       const maxX = config.captureSize - w;
       const maxY = config.captureSize - h;
-      const useCoarse = coarseStep > config.slideStep && (maxX > coarseStep || maxY > coarseStep);
+      // ref._noCoarse: skip coarse pass and scan every position at slideStep.
+      // Used by Phase 2 rotation to guarantee the exact match position is evaluated —
+      // rotated hashes can have very sharp match peaks that the coarse filter misses.
+      const useCoarse = !ref._noCoarse && coarseStep > config.slideStep && (maxX > coarseStep || maxY > coarseStep);
 
       const scanWindow = (x, y) => {
         const result = dHashDistFromGray(
@@ -267,8 +361,12 @@
       };
 
       if (!useCoarse) {
-        for (let y = 0; y <= maxY; y += config.slideStep) {
-          for (let x = 0; x <= maxX; x += config.slideStep) {
+        const searchMinX = ref._searchBounds ? Math.max(0, ref._searchBounds.minX) : 0;
+        const searchMaxX = ref._searchBounds ? Math.min(maxX, ref._searchBounds.maxX) : maxX;
+        const searchMinY = ref._searchBounds ? Math.max(0, ref._searchBounds.minY) : 0;
+        const searchMaxY = ref._searchBounds ? Math.min(maxY, ref._searchBounds.maxY) : maxY;
+        for (let y = searchMinY; y <= searchMaxY; y += config.slideStep) {
+          for (let x = searchMinX; x <= searchMaxX; x += config.slideStep) {
             scanWindow(x, y);
           }
         }
@@ -285,8 +383,24 @@
 
       const visited = new Set();
       for (const seed of coarse) {
-        for (let y = Math.max(0, seed.y - coarseStep + 1); y <= Math.min(maxY, seed.y + coarseStep - 1); y += config.slideStep) {
-          for (let x = Math.max(0, seed.x - coarseStep + 1); x <= Math.min(maxX, seed.x + coarseStep - 1); x += config.slideStep) {
+        for (let y = Math.max(0, seed.y - coarseStep); y <= Math.min(maxY, seed.y + coarseStep); y += config.slideStep) {
+          for (let x = Math.max(0, seed.x - coarseStep); x <= Math.min(maxX, seed.x + coarseStep); x += config.slideStep) {
+            const key = y * config.captureSize + x;
+            if (visited.has(key)) continue;
+            visited.add(key);
+            scanWindow(x, y);
+          }
+        }
+      }
+
+      // Targeted refinement: if ref._refinement is set, do a step-1 scan within
+      // refineRadius pixels of the current best position.  Used by Phase 2 rotation
+      // to catch sharp-peak matches that the coarse filter places outside ±coarseStep.
+      // Cost: (2R+1)² positions minus already-visited — cheap relative to a full scan.
+      if (ref._refinement) {
+        const radius = ref._refinement;
+        for (let y = Math.max(0, best.y - radius); y <= Math.min(maxY, best.y + radius); y++) {
+          for (let x = Math.max(0, best.x - radius); x <= Math.min(maxX, best.x + radius); x++) {
             const key = y * config.captureSize + x;
             if (visited.has(key)) continue;
             visited.add(key);
@@ -299,32 +413,108 @@
     }
 
     function evaluateReference(ref, capturePixels, captureGray) {
-      const result = slidingWindowMatch(ref, capturePixels, captureGray);
       const threshold = matchThresholdForRef(ref);
       const verifyThreshold = verifyThresholdForRef(ref);
-      const verify = ref.refVerifyValues
-        ? verifyScoreFromPixels(
-            capturePixels,
-            config.captureSize,
-            result.x,
-            result.y,
-            ref.refVerifyValues,
-            ref.refVerifyMask,
-            ref.refVerifyActive,
-            ref.verifySampleX,
-            ref.verifySampleY
-          )
+
+      // Phase 1: try base hash with full verify protection.
+      const baseResult = slidingWindowMatch(ref, capturePixels, captureGray);
+      const baseVerify = ref.refVerifyValues
+        ? verifyScoreFromPixels(capturePixels, config.captureSize, baseResult.x, baseResult.y,
+            ref.refVerifyValues, ref.refVerifyMask, ref.refVerifyActive,
+            ref.verifySampleX, ref.verifySampleY)
         : null;
-      const matched =
-        result.ratio <= threshold &&
-        result.validBits >= config.minMaskedBits &&
-        (verifyThreshold == null || (verify && verify.score <= verifyThreshold));
+      const baseMatched =
+        baseResult.ratio <= threshold &&
+        baseResult.validBits >= config.minMaskedBits &&
+        (verifyThreshold == null || baseVerify == null || baseVerify.score <= verifyThreshold);
+
+      if (baseMatched) {
+        return {
+          ...baseResult, angle: 0, threshold,
+          verifyScore: baseVerify ? baseVerify.score : null,
+          verifyThreshold, matched: true,
+        };
+      }
+
+      // Phase 2: base hash failed (ratio or verify). Try rotated hashes as fallback.
+      // Verify is skipped for rotated candidates — color distribution shifts with rotation.
+      //
+      // Threshold strategy: rotationMatchThresholdRatio (7/64) is tighter than the base
+      // matchThresholdRatio (10/64). False positives from unrelated images tend to get
+      // 6-10 bit mismatches; true positives rotated to their matching angle get 0 mismatches.
+      //
+      // slidingWindowMatch keeps refValidBits=64 so its coarse-pass threshold stays loose
+      // (0.234) and doesn't prune the correct position. After the scan, we recompute the
+      // ratio as dist/validCount (where validCount is the number of unclipped bits in the
+      // clipMask) before comparing to rotationMatchThresholdRatio. This gives a fair ratio
+      // even when rotation clips many corner bits.
+      if (ref.rotatedHashes && ref.rotatedHashes.length) {
+        const rotThreshold = config.rotationMatchThresholdRatio;
+        let bestRot = null;
+        let bestRotAngle = 0;
+        let bestRotValidCount = 64;
+        // The capture is always centered on the cursor, and the ref must contain the cursor.
+        // So the ref's top-left is bounded: x ∈ [center-W+1, center], y ∈ [center-H+1, center].
+        // A center-constrained step-1 scan covers ~45% fewer positions than the full range
+        // while guaranteeing the exact embed position is evaluated — critical because rotated
+        // hashes have sharp peaks (dist=0 only at the exact pixel, 22+ at ±2px) that the
+        // coarse filter can't reliably find.
+        const center = Math.floor(config.captureSize / 2);
+        const rotSearchBounds = {
+          minX: Math.max(0, center - ref.w + 1),
+          maxX: Math.min(config.captureSize - ref.w, center),
+          minY: Math.max(0, center - ref.h + 1),
+          maxY: Math.min(config.captureSize - ref.h, center),
+        };
+        for (const rotHash of ref.rotatedHashes) {
+          const rotRef = Object.assign(Object.create(null), ref, {
+            refHash: rotHash.hash,
+            refBitMask: rotHash.clipMask || null,
+            // Keep refValidBits=64 so matchThresholdForRef returns the loose unmasked ratio.
+            refValidBits: 64,
+            refVerifyValues: null,
+            // Step-1 scan within the center-constrained region: every position where the
+            // cursor (at capture center) falls inside the ref bounding box.
+            _noCoarse: true,
+            _searchBounds: rotSearchBounds,
+          });
+          const rotResult = slidingWindowMatch(rotRef, capturePixels, captureGray);
+          if (
+            bestRot == null ||
+            rotResult.score < bestRot.score ||
+            (rotResult.score === bestRot.score && rotResult.ratio < bestRot.ratio)
+          ) {
+            bestRot = rotResult;
+            bestRotAngle = rotHash.angle;
+            bestRotValidCount = rotHash.validCount ?? 64;
+          }
+        }
+        // Re-derive ratio using actual valid-bit count as denominator so that clipped
+        // corner bits don't inflate the numerator while 64 deflates the denominator.
+        const adjustedRatio = bestRot ? bestRot.dist / bestRotValidCount : 1;
+        if (bestRot && adjustedRatio <= rotThreshold && bestRot.validBits >= config.minMaskedBits) {
+          return {
+            ...bestRot, ratio: adjustedRatio, angle: bestRotAngle, threshold: rotThreshold,
+            verifyScore: null, verifyThreshold: null, matched: true,
+          };
+        }
+        // Neither phase matched — return best info for debug display.
+        const useBase = !bestRot || baseResult.score <= bestRot.score;
+        return {
+          ...(useBase ? baseResult : bestRot),
+          ...(useBase ? {} : { ratio: adjustedRatio }),
+          angle: useBase ? 0 : bestRotAngle, threshold: useBase ? threshold : rotThreshold,
+          verifyScore: useBase ? (baseVerify ? baseVerify.score : null) : null,
+          verifyThreshold: useBase ? verifyThreshold : null,
+          matched: false,
+        };
+      }
+
+      // No rotation hashes — standard unmatched result.
       return {
-        ...result,
-        threshold,
-        verifyScore: verify ? verify.score : null,
-        verifyThreshold,
-        matched,
+        ...baseResult, angle: 0, threshold,
+        verifyScore: baseVerify ? baseVerify.score : null,
+        verifyThreshold, matched: false,
       };
     }
 
@@ -363,6 +553,7 @@
             threshold: ranked[0].threshold,
             verifyScore: ranked[0].verifyScore,
             verifyThreshold: ranked[0].verifyThreshold,
+            angle: ranked[0].angle ?? 0,
             matched: ranked[0].matched,
           }
         : null;
@@ -376,6 +567,7 @@
           threshold: entry.threshold,
           verifyScore: entry.verifyScore,
           verifyThreshold: entry.verifyThreshold,
+          angle: entry.angle ?? 0,
           matched: entry.matched,
           score: entry.score,
         })),
@@ -398,8 +590,11 @@
       slidingWindowMatch,
       evaluateReference,
       findBestMatch,
+      // Wrap to pass config.canonicalSize so callers don't need to supply it.
+      computeRotatedHashes: (px, w, h, angles) =>
+        computeRotatedHashes(px, w, h, angles, config.canonicalSize),
     };
   }
 
-  return { DEFAULTS, createMatcher };
+  return { DEFAULTS, createMatcher, rotatePixels, computeRotatedHashes };
 });
