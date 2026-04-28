@@ -638,18 +638,20 @@
     }
 
     // Pre-compute rotated hashes if the trigger opts into rotation-aware matching.
+    // Rotation schema takes precedence over legacy rotates:true flag.
     // Rotate at native dimensions (w×h) so aspect ratio is preserved — rotating a
     // squished 32×32 canonical of a wide card produces wrong geometry.
-    if (ref.rotates && ref.refHash) {
+    const rotAngles = ref.rotation
+      ? matcher.anglesForRotation(ref.rotation)
+      : ref.rotates ? matcher.config.rotationAngles : null;
+    if (rotAngles && rotAngles.length && ref.refHash) {
       const nativeTmp = document.createElement("canvas");
       nativeTmp.width = w; nativeTmp.height = h;
       const nCtx = nativeTmp.getContext("2d");
       nCtx.imageSmoothingEnabled = false;
       nCtx.drawImage(ref.sourceImg, 0, 0, w, h);
       const nativePx = nCtx.getImageData(0, 0, w, h).data;
-      ref.rotatedHashes = matcher.computeRotatedHashes(
-        nativePx, w, h, matcher.config.rotationAngles
-      );
+      ref.rotatedHashes = matcher.computeRotatedHashes(nativePx, w, h, rotAngles);
     } else {
       ref.rotatedHashes = null;
     }
@@ -690,7 +692,8 @@
       // Skip if no file and no dataUrl
       if (!ref.file && !ref.dataUrl) continue;
 
-      ref.rotates = !!trigger.rotates; // propagate trigger-level flag to ref
+      ref.rotates = !!trigger.rotates;         // legacy flag
+      ref.rotation = trigger.rotation || null; // structured rotation schema
 
       const img = new Image();
       img.onload = () => {
@@ -721,6 +724,7 @@
       const storable = {
         id: trigger.id,
         rotates: !!trigger.rotates,
+        rotation: trigger.rotation || null,
         payloads: trigger.payloads,
         references: trigger.references.map(({ dataUrl, maskDataUrl, file, w, h, srcW, srcH }) => ({ dataUrl, maskDataUrl, file, w, h, srcW, srcH })),
       };
@@ -748,6 +752,7 @@
       const storable = {
         id: trigger.id,
         rotates: !!trigger.rotates,
+        rotation: trigger.rotation || null,
         payloads: trigger.payloads,
         references: trigger.references.map(({ dataUrl, maskDataUrl, file, w, h, srcW, srcH }) => ({ dataUrl, maskDataUrl, file, w, h, srcW, srcH })),
         _isModified: true,
@@ -2416,9 +2421,23 @@
     crop.width = sw; crop.height = sh;
     crop.getContext("2d").drawImage(snapshot, sx, sy, sw, sh, 0, 0, sw, sh);
 
+    // Capture a wider 480×480 region centered on the crop for the heat-map preview.
+    const WIDE_SIZE = 480;
+    const cropCx = sx + sw / 2, cropCy = sy + sh / 2;
+    const wsx = Math.max(0, Math.round(cropCx - WIDE_SIZE / 2));
+    const wsy = Math.max(0, Math.round(cropCy - WIDE_SIZE / 2));
+    const wex = Math.min(snapshot.width,  wsx + WIDE_SIZE);
+    const wey = Math.min(snapshot.height, wsy + WIDE_SIZE);
+    const wideCanvas = document.createElement("canvas");
+    wideCanvas.width = wex - wsx; wideCanvas.height = wey - wsy;
+    wideCanvas.getContext("2d").drawImage(snapshot, wsx, wsy, wex - wsx, wey - wsy, 0, 0, wex - wsx, wey - wsy);
+
     cancelCaptureMode();
     openTriggerEditor(crop.toDataURL("image/png"), {
       videoW: snapshot.width, videoH: snapshot.height, cropW: sw, cropH: sh,
+      wideDataUrl: wideCanvas.toDataURL("image/png"),
+      wideCropX: sx - wsx,
+      wideCropY: sy - wsy,
     }, { profileHint });
   }
 

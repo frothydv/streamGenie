@@ -231,6 +231,52 @@ test("default rotation angles cover ±1°–±30°, no 0° (handled by base hash
 });
 
 // ---------------------------------------------------------------------------
+// 2b. anglesForRotation
+// ---------------------------------------------------------------------------
+
+console.log("\n— anglesForRotation ---");
+
+test("null/false/mode:none returns null", () => {
+  assert(MatcherCore.anglesForRotation(null) === null, "null → null");
+  assert(MatcherCore.anglesForRotation(false) === null, "false → null");
+  assert(MatcherCore.anglesForRotation({ mode: "none" }) === null, "mode:none → null");
+});
+
+test("legacy true returns same angles as DEFAULTS.rotationAngles", () => {
+  const a = MatcherCore.anglesForRotation(true);
+  const b = MatcherCore.DEFAULTS.rotationAngles;
+  assert(a.length === b.length, `length mismatch: ${a.length} vs ${b.length}`);
+  assert(JSON.stringify(a.slice().sort((x,y)=>x-y)) === JSON.stringify(b.slice().sort((x,y)=>x-y)), "sets differ");
+});
+
+test("orthogonal mode returns [90, 180, 270]", () => {
+  const a = MatcherCore.anglesForRotation({ mode: "orthogonal" });
+  assert(a.length === 3, `expected 3 angles, got ${a.length}`);
+  assert(a.includes(90) && a.includes(180) && a.includes(270), "must include 90, 180, 270");
+  assert(!a.includes(0), "must not include 0");
+});
+
+test("free mode with defaults has no 0° and covers ±30°", () => {
+  const a = MatcherCore.anglesForRotation({ mode: "free" });
+  assert(!a.includes(0), "0° must be excluded");
+  assert(Math.min(...a) <= -30, "must reach -30");
+  assert(Math.max(...a) >= 30, "must reach 30");
+  assert(a.includes(1) && a.includes(-1), "fine angles ±1° must be present (fineStepNearZero defaults true)");
+});
+
+test("free mode with fineStepNearZero:false omits ±1°–±4°", () => {
+  const a = MatcherCore.anglesForRotation({ mode: "free", minAngle: -30, maxAngle: 30, step: 5, fineStepNearZero: false });
+  assert(!a.includes(1) && !a.includes(-1), "±1° must not be present");
+  assert(a.includes(5) && a.includes(-5), "±5° must be present");
+});
+
+test("free mode with custom range [0, 30] step 10 has no 0°", () => {
+  const a = MatcherCore.anglesForRotation({ mode: "free", minAngle: 0, maxAngle: 30, step: 10, fineStepNearZero: false });
+  assert(!a.includes(0), "0° must be excluded even when minAngle=0");
+  assert(a.includes(10) && a.includes(20) && a.includes(30), "must include 10, 20, 30");
+});
+
+// ---------------------------------------------------------------------------
 // 3. Accuracy — rotation-aware matching finds rotated triggers
 // ---------------------------------------------------------------------------
 
