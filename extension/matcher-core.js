@@ -24,6 +24,14 @@
     // Rotation: angles (degrees) tried when trigger.rotates = true.
     // Fine (±1°–±5°) + coarse (±5°–±30° at 5° steps), skipping 0° (handled by base hash).
     rotationAngles: [-30, -25, -20, -15, -10, -5, -4, -3, -2, -1, 1, 2, 3, 4, 5, 10, 15, 20, 25, 30],
+    // Two-pass matching: Phase 2 rotation runs for all rotating triggers whose Phase 1
+    // dist is within rotationDistWindow bits of the closest Phase 1 miss. This is
+    // adaptive: scenes with nothing card-like have best-dist ~30+, so the window
+    // contains nothing and Phase 2 cost is zero. Scenes with a rotated card include
+    // all similar candidates automatically, regardless of total trigger count.
+    // rotationCandidateMax is a hard cap to bound worst-case cost.
+    rotationDistWindow: 10,
+    rotationCandidateMax: 50,
   };
 
   // Pure-JS bilinear rotation of an RGBA pixel buffer.
@@ -412,7 +420,7 @@
       return best;
     }
 
-    function evaluateReference(ref, capturePixels, captureGray) {
+    function evaluateReference(ref, capturePixels, captureGray, skipRotation) {
       const threshold = matchThresholdForRef(ref);
       const verifyThreshold = verifyThresholdForRef(ref);
 
@@ -448,7 +456,7 @@
       // ratio as dist/validCount (where validCount is the number of unclipped bits in the
       // clipMask) before comparing to rotationMatchThresholdRatio. This gives a fair ratio
       // even when rotation clips many corner bits.
-      if (ref.rotatedHashes && ref.rotatedHashes.length) {
+      if (!skipRotation && ref.rotatedHashes && ref.rotatedHashes.length) {
         const rotThreshold = config.rotationMatchThresholdRatio;
         let bestRot = null;
         let bestRotAngle = 0;
@@ -519,12 +527,13 @@
     }
 
     function findBestMatch(triggers, capturePixels, captureGray) {
+      // Pass 1: run Phase 1 (base hash only, no rotation) for every trigger.
       const ranked = [];
       for (const trigger of triggers) {
         if (!trigger.references) continue;
         for (const ref of trigger.references) {
           if (!ref.refHash) continue;
-          const result = evaluateReference(ref, capturePixels, captureGray);
+          const result = evaluateReference(ref, capturePixels, captureGray, /*skipRotation=*/true);
           ranked.push({
             trigger,
             ref,
@@ -533,6 +542,33 @@
           });
         }
       }
+
+      // If Phase 1 already found a match, skip Phase 2 entirely.
+      const phase1Match = ranked.find(e => e.matched);
+
+      if (!phase1Match) {
+        // Pass 2: rotation search for rotating triggers whose Phase 1 dist is within
+        // rotationDistWindow bits of the best Phase 1 miss. This is adaptive: when
+        // nothing card-like is under the cursor, best-dist is ~30+ and the window is
+        // empty so Phase 2 cost is zero. When a rotated card is present, the correct
+        // trigger and its nearest competitors are all included regardless of rank.
+        // rotationCandidateMax is a hard cap to bound worst-case cost.
+        const sortedRotating = ranked
+          .filter(e => e.ref.rotatedHashes && e.ref.rotatedHashes.length)
+          .sort((a, b) => a.dist - b.dist);
+        const bestDist = sortedRotating[0]?.dist ?? Infinity;
+        const distCutoff = bestDist + config.rotationDistWindow;
+        const rotatingMisses = sortedRotating
+          .filter(e => e.dist <= distCutoff)
+          .slice(0, config.rotationCandidateMax);
+
+        for (const entry of rotatingMisses) {
+          const result = evaluateReference(entry.ref, capturePixels, captureGray, /*skipRotation=*/false);
+          // Overwrite the Phase 1 result for this entry with the full Phase 1+2 result.
+          Object.assign(entry, result);
+        }
+      }
+
       ranked.sort((a, b) => {
         if (a.matched !== b.matched) return a.matched ? -1 : 1;
         if (a.score !== b.score) return a.score - b.score;
