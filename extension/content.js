@@ -1299,8 +1299,9 @@
           const wideImgEl = await hmLoadImage(meta.wideDataUrl);
           const wideCanvas2 = document.createElement("canvas");
           wideCanvas2.width = wideImgEl.naturalWidth; wideCanvas2.height = wideImgEl.naturalHeight;
-          wideCanvas2.getContext("2d").drawImage(wideImgEl, 0, 0);
-          const widePx = wideCanvas2.getContext("2d").getImageData(0, 0, wideCanvas2.width, wideCanvas2.height).data;
+          const wCtx2 = wideCanvas2.getContext("2d");
+          wCtx2.drawImage(wideImgEl, 0, 0);
+          const widePx = wCtx2.getImageData(0, 0, wideCanvas2.width, wideCanvas2.height).data;
           const wideW = wideCanvas2.width, wideH = wideCanvas2.height;
 
           // Build ref hash at canonical size
@@ -1354,6 +1355,14 @@
           const threshold   = Math.ceil(matcher.config.rotationMatchThresholdRatio * refValidBits);
           const closeThresh = Math.ceil(matcher.config.matchThresholdRatio * refValidBits);
 
+          // Diagnostic: direct dist at the expected crop position (should be ≈ 0).
+          const diagCropX = meta.wideCropX || 0, diagCropY = meta.wideCropY || 0;
+          const diagFits = diagCropX + winW <= wideW && diagCropY + winH <= wideH;
+          const diagDist = diagFits
+            ? hmHashDist(matcher.dHashFromPixels(widePx, wideW, diagCropX, diagCropY, winW, winH), refHash, refMaskBits)
+            : -1;
+          console.log(`[heatmap] wide=${wideW}×${wideH} win=${winW}×${winH} stride=${STRIDE} crop@(${diagCropX},${diagCropY}) directDist=${diagDist} threshold=${threshold}`);
+
           const results = [];
           for (let ty = 0; ty + winH <= wideH; ty += STRIDE) {
             for (let tx = 0; tx + winW <= wideW; tx += STRIDE) {
@@ -1371,6 +1380,8 @@
               results.push({ tx, ty, dist: bestRatio * refValidBits });
             }
           }
+          const bestResult = results.length ? results.reduce((m, r) => r.dist < m.dist ? r : m) : null;
+          console.log(`[heatmap] scanned ${results.length} windows, best dist=${bestResult?.dist?.toFixed(1)} at (${bestResult?.tx},${bestResult?.ty}), matchCount to follow`);
 
           // Render overlay on top of the wide capture image
           const dispW = hmImg.offsetWidth  || hmImg.naturalWidth;
@@ -1396,13 +1407,14 @@
             (meta.cropW || WIN) * scX, (meta.cropH || WIN) * scY
           );
 
+          const diagLine = `[diag: win=${winW}×${winH} wide=${wideW}×${wideH} directDist=${diagDist} bestDist=${bestResult?.dist?.toFixed(1)} threshold=${threshold}]`;
           if (matchCount > 0) {
             hmStatus.style.color = "#00f593";
             hmStatus.textContent = `Match found (${matchCount} window${matchCount > 1 ? "s" : ""}) — looks good!`;
             heatMapPassed = true;
           } else {
             hmStatus.style.color = "#ff5c5c";
-            hmStatus.textContent = "No match — adjust the mask, rotation settings, or re-capture.";
+            hmStatus.textContent = `No match. ${diagLine}`;
             heatMapPassed = false;
           }
         } catch (err) {
