@@ -1207,9 +1207,21 @@
       startRotationAnim();
     }
     for (const radio of Object.values(modeRadios)) radio.addEventListener("change", onRotModeChange);
-    [minInput, maxInput, baseInput].forEach(el => el.addEventListener("input", () => {
+    [minInput, maxInput].forEach(el => el.addEventListener("input", () => {
       if (currentRotMode === "free") startRotationAnim();
     }));
+    // Base angle: freeze at exactly that angle so the user can judge the ref's
+    // orientation, then resume the sweep after a short pause.
+    let _baseDebounce = null;
+    baseInput.addEventListener("input", () => {
+      if (currentRotMode !== "free") return;
+      stopRotationAnim();
+      const base = parseFloat(baseInput.value) || 0;
+      refImg.style.transition = "transform 0.15s";
+      refImg.style.transform = `rotate(${base}deg)`;
+      clearTimeout(_baseDebounce);
+      _baseDebounce = setTimeout(() => startRotationAnim(), 900);
+    });
     onRotModeChange();
 
     function getRotationObject() {
@@ -1333,16 +1345,19 @@
             rotHashes = matcher.computeRotatedHashes(nPx, cW, cH, hmAngles);
           }
 
-          // Sliding window scan across wide capture
-          const WIN = CAPTURE_SIZE; // 160
-          const STRIDE = 16;
+          // Sliding window scan across wide capture.
+          // Window size = native crop dimensions so dHash samples proportionally
+          // equivalent positions to the ref hash (which was built at CANONICAL_SIZE).
+          const winW = meta.cropW || CANONICAL_SIZE;
+          const winH = meta.cropH || CANONICAL_SIZE;
+          const STRIDE = Math.max(4, Math.round(Math.min(winW, winH) / 8));
           const threshold   = Math.ceil(matcher.config.rotationMatchThresholdRatio * refValidBits);
           const closeThresh = Math.ceil(matcher.config.matchThresholdRatio * refValidBits);
 
           const results = [];
-          for (let ty = 0; ty + WIN <= wideH; ty += STRIDE) {
-            for (let tx = 0; tx + WIN <= wideW; tx += STRIDE) {
-              const winHash = matcher.dHashFromPixels(widePx, wideW, tx, ty, WIN, WIN);
+          for (let ty = 0; ty + winH <= wideH; ty += STRIDE) {
+            for (let tx = 0; tx + winW <= wideW; tx += STRIDE) {
+              const winHash = matcher.dHashFromPixels(widePx, wideW, tx, ty, winW, winH);
               // Compare base hash; track best ratio across all angles.
               let bestRatio = hmHashDist(winHash, refHash, refMaskBits) / refValidBits;
               if (rotHashes) {
@@ -1372,7 +1387,7 @@
             } else if (dist <= closeThresh) {
               oCtx.fillStyle = "rgba(245,176,0,0.20)";
             } else { continue; }
-            oCtx.fillRect(tx * scX, ty * scY, WIN * scX, WIN * scY);
+            oCtx.fillRect(tx * scX, ty * scY, winW * scX, winH * scY);
           }
           // Purple outline at the original crop position
           oCtx.strokeStyle = "#bf94ff"; oCtx.lineWidth = 2;
