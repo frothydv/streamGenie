@@ -121,6 +121,52 @@
     });
   }
 
+  // Convert a trigger's rotation descriptor into the angle array passed to
+  // computeRotatedHashes.  Phase 1 covers the ref at 0° (as captured), so 0 is
+  // always excluded from the returned list.
+  //
+  // rotation can be:
+  //   null / false / {mode:'none'}   → no rotation → returns null
+  //   true (legacy rotates:true)     → free ±30° + fine ±1°–±4°
+  //   {mode:'orthogonal'}            → [90, 180, 270]
+  //   {mode:'free', minAngle?, maxAngle?, step?, fineStepNearZero?}
+  function anglesForRotation(rotation) {
+    if (!rotation || rotation === false) return null;
+    if (typeof rotation === "object" && rotation.mode === "none") return null;
+
+    // Legacy: rotates:true → same as DEFAULTS.rotationAngles
+    if (rotation === true) return DEFAULTS.rotationAngles.slice();
+
+    const mode = rotation.mode || "free";
+    if (mode === "none") return null;
+
+    if (mode === "orthogonal") {
+      // Cards that appear at 90° increments; Phase 1 covers 0°.
+      return [90, 180, 270];
+    }
+
+    // Free mode — build from explicit params or fall back to defaults.
+    // baseAngle is "preview only" — it does not shift the search range.
+    // Phase 1 covers 0° (the ref as-captured at baseAngle). Phase 2 adds the range
+    // as *additional* rotations applied to the already-at-baseAngle ref.
+    const minAngle = rotation.minAngle !== undefined ? rotation.minAngle : -30;
+    const maxAngle = rotation.maxAngle !== undefined ? rotation.maxAngle : 30;
+    const step     = rotation.step     !== undefined ? rotation.step     : 5;
+    const fineStepNearZero = rotation.fineStepNearZero !== false; // default true
+
+    const angleSet = new Set();
+    for (let a = minAngle; a <= maxAngle + 0.001; a += step) {
+      const r = Math.round(a * 10) / 10;
+      if (r !== 0) angleSet.add(r);
+    }
+    if (fineStepNearZero) {
+      for (let a = -4; a <= 4; a++) {
+        if (a !== 0) angleSet.add(a);
+      }
+    }
+    return [...angleSet].sort((a, b) => a - b);
+  }
+
   function createMatcher(options = {}) {
     const config = { ...DEFAULTS, ...options };
     const grayScratch = new Float32Array(72);
@@ -629,8 +675,9 @@
       // Wrap to pass config.canonicalSize so callers don't need to supply it.
       computeRotatedHashes: (px, w, h, angles) =>
         computeRotatedHashes(px, w, h, angles, config.canonicalSize),
+      anglesForRotation,
     };
   }
 
-  return { DEFAULTS, createMatcher, rotatePixels, computeRotatedHashes };
+  return { DEFAULTS, createMatcher, rotatePixels, computeRotatedHashes, anglesForRotation };
 });

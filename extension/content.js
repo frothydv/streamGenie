@@ -638,18 +638,20 @@
     }
 
     // Pre-compute rotated hashes if the trigger opts into rotation-aware matching.
+    // Rotation schema takes precedence over legacy rotates:true flag.
     // Rotate at native dimensions (w×h) so aspect ratio is preserved — rotating a
     // squished 32×32 canonical of a wide card produces wrong geometry.
-    if (ref.rotates && ref.refHash) {
+    const rotAngles = ref.rotation
+      ? matcher.anglesForRotation(ref.rotation)
+      : ref.rotates ? matcher.config.rotationAngles : null;
+    if (rotAngles && rotAngles.length && ref.refHash) {
       const nativeTmp = document.createElement("canvas");
       nativeTmp.width = w; nativeTmp.height = h;
       const nCtx = nativeTmp.getContext("2d");
       nCtx.imageSmoothingEnabled = false;
       nCtx.drawImage(ref.sourceImg, 0, 0, w, h);
       const nativePx = nCtx.getImageData(0, 0, w, h).data;
-      ref.rotatedHashes = matcher.computeRotatedHashes(
-        nativePx, w, h, matcher.config.rotationAngles
-      );
+      ref.rotatedHashes = matcher.computeRotatedHashes(nativePx, w, h, rotAngles);
     } else {
       ref.rotatedHashes = null;
     }
@@ -690,7 +692,8 @@
       // Skip if no file and no dataUrl
       if (!ref.file && !ref.dataUrl) continue;
 
-      ref.rotates = !!trigger.rotates; // propagate trigger-level flag to ref
+      ref.rotates = !!trigger.rotates;         // legacy flag
+      ref.rotation = trigger.rotation || null; // structured rotation schema
 
       const img = new Image();
       img.onload = () => {
@@ -721,6 +724,7 @@
       const storable = {
         id: trigger.id,
         rotates: !!trigger.rotates,
+        rotation: trigger.rotation || null,
         payloads: trigger.payloads,
         references: trigger.references.map(({ dataUrl, maskDataUrl, file, w, h, srcW, srcH }) => ({ dataUrl, maskDataUrl, file, w, h, srcW, srcH })),
       };
@@ -748,6 +752,7 @@
       const storable = {
         id: trigger.id,
         rotates: !!trigger.rotates,
+        rotation: trigger.rotation || null,
         payloads: trigger.payloads,
         references: trigger.references.map(({ dataUrl, maskDataUrl, file, w, h, srcW, srcH }) => ({ dataUrl, maskDataUrl, file, w, h, srcW, srcH })),
         _isModified: true,
@@ -901,8 +906,10 @@
     console.log("[DEBUG] Trigger payload offset:", sourceTrigger?.payloads[0]?.popupOffset);
 
     let destroyMaskEditor = null;
+    let stopRotationAnim = () => {};
     editorModalOpen = true;
     function closeEditor(message = "Cancelled.", level = "info") {
+      stopRotationAnim();
       if (destroyMaskEditor) destroyMaskEditor();
       editorModalOpen = false;
       backdrop.remove();
@@ -942,14 +949,18 @@
     header.appendChild(titleEl); header.appendChild(xBtn);
     modal.appendChild(header);
 
-    // Reference preview
+    // Reference preview — image element lives here but is moved into the rotation
+    // section after it's built, so the preview is always next to the controls.
+    const refImg = document.createElement("img");
+    refImg.src = dataUrl;
+    refImg.style.cssText = "max-width:100px;max-height:72px;border:1px solid #444;border-radius:4px;display:block;padding:6px;background:#0e0e10;box-sizing:border-box;transform-origin:center center;flex-shrink:0;";
+    // Small label that shows the current rotation angle during preview.
+    const rotAngleLbl = document.createElement("div");
+    rotAngleLbl.style.cssText = "font-size:10px;color:#adadb8;margin-top:4px;min-height:13px;text-align:center;";
+
     const refSec = document.createElement("div");
     refSec.style.cssText = "margin-bottom:16px;";
     refSec.appendChild(editorLabel("Reference Image"));
-    const refImg = document.createElement("img");
-    refImg.src = dataUrl;
-    refImg.style.cssText = "max-width:120px;max-height:80px;border:1px solid #444;border-radius:4px;display:block;padding:8px;background:#0e0e10;box-sizing:border-box;";
-    refSec.appendChild(refImg);
     const refTooBig = meta.cropW > CAPTURE_SIZE || meta.cropH > CAPTURE_SIZE;
     const refMetaEl = document.createElement("div");
     refMetaEl.style.cssText = "font-size:10px;margin-top:4px;";
@@ -1064,33 +1075,380 @@
     addBtn.onclick = () => { payloadStates.push({ title: "", text: "", ox: 14, oy: 22 }); renderPayloads(); };
     modal.appendChild(addBtn);
 
-    // Rotation checkbox — pre-checked from source trigger; reviewer can override
-    const rotateRow = document.createElement("label");
-    rotateRow.style.cssText = "display:flex;align-items:center;gap:8px;margin:10px 0 2px;cursor:pointer;font-size:12px;color:#efeff1;user-select:none;";
-    const rotateCheck = document.createElement("input");
-    rotateCheck.type = "checkbox";
-    rotateCheck.style.cursor = "pointer";
-    rotateCheck.checked = !!((isEdit || isReview) && sourceTrigger?.rotates);
-    const rotateLabel = document.createElement("span");
-    rotateLabel.innerHTML = `Can rotate on screen <span style="font-size:10px;color:#adadb8;">(e.g. cards in hand — slower matching)</span>`;
-    rotateRow.appendChild(rotateCheck);
-    rotateRow.appendChild(rotateLabel);
-    modal.appendChild(rotateRow);
+    // ── Rotation UI ────────────────────────────────────────────────────────────
+    // Determine initial rotation from source trigger (structured schema first,
+    // then legacy rotates:true, then null for new triggers).
+    const initRotation = (isEdit || isReview)
+      ? (sourceTrigger?.rotation || (sourceTrigger?.rotates ? { mode: "free" } : null))
+      : null;
 
+    function rotEditorInput(type, min, max, value, step) {
+      const el = document.createElement("input");
+      el.type = type; el.min = min; el.max = max; el.value = value; el.step = step || 1;
+      Object.assign(el.style, {
+        width: "52px", background: "#18181b", border: "1px solid #555",
+        borderRadius: "4px", color: "#efeff1", padding: "3px 5px", fontSize: "12px",
+      });
+      return el;
+    }
+    function rotEditorLabel(text) {
+      const sp = document.createElement("span");
+      sp.style.cssText = "font-size:12px;color:#adadb8;white-space:nowrap;";
+      sp.textContent = text;
+      return sp;
+    }
+
+    function parseOrDef(val, def) { const n = parseFloat(val); return isNaN(n) ? def : n; }
+
+    const rotSec = document.createElement("div");
+    rotSec.style.cssText = "margin-bottom:14px;";
+    rotSec.appendChild(editorLabel("Rotation"));
+
+    // Mode radio row
+    const modeRow = document.createElement("div");
+    modeRow.style.cssText = "display:flex;flex-wrap:wrap;gap:14px;margin:6px 0 10px;";
+    const ROTATION_MODES = [
+      { value: "none",       label: "None" },
+      { value: "orthogonal", label: "Orthogonal (90°/180°/270°)" },
+      { value: "free",       label: "Free (±range, fine steps)" },
+    ];
+    let currentRotMode = initRotation ? (initRotation.mode || "free") : "none";
+    const modeRadios = {};
+    for (const { value, label } of ROTATION_MODES) {
+      const lbl = document.createElement("label");
+      lbl.style.cssText = "display:flex;align-items:center;gap:5px;cursor:pointer;font-size:12px;color:#efeff1;user-select:none;";
+      const radio = document.createElement("input");
+      radio.type = "radio"; radio.name = "sg-rotation-mode"; radio.value = value;
+      radio.checked = currentRotMode === value; radio.style.cursor = "pointer";
+      modeRadios[value] = radio;
+      lbl.appendChild(radio); lbl.appendChild(document.createTextNode(label));
+      modeRow.appendChild(lbl);
+    }
+    rotSec.appendChild(modeRow);
+
+    // Free-mode parameter panel — side-by-side: controls left, preview right.
+    const freePanel = document.createElement("div");
+    freePanel.style.cssText = "display:none;background:#0e0e10;border:1px solid #333;border-radius:6px;padding:10px;margin-bottom:8px;";
+
+    const freePanelInner = document.createElement("div");
+    freePanelInner.style.cssText = "display:flex;gap:12px;align-items:flex-start;";
+
+    const freePanelControls = document.createElement("div");
+    freePanelControls.style.cssText = "flex:1;min-width:0;";
+
+    // Preview column — refImg lives here so it's always visible alongside the controls.
+    const freePanelPreview = document.createElement("div");
+    freePanelPreview.style.cssText = "display:flex;flex-direction:column;align-items:center;flex-shrink:0;padding-top:2px;";
+    freePanelPreview.appendChild(refImg);
+    freePanelPreview.appendChild(rotAngleLbl);
+
+    const rangeRow = document.createElement("div");
+    rangeRow.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap;";
+    const minInput = rotEditorInput("number", -180, 0,   initRotation?.minAngle ?? -30);
+    const maxInput = rotEditorInput("number", 0,   180,  initRotation?.maxAngle ??  30);
+    const stepInput = rotEditorInput("number", 1,  45,   initRotation?.step     ??   5);
+    rangeRow.appendChild(rotEditorLabel("Range:"));
+    rangeRow.appendChild(minInput); rangeRow.appendChild(rotEditorLabel("to"));
+    rangeRow.appendChild(maxInput); rangeRow.appendChild(rotEditorLabel("°, step"));
+    rangeRow.appendChild(stepInput); rangeRow.appendChild(rotEditorLabel("°"));
+    freePanelControls.appendChild(rangeRow);
+
+    const fineRow = document.createElement("label");
+    fineRow.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:8px;cursor:pointer;font-size:12px;color:#efeff1;";
+    const fineCheck = document.createElement("input");
+    fineCheck.type = "checkbox";
+    fineCheck.checked = initRotation?.fineStepNearZero !== false;
+    fineRow.appendChild(fineCheck); fineRow.appendChild(rotEditorLabel("Fine steps near 0° (±1°–±4°)"));
+    freePanelControls.appendChild(fineRow);
+
+    const baseRow2 = document.createElement("div");
+    baseRow2.style.cssText = "display:flex;align-items:center;gap:6px;flex-wrap:wrap;";
+    const baseInput = rotEditorInput("number", -180, 180, initRotation?.baseAngle ?? 0);
+    baseRow2.appendChild(rotEditorLabel("Base angle:"));
+    baseRow2.appendChild(baseInput);
+    const baseHintEl = document.createElement("span");
+    baseHintEl.style.cssText = "font-size:10px;color:#adadb8;";
+    baseHintEl.textContent = "° (tilt of the captured ref — preview only)";
+    baseRow2.appendChild(baseHintEl);
+    freePanelControls.appendChild(baseRow2);
+
+    freePanelInner.appendChild(freePanelControls);
+    freePanelInner.appendChild(freePanelPreview);
+    freePanel.appendChild(freePanelInner);
+    rotSec.appendChild(freePanel);
+
+    // Size warning for large refs at free rotation
     const ROTATE_SAFE = Math.floor(CAPTURE_SIZE / 1.366); // ~117px
     const rotateWarnEl = document.createElement("div");
-    rotateWarnEl.style.cssText = "font-size:10px;color:#f5b000;margin:2px 0 6px;display:none;";
+    rotateWarnEl.style.cssText = "font-size:10px;color:#f5b000;margin:4px 0 0;display:none;";
     rotateWarnEl.textContent =
-      `Ref is ${meta.cropW}×${meta.cropH} px — corners will be clipped at full ±30° rotation. ` +
-      `Under ${ROTATE_SAFE}px matches more reliably when rotating.`;
-    modal.appendChild(rotateWarnEl);
+      `Ref is ${meta.cropW}×${meta.cropH} px — corners will clip at ±30°. ` +
+      `Under ${ROTATE_SAFE}px works more reliably when rotating.`;
+    rotSec.appendChild(rotateWarnEl);
+    modal.appendChild(rotSec);
+
+    // Preview animation: rotate the ref image through the configured angle range.
+    let _animTimer = null;
+    let _animAngle = 0, _animDir = 1;
+    function setRefAngle(deg, transition = "transform 0.05s linear") {
+      refImg.style.transition = transition;
+      refImg.style.transform = deg === 0 ? "" : `rotate(${deg}deg)`;
+      rotAngleLbl.textContent = deg === 0 ? "" : `${deg > 0 ? "+" : ""}${Math.round(deg)}°`;
+    }
+    // stopRotationAnim was declared as a let no-op above closeEditor; reassign here.
+    stopRotationAnim = function() {
+      if (_animTimer) { clearInterval(_animTimer); _animTimer = null; }
+      // Don't reset transform here — callers that need to reset call setRefAngle(0) explicitly.
+    };
+    function startRotationAnim() {
+      stopRotationAnim();
+      if (currentRotMode === "none") { setRefAngle(0); return; }
+      if (currentRotMode === "orthogonal") {
+        const steps = [0, 90, 180, 270]; let si = 0;
+        setRefAngle(0, "transform 0.2s");
+        _animTimer = setInterval(() => {
+          si = (si + 1) % steps.length;
+          setRefAngle(steps[si], "transform 0.2s");
+        }, 800);
+        return;
+      }
+      const base = parseOrDef(baseInput.value, 0);
+      const minA = parseOrDef(minInput.value, -30);
+      const maxA = parseOrDef(maxInput.value,  30);
+      _animAngle = minA; _animDir = 1;
+      _animTimer = setInterval(() => {
+        setRefAngle(base + _animAngle);
+        _animAngle += _animDir * 2;
+        if (_animAngle > maxA) { _animAngle = maxA; _animDir = -1; }
+        if (_animAngle < minA) { _animAngle = minA; _animDir = 1; }
+      }, 40);
+    }
 
     const refMarginal = !refTooBig && (meta.cropW > ROTATE_SAFE || meta.cropH > ROTATE_SAFE);
-    function updateRotateWarn() {
-      rotateWarnEl.style.display = (refMarginal && rotateCheck.checked) ? "" : "none";
+    function onRotModeChange() {
+      currentRotMode = Object.entries(modeRadios).find(([, r]) => r.checked)?.[0] || "none";
+      freePanel.style.display = currentRotMode === "free" ? "" : "none";
+      rotateWarnEl.style.display = (refMarginal && currentRotMode === "free") ? "" : "none";
+      startRotationAnim();
     }
-    rotateCheck.addEventListener("change", updateRotateWarn);
-    updateRotateWarn();
+    for (const radio of Object.values(modeRadios)) radio.addEventListener("change", onRotModeChange);
+    [minInput, maxInput].forEach(el => el.addEventListener("input", () => {
+      if (currentRotMode === "free") startRotationAnim();
+    }));
+    // Base angle: pause sweep and hold at exactly that angle so the user can
+    // judge the ref's orientation, then resume sweep after a pause.
+    let _baseDebounce = null;
+    baseInput.addEventListener("input", () => {
+      if (currentRotMode !== "free") return;
+      stopRotationAnim();
+      const base = parseOrDef(baseInput.value, 0);
+      setRefAngle(base, "transform 0.2s ease");
+      rotAngleLbl.textContent = `base: ${base > 0 ? "+" : ""}${base}° (resume in 2s…)`;
+      clearTimeout(_baseDebounce);
+      _baseDebounce = setTimeout(() => startRotationAnim(), 2000);
+    });
+    onRotModeChange();
+
+    function getRotationObject() {
+      if (currentRotMode === "none") return null;
+      if (currentRotMode === "orthogonal") return { mode: "orthogonal" };
+      return {
+        mode: "free",
+        minAngle: parseOrDef(minInput.value, -30),
+        maxAngle: parseOrDef(maxInput.value,  30),
+        step:     parseOrDef(stepInput.value,   5),
+        fineStepNearZero: fineCheck.checked,
+        baseAngle: parseOrDef(baseInput.value, 0),
+      };
+    }
+
+    // ── Heat-map match test ─────────────────────────────────────────────────
+    // Available only when wider capture was provided (fresh capture flow).
+    // When present, the submit button is gated on at least one passing test.
+    let heatMapPassed = !meta.wideDataUrl; // no gate if no wide capture
+
+    function hmLoadImage(src) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error("Failed to load image"));
+        img.src = src;
+      });
+    }
+    function hmHashDist(a, b, mask) {
+      let d = 0;
+      for (let i = 0; i < 64; i++) {
+        if (mask && !mask[i]) continue;
+        if (a[i] !== b[i]) d++;
+      }
+      return d;
+    }
+
+    if (meta.wideDataUrl) {
+      const hmSec = document.createElement("div");
+      hmSec.style.cssText = "margin-bottom:16px;";
+      hmSec.appendChild(editorLabel("Match Test"));
+
+      const hmHint = document.createElement("div");
+      hmHint.style.cssText = "color:#adadb8;font-size:11px;line-height:1.4;margin-bottom:8px;";
+      hmHint.textContent = "Run a test match to verify this trigger detects correctly. Green = match, yellow = close miss. Required before submitting.";
+      hmSec.appendChild(hmHint);
+
+      // Wide-capture display with overlay canvas
+      const hmWrap = document.createElement("div");
+      hmWrap.style.cssText = "position:relative;display:inline-block;margin-bottom:8px;max-width:100%;";
+      const hmImg = document.createElement("img");
+      hmImg.src = meta.wideDataUrl;
+      hmImg.style.cssText = "display:block;max-width:300px;border:1px solid #333;border-radius:4px;";
+      const hmOverlay = document.createElement("canvas");
+      hmOverlay.style.cssText = "position:absolute;top:0;left:0;pointer-events:none;border-radius:4px;";
+      hmOverlay.width = 1; hmOverlay.height = 1;
+      hmWrap.appendChild(hmImg); hmWrap.appendChild(hmOverlay);
+      hmSec.appendChild(hmWrap);
+
+      const hmStatus = document.createElement("div");
+      hmStatus.style.cssText = "font-size:11px;margin-bottom:8px;min-height:14px;";
+      hmSec.appendChild(hmStatus);
+
+      const hmRunBtn = editorBtn("Run Test Match", false);
+      hmRunBtn.style.marginBottom = "0";
+      hmSec.appendChild(hmRunBtn);
+      modal.appendChild(hmSec);
+
+      async function runHeatMap() {
+        hmRunBtn.disabled = true;
+        hmRunBtn.textContent = "Running…";
+        hmStatus.textContent = ""; hmStatus.style.color = "#adadb8";
+        try {
+          // Load wide capture
+          const wideImgEl = await hmLoadImage(meta.wideDataUrl);
+          const wideCanvas2 = document.createElement("canvas");
+          wideCanvas2.width = wideImgEl.naturalWidth; wideCanvas2.height = wideImgEl.naturalHeight;
+          const wCtx2 = wideCanvas2.getContext("2d");
+          wCtx2.drawImage(wideImgEl, 0, 0);
+          const widePx = wCtx2.getImageData(0, 0, wideCanvas2.width, wideCanvas2.height).data;
+          const wideW = wideCanvas2.width, wideH = wideCanvas2.height;
+
+          // Build ref hash at native crop dimensions (not resampled to canonical 32×32).
+          // Both the crop and the wide canvas are at the same video-pixel scale, so
+          // dHashFromPixels samples floor(cx * winW / 32) in each — identical positions.
+          // Resampling to 32×32 first shifts those sample positions via drawImage rounding.
+          const winW0 = meta.cropW || CANONICAL_SIZE;
+          const winH0 = meta.cropH || CANONICAL_SIZE;
+          const cropImgEl = await hmLoadImage(dataUrl);
+          const cc = document.createElement("canvas");
+          cc.width = winW0; cc.height = winH0;
+          const cCtx = cc.getContext("2d");
+          cCtx.imageSmoothingEnabled = false;
+          cCtx.drawImage(cropImgEl, 0, 0, winW0, winH0); // 1:1 — exact pixel copy
+          const cropPx = cCtx.getImageData(0, 0, winW0, winH0).data;
+          const refHash = matcher.dHashFromPixels(cropPx, winW0, 0, 0, winW0, winH0);
+
+          // Build mask bits from current mask editor state
+          let refMaskResult = null;
+          const curMaskUrl = maskEditor.getMaskDataUrl();
+          if (curMaskUrl) {
+            const mImgEl = await hmLoadImage(curMaskUrl);
+            const mc = document.createElement("canvas");
+            mc.width = winW0; mc.height = winH0;
+            const mCtx = mc.getContext("2d");
+            mCtx.imageSmoothingEnabled = false;
+            mCtx.drawImage(mImgEl, 0, 0, winW0, winH0);
+            const mPx = mCtx.getImageData(0, 0, winW0, winH0).data;
+            const mr = matcher.maskBitsFromPixels(mPx, winW0, 0, 0, winW0, winH0);
+            if (mr.validBits >= 16) refMaskResult = mr;
+          }
+          const refMaskBits = refMaskResult?.bits || matcher.allBitMask;
+          const refValidBits = refMaskResult?.validBits || 64;
+
+          // Rotated hashes reuse the same cropPx (already at native size).
+          const rotation = getRotationObject();
+          const hmAngles = rotation ? matcher.anglesForRotation(rotation) : null;
+          let rotHashes = null;
+          if (hmAngles && hmAngles.length) {
+            rotHashes = matcher.computeRotatedHashes(cropPx, winW0, winH0, hmAngles);
+          }
+
+          // winW/winH already defined as winW0/winH0 above.
+          const winW = winW0;
+          const winH = winH0;
+          // Stride 4: ensures the sliding window lands within 2px of any position.
+          // At native crop dimensions, a 2px shift flips at most 1–2 hash bits — well under threshold.
+          const STRIDE = 4;
+          const threshold   = Math.ceil(matcher.config.rotationMatchThresholdRatio * refValidBits);
+          const closeThresh = Math.ceil(matcher.config.matchThresholdRatio * refValidBits);
+
+          // Diagnostic: direct dist at the expected crop position (should be ≈ 0).
+          const diagCropX = meta.wideCropX || 0, diagCropY = meta.wideCropY || 0;
+          const diagFits = diagCropX + winW <= wideW && diagCropY + winH <= wideH;
+          const diagDist = diagFits
+            ? hmHashDist(matcher.dHashFromPixels(widePx, wideW, diagCropX, diagCropY, winW, winH), refHash, refMaskBits)
+            : -1;
+          console.log(`[heatmap] wide=${wideW}×${wideH} win=${winW}×${winH} stride=${STRIDE} crop@(${diagCropX},${diagCropY}) directDist=${diagDist} threshold=${threshold}`);
+
+          const results = [];
+          for (let ty = 0; ty + winH <= wideH; ty += STRIDE) {
+            for (let tx = 0; tx + winW <= wideW; tx += STRIDE) {
+              const winHash = matcher.dHashFromPixels(widePx, wideW, tx, ty, winW, winH);
+              // Compare base hash; track best ratio across all angles.
+              let bestRatio = hmHashDist(winHash, refHash, refMaskBits) / refValidBits;
+              if (rotHashes) {
+                for (const rh of rotHashes) {
+                  if (rh.validCount < 16) continue;
+                  const ratio = hmHashDist(winHash, rh.hash, rh.clipMask) / rh.validCount;
+                  if (ratio < bestRatio) bestRatio = ratio;
+                }
+              }
+              // Convert back to dist units relative to refValidBits for threshold comparison.
+              results.push({ tx, ty, dist: bestRatio * refValidBits });
+            }
+          }
+          const bestResult = results.length ? results.reduce((m, r) => r.dist < m.dist ? r : m) : null;
+          console.log(`[heatmap] scanned ${results.length} windows, best dist=${bestResult?.dist?.toFixed(1)} at (${bestResult?.tx},${bestResult?.ty}), matchCount to follow`);
+
+          // Render overlay on top of the wide capture image
+          const dispW = hmImg.offsetWidth  || hmImg.naturalWidth;
+          const dispH = hmImg.offsetHeight || hmImg.naturalHeight;
+          hmOverlay.width = dispW; hmOverlay.height = dispH;
+          const scX = dispW / wideW, scY = dispH / wideH;
+          const oCtx = hmOverlay.getContext("2d");
+          oCtx.clearRect(0, 0, dispW, dispH);
+
+          let matchCount = 0;
+          for (const { tx, ty, dist } of results) {
+            if (dist <= threshold) {
+              oCtx.fillStyle = "rgba(0,245,147,0.30)"; matchCount++;
+            } else if (dist <= closeThresh) {
+              oCtx.fillStyle = "rgba(245,176,0,0.20)";
+            } else { continue; }
+            oCtx.fillRect(tx * scX, ty * scY, winW * scX, winH * scY);
+          }
+          // Purple outline at the original crop position
+          oCtx.strokeStyle = "#bf94ff"; oCtx.lineWidth = 2;
+          oCtx.strokeRect(
+            (meta.wideCropX || 0) * scX, (meta.wideCropY || 0) * scY,
+            (meta.cropW || WIN) * scX, (meta.cropH || WIN) * scY
+          );
+
+          const diagLine = `[diag: win=${winW}×${winH} wide=${wideW}×${wideH} directDist=${diagDist} bestDist=${bestResult?.dist?.toFixed(1)} threshold=${threshold}]`;
+          if (matchCount > 0) {
+            hmStatus.style.color = "#00f593";
+            hmStatus.textContent = `Match found (${matchCount} window${matchCount > 1 ? "s" : ""}) — looks good!`;
+            heatMapPassed = true;
+          } else {
+            hmStatus.style.color = "#ff5c5c";
+            hmStatus.textContent = `No match. ${diagLine}`;
+            heatMapPassed = false;
+          }
+        } catch (err) {
+          hmStatus.style.color = "#ff5c5c";
+          hmStatus.textContent = `Error: ${err.message}`;
+        }
+        hmRunBtn.disabled = false;
+        hmRunBtn.textContent = "Run Test Match";
+      }
+      hmRunBtn.onclick = runHeatMap;
+    }
 
     function validate() {
       if (refTooBig) {
@@ -1105,6 +1463,10 @@
         showToast("Your mask is fully erased — paint at least some pixels to match.", "warn");
         return false;
       }
+      if (!heatMapPassed) {
+        showToast("Run the Match Test first and confirm a green match before submitting.", "warn");
+        return false;
+      }
       return true;
     }
 
@@ -1116,10 +1478,12 @@
         image: null,
         popupOffset: { x: p.ox, y: p.oy },
       }));
+      const rotationObj = getRotationObject();
       if (isProfileEdit || isReview) {
         return {
           id: sourceTrigger.id,
-          rotates: rotateCheck.checked,
+          rotates: !!rotationObj,
+          rotation: rotationObj,
           payloads,
           references: (sourceTrigger.references || []).map((ref, idx) => ({
             file: ref.file ?? null,
@@ -1133,7 +1497,8 @@
       }
       const trigger = {
         id: isEdit ? opts.trigger.id : "user-" + Date.now(),
-        rotates: rotateCheck.checked,
+        rotates: !!rotationObj,
+        rotation: rotationObj,
         payloads,
         references: isEdit ?
           (opts.trigger.references || []).map(
@@ -2416,9 +2781,23 @@
     crop.width = sw; crop.height = sh;
     crop.getContext("2d").drawImage(snapshot, sx, sy, sw, sh, 0, 0, sw, sh);
 
+    // Capture a wider 480×480 region centered on the crop for the heat-map preview.
+    const WIDE_SIZE = 480;
+    const cropCx = sx + sw / 2, cropCy = sy + sh / 2;
+    const wsx = Math.max(0, Math.round(cropCx - WIDE_SIZE / 2));
+    const wsy = Math.max(0, Math.round(cropCy - WIDE_SIZE / 2));
+    const wex = Math.min(snapshot.width,  wsx + WIDE_SIZE);
+    const wey = Math.min(snapshot.height, wsy + WIDE_SIZE);
+    const wideCanvas = document.createElement("canvas");
+    wideCanvas.width = wex - wsx; wideCanvas.height = wey - wsy;
+    wideCanvas.getContext("2d").drawImage(snapshot, wsx, wsy, wex - wsx, wey - wsy, 0, 0, wex - wsx, wey - wsy);
+
     cancelCaptureMode();
     openTriggerEditor(crop.toDataURL("image/png"), {
       videoW: snapshot.width, videoH: snapshot.height, cropW: sw, cropH: sh,
+      wideDataUrl: wideCanvas.toDataURL("image/png"),
+      wideCropX: sx - wsx,
+      wideCropY: sy - wsy,
     }, { profileHint });
   }
 
