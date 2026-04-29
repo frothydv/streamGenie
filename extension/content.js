@@ -1304,15 +1304,20 @@
           const widePx = wCtx2.getImageData(0, 0, wideCanvas2.width, wideCanvas2.height).data;
           const wideW = wideCanvas2.width, wideH = wideCanvas2.height;
 
-          // Build ref hash at canonical size
+          // Build ref hash at native crop dimensions (not resampled to canonical 32×32).
+          // Both the crop and the wide canvas are at the same video-pixel scale, so
+          // dHashFromPixels samples floor(cx * winW / 32) in each — identical positions.
+          // Resampling to 32×32 first shifts those sample positions via drawImage rounding.
+          const winW0 = meta.cropW || CANONICAL_SIZE;
+          const winH0 = meta.cropH || CANONICAL_SIZE;
           const cropImgEl = await hmLoadImage(dataUrl);
           const cc = document.createElement("canvas");
-          cc.width = CANONICAL_SIZE; cc.height = CANONICAL_SIZE;
+          cc.width = winW0; cc.height = winH0;
           const cCtx = cc.getContext("2d");
           cCtx.imageSmoothingEnabled = false;
-          cCtx.drawImage(cropImgEl, 0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
-          const cropPx = cCtx.getImageData(0, 0, CANONICAL_SIZE, CANONICAL_SIZE).data;
-          const refHash = matcher.dHashFromPixels(cropPx, CANONICAL_SIZE, 0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
+          cCtx.drawImage(cropImgEl, 0, 0, winW0, winH0); // 1:1 — exact pixel copy
+          const cropPx = cCtx.getImageData(0, 0, winW0, winH0).data;
+          const refHash = matcher.dHashFromPixels(cropPx, winW0, 0, 0, winW0, winH0);
 
           // Build mask bits from current mask editor state
           let refMaskResult = null;
@@ -1320,37 +1325,28 @@
           if (curMaskUrl) {
             const mImgEl = await hmLoadImage(curMaskUrl);
             const mc = document.createElement("canvas");
-            mc.width = CANONICAL_SIZE; mc.height = CANONICAL_SIZE;
+            mc.width = winW0; mc.height = winH0;
             const mCtx = mc.getContext("2d");
             mCtx.imageSmoothingEnabled = false;
-            mCtx.drawImage(mImgEl, 0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
-            const mPx = mCtx.getImageData(0, 0, CANONICAL_SIZE, CANONICAL_SIZE).data;
-            const mr = matcher.maskBitsFromPixels(mPx, CANONICAL_SIZE, 0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
+            mCtx.drawImage(mImgEl, 0, 0, winW0, winH0);
+            const mPx = mCtx.getImageData(0, 0, winW0, winH0).data;
+            const mr = matcher.maskBitsFromPixels(mPx, winW0, 0, 0, winW0, winH0);
             if (mr.validBits >= 16) refMaskResult = mr;
           }
           const refMaskBits = refMaskResult?.bits || matcher.allBitMask;
           const refValidBits = refMaskResult?.validBits || 64;
 
-          // Compute rotated hashes from the crop at native size
+          // Rotated hashes reuse the same cropPx (already at native size).
           const rotation = getRotationObject();
           const hmAngles = rotation ? matcher.anglesForRotation(rotation) : null;
           let rotHashes = null;
           if (hmAngles && hmAngles.length) {
-            const cW = meta.cropW || CANONICAL_SIZE, cH = meta.cropH || CANONICAL_SIZE;
-            const nc = document.createElement("canvas");
-            nc.width = cW; nc.height = cH;
-            const nCtx = nc.getContext("2d");
-            nCtx.imageSmoothingEnabled = false;
-            nCtx.drawImage(cropImgEl, 0, 0, cW, cH);
-            const nPx = nCtx.getImageData(0, 0, cW, cH).data;
-            rotHashes = matcher.computeRotatedHashes(nPx, cW, cH, hmAngles);
+            rotHashes = matcher.computeRotatedHashes(cropPx, winW0, winH0, hmAngles);
           }
 
-          // Sliding window scan across wide capture.
-          // Window size = native crop dimensions so dHash samples proportionally
-          // equivalent positions to the ref hash (which was built at CANONICAL_SIZE).
-          const winW = meta.cropW || CANONICAL_SIZE;
-          const winH = meta.cropH || CANONICAL_SIZE;
+          // winW/winH already defined as winW0/winH0 above.
+          const winW = winW0;
+          const winH = winH0;
           const STRIDE = Math.max(4, Math.round(Math.min(winW, winH) / 8));
           const threshold   = Math.ceil(matcher.config.rotationMatchThresholdRatio * refValidBits);
           const closeThresh = Math.ceil(matcher.config.matchThresholdRatio * refValidBits);
