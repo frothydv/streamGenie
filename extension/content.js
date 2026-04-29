@@ -955,8 +955,12 @@
     refSec.appendChild(editorLabel("Reference Image"));
     const refImg = document.createElement("img");
     refImg.src = dataUrl;
-    refImg.style.cssText = "max-width:120px;max-height:80px;border:1px solid #444;border-radius:4px;display:block;padding:8px;background:#0e0e10;box-sizing:border-box;";
+    refImg.style.cssText = "max-width:120px;max-height:80px;border:1px solid #444;border-radius:4px;display:block;padding:8px;background:#0e0e10;box-sizing:border-box;transform-origin:center center;";
     refSec.appendChild(refImg);
+    // Small label that shows the current rotation angle during preview.
+    const rotAngleLbl = document.createElement("div");
+    rotAngleLbl.style.cssText = "font-size:10px;color:#adadb8;margin-top:4px;min-height:13px;";
+    refSec.appendChild(rotAngleLbl);
     const refTooBig = meta.cropW > CAPTURE_SIZE || meta.cropH > CAPTURE_SIZE;
     const refMetaEl = document.createElement("div");
     refMetaEl.style.cssText = "font-size:10px;margin-top:4px;";
@@ -1168,21 +1172,25 @@
     // Preview animation: rotate the ref image through the configured angle range.
     let _animTimer = null;
     let _animAngle = 0, _animDir = 1;
+    function setRefAngle(deg, transition = "transform 0.05s linear") {
+      refImg.style.transition = transition;
+      refImg.style.transform = deg === 0 ? "" : `rotate(${deg}deg)`;
+      rotAngleLbl.textContent = deg === 0 ? "" : `${deg > 0 ? "+" : ""}${Math.round(deg)}°`;
+    }
     // stopRotationAnim was declared as a let no-op above closeEditor; reassign here.
     stopRotationAnim = function() {
       if (_animTimer) { clearInterval(_animTimer); _animTimer = null; }
-      refImg.style.transform = "";
-      refImg.style.transition = "";
+      // Don't reset transform here — callers that need to reset call setRefAngle(0) explicitly.
     };
     function startRotationAnim() {
       stopRotationAnim();
-      if (currentRotMode === "none") return;
+      if (currentRotMode === "none") { setRefAngle(0); return; }
       if (currentRotMode === "orthogonal") {
         const steps = [0, 90, 180, 270]; let si = 0;
+        setRefAngle(0, "transform 0.2s");
         _animTimer = setInterval(() => {
           si = (si + 1) % steps.length;
-          refImg.style.transition = "transform 0.2s";
-          refImg.style.transform = `rotate(${steps[si]}deg)`;
+          setRefAngle(steps[si], "transform 0.2s");
         }, 800);
         return;
       }
@@ -1191,12 +1199,11 @@
       const maxA = parseFloat(maxInput.value) ||  30;
       _animAngle = minA; _animDir = 1;
       _animTimer = setInterval(() => {
-        refImg.style.transition = "transform 0.05s linear";
-        refImg.style.transform = `rotate(${base + _animAngle}deg)`;
-        _animAngle += _animDir * 1;
+        setRefAngle(base + _animAngle);
+        _animAngle += _animDir * 2;
         if (_animAngle > maxA) { _animAngle = maxA; _animDir = -1; }
         if (_animAngle < minA) { _animAngle = minA; _animDir = 1; }
-      }, 50);
+      }, 40);
     }
 
     const refMarginal = !refTooBig && (meta.cropW > ROTATE_SAFE || meta.cropH > ROTATE_SAFE);
@@ -1210,17 +1217,17 @@
     [minInput, maxInput].forEach(el => el.addEventListener("input", () => {
       if (currentRotMode === "free") startRotationAnim();
     }));
-    // Base angle: freeze at exactly that angle so the user can judge the ref's
-    // orientation, then resume the sweep after a short pause.
+    // Base angle: pause sweep and hold at exactly that angle so the user can
+    // judge the ref's orientation, then resume sweep after a pause.
     let _baseDebounce = null;
     baseInput.addEventListener("input", () => {
       if (currentRotMode !== "free") return;
       stopRotationAnim();
       const base = parseFloat(baseInput.value) || 0;
-      refImg.style.transition = "transform 0.15s";
-      refImg.style.transform = `rotate(${base}deg)`;
+      setRefAngle(base, "transform 0.2s ease");
+      rotAngleLbl.textContent = `base: ${base > 0 ? "+" : ""}${base}° (resume in 2s…)`;
       clearTimeout(_baseDebounce);
-      _baseDebounce = setTimeout(() => startRotationAnim(), 900);
+      _baseDebounce = setTimeout(() => startRotationAnim(), 2000);
     });
     onRotModeChange();
 
