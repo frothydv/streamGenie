@@ -146,6 +146,9 @@
     }
 
     // Free mode — build from explicit params or fall back to defaults.
+    // baseAngle is "preview only" — it does not shift the search range.
+    // Phase 1 covers 0° (the ref as-captured at baseAngle). Phase 2 adds the range
+    // as *additional* rotations applied to the already-at-baseAngle ref.
     const minAngle = rotation.minAngle !== undefined ? rotation.minAngle : -30;
     const maxAngle = rotation.maxAngle !== undefined ? rotation.maxAngle : 30;
     const step     = rotation.step     !== undefined ? rotation.step     : 5;

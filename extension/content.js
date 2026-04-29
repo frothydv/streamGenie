@@ -949,18 +949,18 @@
     header.appendChild(titleEl); header.appendChild(xBtn);
     modal.appendChild(header);
 
-    // Reference preview
+    // Reference preview — image element lives here but is moved into the rotation
+    // section after it's built, so the preview is always next to the controls.
+    const refImg = document.createElement("img");
+    refImg.src = dataUrl;
+    refImg.style.cssText = "max-width:100px;max-height:72px;border:1px solid #444;border-radius:4px;display:block;padding:6px;background:#0e0e10;box-sizing:border-box;transform-origin:center center;flex-shrink:0;";
+    // Small label that shows the current rotation angle during preview.
+    const rotAngleLbl = document.createElement("div");
+    rotAngleLbl.style.cssText = "font-size:10px;color:#adadb8;margin-top:4px;min-height:13px;text-align:center;";
+
     const refSec = document.createElement("div");
     refSec.style.cssText = "margin-bottom:16px;";
     refSec.appendChild(editorLabel("Reference Image"));
-    const refImg = document.createElement("img");
-    refImg.src = dataUrl;
-    refImg.style.cssText = "max-width:120px;max-height:80px;border:1px solid #444;border-radius:4px;display:block;padding:8px;background:#0e0e10;box-sizing:border-box;transform-origin:center center;";
-    refSec.appendChild(refImg);
-    // Small label that shows the current rotation angle during preview.
-    const rotAngleLbl = document.createElement("div");
-    rotAngleLbl.style.cssText = "font-size:10px;color:#adadb8;margin-top:4px;min-height:13px;";
-    refSec.appendChild(rotAngleLbl);
     const refTooBig = meta.cropW > CAPTURE_SIZE || meta.cropH > CAPTURE_SIZE;
     const refMetaEl = document.createElement("div");
     refMetaEl.style.cssText = "font-size:10px;margin-top:4px;";
@@ -1098,6 +1098,8 @@
       return sp;
     }
 
+    function parseOrDef(val, def) { const n = parseFloat(val); return isNaN(n) ? def : n; }
+
     const rotSec = document.createElement("div");
     rotSec.style.cssText = "margin-bottom:14px;";
     rotSec.appendChild(editorLabel("Rotation"));
@@ -1124,9 +1126,21 @@
     }
     rotSec.appendChild(modeRow);
 
-    // Free-mode parameter panel
+    // Free-mode parameter panel — side-by-side: controls left, preview right.
     const freePanel = document.createElement("div");
     freePanel.style.cssText = "display:none;background:#0e0e10;border:1px solid #333;border-radius:6px;padding:10px;margin-bottom:8px;";
+
+    const freePanelInner = document.createElement("div");
+    freePanelInner.style.cssText = "display:flex;gap:12px;align-items:flex-start;";
+
+    const freePanelControls = document.createElement("div");
+    freePanelControls.style.cssText = "flex:1;min-width:0;";
+
+    // Preview column — refImg lives here so it's always visible alongside the controls.
+    const freePanelPreview = document.createElement("div");
+    freePanelPreview.style.cssText = "display:flex;flex-direction:column;align-items:center;flex-shrink:0;padding-top:2px;";
+    freePanelPreview.appendChild(refImg);
+    freePanelPreview.appendChild(rotAngleLbl);
 
     const rangeRow = document.createElement("div");
     rangeRow.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap;";
@@ -1137,7 +1151,7 @@
     rangeRow.appendChild(minInput); rangeRow.appendChild(rotEditorLabel("to"));
     rangeRow.appendChild(maxInput); rangeRow.appendChild(rotEditorLabel("°, step"));
     rangeRow.appendChild(stepInput); rangeRow.appendChild(rotEditorLabel("°"));
-    freePanel.appendChild(rangeRow);
+    freePanelControls.appendChild(rangeRow);
 
     const fineRow = document.createElement("label");
     fineRow.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:8px;cursor:pointer;font-size:12px;color:#efeff1;";
@@ -1145,7 +1159,7 @@
     fineCheck.type = "checkbox";
     fineCheck.checked = initRotation?.fineStepNearZero !== false;
     fineRow.appendChild(fineCheck); fineRow.appendChild(rotEditorLabel("Fine steps near 0° (±1°–±4°)"));
-    freePanel.appendChild(fineRow);
+    freePanelControls.appendChild(fineRow);
 
     const baseRow2 = document.createElement("div");
     baseRow2.style.cssText = "display:flex;align-items:center;gap:6px;flex-wrap:wrap;";
@@ -1156,7 +1170,11 @@
     baseHintEl.style.cssText = "font-size:10px;color:#adadb8;";
     baseHintEl.textContent = "° (tilt of the captured ref — preview only)";
     baseRow2.appendChild(baseHintEl);
-    freePanel.appendChild(baseRow2);
+    freePanelControls.appendChild(baseRow2);
+
+    freePanelInner.appendChild(freePanelControls);
+    freePanelInner.appendChild(freePanelPreview);
+    freePanel.appendChild(freePanelInner);
     rotSec.appendChild(freePanel);
 
     // Size warning for large refs at free rotation
@@ -1194,9 +1212,9 @@
         }, 800);
         return;
       }
-      const base = parseFloat(baseInput.value) || 0;
-      const minA = parseFloat(minInput.value) || -30;
-      const maxA = parseFloat(maxInput.value) ||  30;
+      const base = parseOrDef(baseInput.value, 0);
+      const minA = parseOrDef(minInput.value, -30);
+      const maxA = parseOrDef(maxInput.value,  30);
       _animAngle = minA; _animDir = 1;
       _animTimer = setInterval(() => {
         setRefAngle(base + _animAngle);
@@ -1223,7 +1241,7 @@
     baseInput.addEventListener("input", () => {
       if (currentRotMode !== "free") return;
       stopRotationAnim();
-      const base = parseFloat(baseInput.value) || 0;
+      const base = parseOrDef(baseInput.value, 0);
       setRefAngle(base, "transform 0.2s ease");
       rotAngleLbl.textContent = `base: ${base > 0 ? "+" : ""}${base}° (resume in 2s…)`;
       clearTimeout(_baseDebounce);
@@ -1236,11 +1254,11 @@
       if (currentRotMode === "orthogonal") return { mode: "orthogonal" };
       return {
         mode: "free",
-        minAngle: parseFloat(minInput.value) || -30,
-        maxAngle: parseFloat(maxInput.value) ||  30,
-        step:     parseFloat(stepInput.value) ||   5,
+        minAngle: parseOrDef(minInput.value, -30),
+        maxAngle: parseOrDef(maxInput.value,  30),
+        step:     parseOrDef(stepInput.value,   5),
         fineStepNearZero: fineCheck.checked,
-        baseAngle: parseFloat(baseInput.value) || 0,
+        baseAngle: parseOrDef(baseInput.value, 0),
       };
     }
 
@@ -1354,7 +1372,9 @@
           // winW/winH already defined as winW0/winH0 above.
           const winW = winW0;
           const winH = winH0;
-          const STRIDE = Math.max(4, Math.round(Math.min(winW, winH) / 8));
+          // Stride 4: ensures the sliding window lands within 2px of any position.
+          // At native crop dimensions, a 2px shift flips at most 1–2 hash bits — well under threshold.
+          const STRIDE = 4;
           const threshold   = Math.ceil(matcher.config.rotationMatchThresholdRatio * refValidBits);
           const closeThresh = Math.ceil(matcher.config.matchThresholdRatio * refValidBits);
 
