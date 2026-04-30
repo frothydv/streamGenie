@@ -362,6 +362,14 @@ function ensureRawUrl(urlStr) {
     window.close();
   });
 
+  document.getElementById("manage-profile-btn").addEventListener("click", async () => {
+    if (!currentTab) return;
+    try {
+      await chrome.tabs.sendMessage(currentTab.id, { type: "open-curator" });
+    } catch (_) {}
+    window.close();
+  });
+
   // --- Delete confirmation ---
 
   async function deleteLocally(key, triggerId) {

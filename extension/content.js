@@ -2801,6 +2801,478 @@
     }, { profileHint });
   }
 
+  // --- Curator Panel --------------------------------------------------------
+
+  let curatorPanelOpen = false;
+
+  function curatorHashDist(a, b) {
+    let d = 0;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) d++;
+    return d;
+  }
+
+  function computeDuplicatePairs(triggers) {
+    const THRESHOLD = 8;
+    const dupMap = new Map();
+    const refs = triggers
+      .map(t => ({ id: t.id, hash: t.references?.[0]?.refHash }))
+      .filter(r => r.hash);
+    for (let i = 0; i < refs.length; i++) {
+      for (let j = i + 1; j < refs.length; j++) {
+        if (curatorHashDist(refs[i].hash, refs[j].hash) < THRESHOLD) {
+          if (!dupMap.has(refs[i].id)) dupMap.set(refs[i].id, []);
+          if (!dupMap.has(refs[j].id)) dupMap.set(refs[j].id, []);
+          dupMap.get(refs[i].id).push(refs[j].id);
+          dupMap.get(refs[j].id).push(refs[i].id);
+        }
+      }
+    }
+    return dupMap;
+  }
+
+  function openCuratorPanel() {
+    if (curatorPanelOpen) return;
+    curatorPanelOpen = true;
+
+    const profile = activeProfile || DEFAULT_PROFILE;
+    const baseUrl = profileBaseUrl(profile.url);
+    const IMG_W = 140, IMG_H = 105;
+
+    const triggers = [...TRIGGERS].sort((a, b) =>
+      (a.payloads?.[0]?.title || a.id).toLowerCase()
+        .localeCompare((b.payloads?.[0]?.title || b.id).toLowerCase())
+    );
+
+    const dupMap = computeDuplicatePairs(triggers);
+    const dupCount = dupMap.size;
+
+    const pendingChanges = new Map(); // triggerId -> { trigger }
+    const selectedIds = new Set();
+    const cardMap = new Map();        // triggerId -> cardEl
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    function mkBadge(text, color) {
+      const b = document.createElement("span");
+      b.style.cssText = `font-size:9px;padding:1px 5px;border-radius:3px;background:${color}22;color:${color};border:1px solid ${color}44;white-space:nowrap;`;
+      b.textContent = text;
+      return b;
+    }
+
+    function mkLbl(text) {
+      const el = document.createElement("span");
+      el.style.cssText = "font-size:11px;color:#adadb8;";
+      el.textContent = text;
+      return el;
+    }
+
+    function mkNumInput(val) {
+      const el = document.createElement("input");
+      el.type = "number"; el.value = val;
+      el.style.cssText = "width:56px;background:#0e0e10;border:1px solid #555;border-radius:4px;color:#efeff1;padding:3px 6px;font-size:11px;";
+      return el;
+    }
+
+    function dotPos(ox, oy, ref) {
+      const scaleX = IMG_W / Math.max(ref?.w || 160, 1);
+      const scaleY = IMG_H / Math.max(ref?.h || 160, 1);
+      return {
+        x: Math.max(5, Math.min(IMG_W - 5, Math.round(IMG_W / 2 + ox * scaleX))),
+        y: Math.max(5, Math.min(IMG_H - 5, Math.round(IMG_H / 2 + oy * scaleY))),
+      };
+    }
+
+    function fmtOffset(ox, oy) {
+      return `${ox >= 0 ? "+" : ""}${Math.round(ox)}, ${oy >= 0 ? "+" : ""}${Math.round(oy)}`;
+    }
+
+    // ── Backdrop ─────────────────────────────────────────────────────────────
+
+    const backdrop = document.createElement("div");
+    Object.assign(backdrop.style, {
+      position: "fixed", inset: "0",
+      background: "rgba(14,14,16,0.97)",
+      zIndex: "2147483645",
+      display: "flex", flexDirection: "column",
+      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      overflow: "hidden",
+    });
+    document.body.appendChild(backdrop);
+
+    function closePanel() {
+      curatorPanelOpen = false;
+      backdrop.remove();
+    }
+
+    // ── Header ────────────────────────────────────────────────────────────────
+
+    const header = document.createElement("div");
+    Object.assign(header.style, {
+      display: "flex", alignItems: "center", gap: "12px",
+      padding: "12px 20px", borderBottom: "1px solid #333",
+      background: "#18181b", flexShrink: "0",
+    });
+
+    const titleEl = document.createElement("span");
+    titleEl.style.cssText = "font-size:15px;font-weight:bold;color:#bf94ff;flex:1;";
+    titleEl.textContent = `Profile Curator · ${profile.name}`;
+
+    const countEl = document.createElement("span");
+    countEl.style.cssText = "font-size:11px;color:#adadb8;white-space:nowrap;";
+    countEl.textContent = `${triggers.length} trigger${triggers.length !== 1 ? "s" : ""}`;
+
+    const saveBtn = document.createElement("button");
+    saveBtn.style.cssText = "background:#9146ff;border:none;border-radius:4px;color:#fff;font-size:12px;font-weight:bold;cursor:pointer;padding:6px 14px;display:none;white-space:nowrap;";
+
+    const xBtn = document.createElement("button");
+    xBtn.innerHTML = "&#10005;";
+    xBtn.style.cssText = "background:none;border:none;color:#adadb8;font-size:18px;cursor:pointer;padding:2px 6px;line-height:1;";
+    xBtn.onclick = closePanel;
+
+    header.append(titleEl, countEl, saveBtn, xBtn);
+    backdrop.appendChild(header);
+
+    function updateSaveBtn() {
+      const n = pendingChanges.size;
+      saveBtn.style.display = n > 0 ? "block" : "none";
+      saveBtn.textContent = `Save ${n} change${n !== 1 ? "s" : ""}`;
+    }
+
+    saveBtn.onclick = async () => {
+      saveBtn.disabled = true;
+      saveBtn.textContent = "Saving…";
+      let failed = 0;
+      for (const [tid, { trigger }] of pendingChanges) {
+        try {
+          await submitToProfile(trigger, "update");
+          pendingChanges.delete(tid);
+        } catch {
+          failed++;
+        }
+      }
+      saveBtn.disabled = false;
+      if (failed > 0) {
+        showToast(`${failed} update(s) failed — check connection.`, "warn");
+      } else {
+        showToast("All changes saved!", "ok");
+      }
+      updateSaveBtn();
+    };
+
+    // ── Duplicate banner ──────────────────────────────────────────────────────
+
+    if (dupCount > 0) {
+      const dupBanner = document.createElement("div");
+      dupBanner.style.cssText = "background:rgba(245,176,0,0.1);border-bottom:1px solid rgba(245,176,0,0.4);padding:7px 20px;font-size:11px;color:#f5b000;flex-shrink:0;";
+      const pairs = dupCount / 2 | 0;
+      dupBanner.textContent = `⚠  ${dupCount} trigger${dupCount !== 1 ? "s" : ""} flagged as possible duplicates (${pairs} pair${pairs !== 1 ? "s" : ""}) — look for the ≈ badge.`;
+      backdrop.appendChild(dupBanner);
+    }
+
+    // ── Batch bar ─────────────────────────────────────────────────────────────
+
+    const batchBar = document.createElement("div");
+    Object.assign(batchBar.style, {
+      display: "none", alignItems: "center", gap: "10px",
+      padding: "8px 20px", background: "#1f1f23",
+      borderBottom: "1px solid #333", flexShrink: "0", flexWrap: "wrap",
+    });
+
+    const batchLabel = document.createElement("span");
+    batchLabel.style.cssText = "font-size:11px;color:#adadb8;white-space:nowrap;";
+    const batchXInput = mkNumInput(14);
+    const batchYInput = mkNumInput(22);
+
+    const batchApplyBtn = document.createElement("button");
+    batchApplyBtn.style.cssText = "background:#9146ff;border:none;border-radius:4px;color:#fff;font-size:11px;font-weight:bold;cursor:pointer;padding:4px 12px;white-space:nowrap;";
+    batchApplyBtn.textContent = "Apply to selected";
+
+    const batchClearBtn = document.createElement("button");
+    batchClearBtn.style.cssText = "background:none;border:1px solid #555;border-radius:4px;color:#adadb8;font-size:11px;cursor:pointer;padding:4px 10px;white-space:nowrap;";
+    batchClearBtn.textContent = "Clear selection";
+
+    batchBar.append(batchLabel, mkLbl("X:"), batchXInput, mkLbl("Y:"), batchYInput, batchApplyBtn, batchClearBtn);
+    backdrop.appendChild(batchBar);
+
+    function updateBatchBar() {
+      const n = selectedIds.size;
+      batchBar.style.display = n > 0 ? "flex" : "none";
+      batchLabel.textContent = `${n} selected — set popup offset:`;
+    }
+
+    function selectCard(id) {
+      selectedIds.add(id);
+      const card = cardMap.get(id);
+      if (card) card.style.boxShadow = "0 0 0 2px #9146ff, 0 1px 4px rgba(0,0,0,0.4)";
+      updateBatchBar();
+    }
+
+    function deselectCard(id) {
+      selectedIds.delete(id);
+      const card = cardMap.get(id);
+      if (card) card.style.boxShadow = "0 1px 4px rgba(0,0,0,0.4)";
+      updateBatchBar();
+    }
+
+    batchApplyBtn.onclick = () => {
+      const ox = parseFloat(batchXInput.value) || 0;
+      const oy = parseFloat(batchYInput.value) || 0;
+      for (const tid of selectedIds) {
+        const trigger = triggers.find(t => t.id === tid);
+        if (!trigger?.payloads?.[0]) continue;
+        trigger.payloads[0].popupOffset = { x: ox, y: oy };
+        pendingChanges.set(tid, { trigger: JSON.parse(JSON.stringify(trigger)) });
+        // Move dot on card
+        const card = cardMap.get(tid);
+        if (card) {
+          const ref = trigger.references?.[0];
+          const pos = dotPos(ox, oy, ref);
+          const dot = card.querySelector(".curator-dot");
+          const lbl = card.querySelector(".curator-off-lbl");
+          if (dot) { dot.style.left = pos.x + "px"; dot.style.top = pos.y + "px"; }
+          if (lbl) lbl.textContent = fmtOffset(ox, oy);
+        }
+      }
+      updateSaveBtn();
+      showToast(`Offset set on ${selectedIds.size} trigger(s).`, "ok");
+    };
+
+    batchClearBtn.onclick = () => {
+      for (const tid of [...selectedIds]) deselectCard(tid);
+    };
+
+    // ── Grid ──────────────────────────────────────────────────────────────────
+
+    const gridWrap = document.createElement("div");
+    Object.assign(gridWrap.style, {
+      flex: "1", overflowY: "auto", padding: "20px",
+      boxSizing: "border-box",
+    });
+
+    const grid = document.createElement("div");
+    Object.assign(grid.style, {
+      display: "grid",
+      gridTemplateColumns: `repeat(auto-fill, minmax(${IMG_W}px, 1fr))`,
+      gap: "12px",
+    });
+    gridWrap.appendChild(grid);
+    backdrop.appendChild(gridWrap);
+
+    // ── Editor opener (reuses existing openTriggerEditor) ─────────────────────
+
+    function openEditorForTrigger(trigger) {
+      const ref = trigger.references?.[0];
+      if (!ref) { showToast("No reference for this trigger.", "warn"); return; }
+      let imageUrl = ref.sourceImg?.src || ref.dataUrl;
+      if (!imageUrl && ref.file) imageUrl = baseUrl + "references/" + ref.file;
+      if (!imageUrl) { showToast("Cannot load reference image.", "warn"); return; }
+
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width  = ref.w || img.naturalWidth;
+        canvas.height = ref.h || img.naturalHeight;
+        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+        openTriggerEditor(canvas.toDataURL("image/png"), {
+          videoW: ref.srcW || 1920,
+          videoH: ref.srcH || 1080,
+          cropW:  ref.w   || img.naturalWidth,
+          cropH:  ref.h   || img.naturalHeight,
+        }, { mode: "edit", trigger });
+      };
+      img.onerror = () => showToast("Failed to load reference image.", "warn");
+      img.src = imageUrl;
+    }
+
+    // ── Card builder ──────────────────────────────────────────────────────────
+
+    function buildCard(trigger) {
+      const ref     = trigger.references?.[0];
+      const payload = trigger.payloads?.[0] || {};
+      const title   = payload.title || trigger.id;
+      const offset  = { ...(payload.popupOffset || { x: 14, y: 22 }) };
+      const isDup   = dupMap.has(trigger.id);
+
+      const card = document.createElement("div");
+      Object.assign(card.style, {
+        background: "#18181b", borderRadius: "6px",
+        boxShadow: "0 1px 4px rgba(0,0,0,0.4)",
+        overflow: "visible", cursor: "pointer",
+        display: "flex", flexDirection: "column",
+        transition: "box-shadow 0.15s",
+        userSelect: "none",
+      });
+
+      // ── Image area ──
+      const imgArea = document.createElement("div");
+      Object.assign(imgArea.style, {
+        width: IMG_W + "px", height: IMG_H + "px",
+        position: "relative", overflow: "hidden",
+        background: "#0e0e10", borderRadius: "6px 6px 0 0",
+        flexShrink: "0",
+      });
+
+      const imgEl = document.createElement("img");
+      imgEl.style.cssText = "width:100%;height:100%;object-fit:contain;display:block;";
+      imgEl.crossOrigin = "anonymous";
+      if (ref?.sourceImg?.src)  imgEl.src = ref.sourceImg.src;
+      else if (ref?.dataUrl)    imgEl.src = ref.dataUrl;
+      else if (ref?.file)       imgEl.src = baseUrl + "references/" + ref.file;
+      imgArea.appendChild(imgEl);
+
+      // ── Offset dot ──
+      const dot = document.createElement("div");
+      dot.className = "curator-dot";
+      const initPos = dotPos(offset.x, offset.y, ref);
+      Object.assign(dot.style, {
+        position: "absolute",
+        width: "10px", height: "10px",
+        borderRadius: "50%",
+        background: "#9146ff",
+        border: "2px solid #fff",
+        cursor: "grab", zIndex: "3",
+        transform: "translate(-50%, -50%)",
+        left: initPos.x + "px", top: initPos.y + "px",
+        boxSizing: "border-box",
+        boxShadow: "0 1px 4px rgba(0,0,0,0.5)",
+      });
+      dot.title = "Drag to adjust popup offset";
+
+      dot.addEventListener("mousedown", (e) => {
+        e.stopPropagation();
+        const startMouse = { x: e.clientX, y: e.clientY };
+        const startOffset = { ...offset };
+        dot.style.cursor = "grabbing";
+        dot.style.background = "#772ce8";
+
+        function onMove(ev) {
+          const scaleX = IMG_W / Math.max(ref?.w || 160, 1);
+          const scaleY = IMG_H / Math.max(ref?.h || 160, 1);
+          offset.x = Math.round(startOffset.x + (ev.clientX - startMouse.x) / scaleX);
+          offset.y = Math.round(startOffset.y + (ev.clientY - startMouse.y) / scaleY);
+          const p = dotPos(offset.x, offset.y, ref);
+          dot.style.left = p.x + "px";
+          dot.style.top  = p.y + "px";
+          offLbl.textContent = fmtOffset(offset.x, offset.y);
+        }
+
+        function onUp() {
+          dot.style.cursor = "grab";
+          dot.style.background = "#9146ff";
+          document.removeEventListener("mousemove", onMove);
+          document.removeEventListener("mouseup", onUp);
+          // Commit if changed
+          const orig = payload.popupOffset || { x: 14, y: 22 };
+          if (offset.x !== orig.x || offset.y !== orig.y) {
+            trigger.payloads[0].popupOffset = { x: offset.x, y: offset.y };
+            pendingChanges.set(trigger.id, { trigger: JSON.parse(JSON.stringify(trigger)) });
+            updateSaveBtn();
+          }
+        }
+
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+      });
+
+      imgArea.appendChild(dot);
+
+      // ── Offset label ──
+      const offLbl = document.createElement("div");
+      offLbl.className = "curator-off-lbl";
+      offLbl.textContent = fmtOffset(offset.x, offset.y);
+      Object.assign(offLbl.style, {
+        position: "absolute", bottom: "4px", left: "4px",
+        background: "rgba(0,0,0,0.7)", color: "#9146ff",
+        fontSize: "9px", padding: "1px 4px", borderRadius: "3px",
+        fontFamily: "monospace", zIndex: "2", pointerEvents: "none",
+      });
+      imgArea.appendChild(offLbl);
+
+      // ── Edit overlay (appears on hover) ──
+      const editOverlay = document.createElement("div");
+      Object.assign(editOverlay.style, {
+        position: "absolute", inset: "0",
+        background: "rgba(0,0,0,0.55)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        opacity: "0", transition: "opacity 0.15s", zIndex: "1",
+        borderRadius: "6px 6px 0 0",
+      });
+      const editBtn = document.createElement("button");
+      editBtn.textContent = "Edit";
+      Object.assign(editBtn.style, {
+        background: "#9146ff", border: "none", borderRadius: "4px",
+        color: "#fff", fontSize: "12px", fontWeight: "bold",
+        cursor: "pointer", padding: "6px 16px",
+      });
+      editBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openEditorForTrigger(trigger);
+      });
+      editOverlay.appendChild(editBtn);
+      imgArea.appendChild(editOverlay);
+
+      imgArea.addEventListener("mouseenter", () => { editOverlay.style.opacity = "1"; });
+      imgArea.addEventListener("mouseleave", () => { editOverlay.style.opacity = "0"; });
+      card.appendChild(imgArea);
+
+      // ── Card footer ──
+      const footer = document.createElement("div");
+      footer.style.cssText = "padding:6px 8px;";
+
+      const titleEl2 = document.createElement("div");
+      Object.assign(titleEl2.style, {
+        fontSize: "11px", color: "#efeff1",
+        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        marginBottom: "4px",
+      });
+      titleEl2.textContent = title;
+      titleEl2.title = title;
+      footer.appendChild(titleEl2);
+
+      const badges = document.createElement("div");
+      badges.style.cssText = "display:flex;gap:3px;flex-wrap:wrap;";
+      const mode = trigger.rotation?.mode;
+      if (mode === "free")         badges.appendChild(mkBadge("rotate", "#bf94ff"));
+      else if (mode === "orthogonal") badges.appendChild(mkBadge("ortho", "#bf94ff"));
+      if (ref?.maskDataUrl)        badges.appendChild(mkBadge("mask", "#00f593"));
+      if (isDup) {
+        const db = mkBadge("≈ dup", "#f5b000");
+        const peers = dupMap.get(trigger.id).map(id => {
+          const t = triggers.find(x => x.id === id);
+          return t?.payloads?.[0]?.title || id;
+        });
+        db.title = `Similar to: ${peers.join(", ")}`;
+        badges.appendChild(db);
+      }
+      footer.appendChild(badges);
+      card.appendChild(footer);
+
+      // ── Click to select / deselect ──
+      card.addEventListener("click", (e) => {
+        if (e.target === editBtn || e.target.closest(".curator-dot")) return;
+        if (selectedIds.has(trigger.id)) deselectCard(trigger.id);
+        else selectCard(trigger.id);
+      });
+
+      cardMap.set(trigger.id, card);
+      return card;
+    }
+
+    // ── Populate grid ─────────────────────────────────────────────────────────
+
+    if (triggers.length === 0) {
+      const empty = document.createElement("div");
+      empty.style.cssText = "color:#555;font-size:13px;font-style:italic;padding:20px;grid-column:1/-1;";
+      empty.textContent = "No triggers loaded. Make sure a profile is active and reload the page.";
+      grid.appendChild(empty);
+    } else {
+      for (const t of triggers) grid.appendChild(buildCard(t));
+    }
+
+    backdrop.appendChild(gridWrap);
+  }
+
   // --- Toast ----------------------------------------------------------------
 
   function showToast(text, level) {
@@ -2959,6 +3431,15 @@
         console.error("[content] Cannot edit trigger: Editor already open");
         sendResponse({ success: false, error: "Editor already open" });
       }
+    }
+    if (msg && msg.type === "open-curator") {
+      if (!curatorPanelOpen && !editorModalOpen) {
+        openCuratorPanel();
+        sendResponse({ ok: true });
+      } else {
+        sendResponse({ ok: false, error: "Panel already open" });
+      }
+      return true;
     }
     if (msg && msg.type === "reload-profile") {
       console.log("[content] Reload profile request received");
