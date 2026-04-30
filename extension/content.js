@@ -521,11 +521,7 @@
 
     TRIGGERS = Array.from(mergedMap.values());
 
-    console.log("[DEBUG] Trigger merge:");
-    console.log(`  - Profile triggers: ${profileTriggers.length}`);
-    console.log(`  - Modified triggers: ${modifiedTriggers.length}`);
-    console.log(`  - User triggers: ${userTriggers.length}`);
-    console.log(`  - Total unique: ${TRIGGERS.length}`);
+    console.log(`[overlay/content] profile applied: ${profileTriggers.length} profile + ${modifiedTriggers.length} modified + ${userTriggers.length} user = ${TRIGGERS.length} triggers (source: ${sourceUrl})`);
 
     loadReferencesForTriggers(profileBaseUrl(sourceUrl));
     updateDebugPanelStatus();
@@ -1361,22 +1357,17 @@
           const refMaskBits = refMaskResult?.bits || matcher.allBitMask;
           const refValidBits = refMaskResult?.validBits || 64;
 
-          // Rotated hashes reuse the same cropPx (already at native size).
-          const rotation = getRotationObject();
-          const hmAngles = rotation ? matcher.anglesForRotation(rotation) : null;
-          let rotHashes = null;
-          if (hmAngles && hmAngles.length) {
-            rotHashes = matcher.computeRotatedHashes(cropPx, winW0, winH0, hmAngles);
-          }
-
           // winW/winH already defined as winW0/winH0 above.
           const winW = winW0;
           const winH = winH0;
-          // Stride 4: ensures the sliding window lands within 2px of any position.
-          // At native crop dimensions, a 2px shift flips at most 1–2 hash bits — well under threshold.
-          const STRIDE = 4;
-          const threshold   = Math.ceil(matcher.config.rotationMatchThresholdRatio * refValidBits);
-          const closeThresh = Math.ceil(matcher.config.matchThresholdRatio * refValidBits);
+          // Stride 1: every pixel position is checked so the exact reference location
+          // is guaranteed to be evaluated. Stride-4 was a live-matching optimisation
+          // that is wrong here — rotated card edges cause 10+ bit flips over a 3px
+          // offset, so the coarse-only scan can produce bestDist=13 while directDist=0.
+          const STRIDE = 1;
+          // Use the Phase-1 (base-hash) threshold — this is what live matching tests.
+          const threshold   = Math.ceil(matcher.config.matchThresholdRatio * refValidBits);
+          const closeThresh = threshold + 3; // amber "nearly matched" zone
 
           // Diagnostic: direct dist at the expected crop position (should be ≈ 0).
           const diagCropX = meta.wideCropX || 0, diagCropY = meta.wideCropY || 0;
@@ -1386,25 +1377,20 @@
             : -1;
           console.log(`[heatmap] wide=${wideW}×${wideH} win=${winW}×${winH} stride=${STRIDE} crop@(${diagCropX},${diagCropY}) directDist=${diagDist} threshold=${threshold}`);
 
+          // Base-hash scan at stride=1. Rotation is tested separately at the best
+          // position only — checking all rotated hashes at every window is O(N²·angles)
+          // and unnecessary; the heat-map's job is to confirm the reference appears at
+          // its captured orientation, not to verify rotation coverage.
           const results = [];
           for (let ty = 0; ty + winH <= wideH; ty += STRIDE) {
             for (let tx = 0; tx + winW <= wideW; tx += STRIDE) {
               const winHash = matcher.dHashFromPixels(widePx, wideW, tx, ty, winW, winH);
-              // Compare base hash; track best ratio across all angles.
-              let bestRatio = hmHashDist(winHash, refHash, refMaskBits) / refValidBits;
-              if (rotHashes) {
-                for (const rh of rotHashes) {
-                  if (rh.validCount < 16) continue;
-                  const ratio = hmHashDist(winHash, rh.hash, rh.clipMask) / rh.validCount;
-                  if (ratio < bestRatio) bestRatio = ratio;
-                }
-              }
-              // Convert back to dist units relative to refValidBits for threshold comparison.
-              results.push({ tx, ty, dist: bestRatio * refValidBits });
+              const dist = hmHashDist(winHash, refHash, refMaskBits);
+              results.push({ tx, ty, dist });
             }
           }
           const bestResult = results.length ? results.reduce((m, r) => r.dist < m.dist ? r : m) : null;
-          console.log(`[heatmap] scanned ${results.length} windows, best dist=${bestResult?.dist?.toFixed(1)} at (${bestResult?.tx},${bestResult?.ty}), matchCount to follow`);
+          console.log(`[heatmap] scanned ${results.length} windows, best dist=${bestResult?.dist?.toFixed(1)} at (${bestResult?.tx},${bestResult?.ty})`);
 
           // Render overlay on top of the wide capture image
           const dispW = hmImg.offsetWidth  || hmImg.naturalWidth;
