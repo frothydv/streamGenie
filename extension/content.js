@@ -2970,6 +2970,38 @@
       backdrop.appendChild(dupBanner);
     }
 
+    // ── Filter bar ────────────────────────────────────────────────────────────
+
+    let activeFilter = "all"; // "all" | "dupes"
+    const filterBar = document.createElement("div");
+    filterBar.style.cssText = "display:flex;align-items:center;gap:8px;padding:8px 20px;background:#18181b;border-bottom:1px solid #333;flex-shrink:0;";
+
+    function mkFilterBtn(label, val) {
+      const btn = document.createElement("button");
+      btn.textContent = label;
+      btn.dataset.filter = val;
+      btn.style.cssText = "background:none;border:1px solid #444;border-radius:4px;color:#adadb8;font-size:11px;cursor:pointer;padding:3px 10px;";
+      btn.onclick = () => {
+        activeFilter = val;
+        filterBar.querySelectorAll("button").forEach(b => {
+          const active = b.dataset.filter === val;
+          b.style.borderColor = active ? "#9146ff" : "#444";
+          b.style.color = active ? "#9146ff" : "#adadb8";
+        });
+        for (const [tid, card] of cardMap) {
+          const show = val === "all" || (val === "dupes" && dupMap.has(tid));
+          card.style.display = show ? "" : "none";
+        }
+      };
+      return btn;
+    }
+
+    filterBar.appendChild(mkFilterBtn("All", "all"));
+    if (dupCount > 0) filterBar.appendChild(mkFilterBtn(`Duplicates (${dupCount})`, "dupes"));
+    // Trigger "All" active style on load
+    filterBar.querySelectorAll("button")[0].click();
+    backdrop.appendChild(filterBar);
+
     // ── Batch bar ─────────────────────────────────────────────────────────────
 
     const batchBar = document.createElement("div");
@@ -3084,6 +3116,55 @@
       };
       img.onerror = () => showToast("Failed to load reference image.", "warn");
       img.src = imageUrl;
+    }
+
+    // ── Delete ────────────────────────────────────────────────────────────────
+
+    async function deleteCard(trigger, card) {
+      const ap = activeProfile || DEFAULT_PROFILE;
+      const isLocal = trigger.id?.startsWith("user-");
+      try {
+        if (isLocal) {
+          const uKey = `streamGenie_triggers_${ap.gameId}_${ap.profileId}`;
+          const stored = await chrome.storage.local.get(uKey);
+          const filtered = (stored[uKey] || []).filter(t => t.id !== trigger.id);
+          await chrome.storage.local.set({ [uKey]: filtered });
+        } else {
+          await submitToProfile({ id: trigger.id, payloads: trigger.payloads, references: [] }, "remove");
+        }
+        card.remove();
+        cardMap.delete(trigger.id);
+        const remaining = cardMap.size;
+        countEl.textContent = `${remaining} trigger${remaining !== 1 ? "s" : ""}`;
+        showToast(isLocal ? "Trigger deleted." : "Removal submitted.", "ok");
+      } catch (err) {
+        showToast("Delete failed: " + err.message, "error");
+      }
+    }
+
+    function showDeleteConfirmOnCard(trigger, card, footer, normalFooterContent) {
+      footer.innerHTML = "";
+      footer.style.background = "rgba(255,92,92,0.08)";
+      const msg = document.createElement("div");
+      msg.style.cssText = "font-size:10px;color:#ff5c5c;margin-bottom:5px;";
+      msg.textContent = `Delete "${trigger.payloads?.[0]?.title || trigger.id}"?`;
+      const btns = document.createElement("div");
+      btns.style.cssText = "display:flex;gap:4px;";
+      const confirmBtn = document.createElement("button");
+      confirmBtn.textContent = "Delete";
+      confirmBtn.style.cssText = "flex:1;background:#ff5c5c;border:none;border-radius:3px;color:#fff;font-size:10px;font-weight:bold;cursor:pointer;padding:3px 0;";
+      confirmBtn.onclick = (e) => { e.stopPropagation(); deleteCard(trigger, card); };
+      const cancelBtn = document.createElement("button");
+      cancelBtn.textContent = "Cancel";
+      cancelBtn.style.cssText = "flex:1;background:none;border:1px solid #555;border-radius:3px;color:#adadb8;font-size:10px;cursor:pointer;padding:3px 0;";
+      cancelBtn.onclick = (e) => {
+        e.stopPropagation();
+        footer.innerHTML = "";
+        footer.style.background = "";
+        normalFooterContent.forEach(n => footer.appendChild(n));
+      };
+      btns.append(confirmBtn, cancelBtn);
+      footer.append(msg, btns);
     }
 
     // ── Card builder ──────────────────────────────────────────────────────────
@@ -3231,12 +3312,12 @@
       titleEl2.title = title;
       footer.appendChild(titleEl2);
 
-      const badges = document.createElement("div");
-      badges.style.cssText = "display:flex;gap:3px;flex-wrap:wrap;";
+      const badgeRow = document.createElement("div");
+      badgeRow.style.cssText = "display:flex;gap:3px;flex-wrap:wrap;align-items:center;";
       const mode = trigger.rotation?.mode;
-      if (mode === "free")         badges.appendChild(mkBadge("rotate", "#bf94ff"));
-      else if (mode === "orthogonal") badges.appendChild(mkBadge("ortho", "#bf94ff"));
-      if (ref?.maskDataUrl)        badges.appendChild(mkBadge("mask", "#00f593"));
+      if (mode === "free")            badgeRow.appendChild(mkBadge("rotate", "#bf94ff"));
+      else if (mode === "orthogonal") badgeRow.appendChild(mkBadge("ortho", "#bf94ff"));
+      if (ref?.maskDataUrl)           badgeRow.appendChild(mkBadge("mask", "#00f593"));
       if (isDup) {
         const db = mkBadge("≈ dup", "#f5b000");
         const peers = dupMap.get(trigger.id).map(id => {
@@ -3244,9 +3325,26 @@
           return t?.payloads?.[0]?.title || id;
         });
         db.title = `Similar to: ${peers.join(", ")}`;
-        badges.appendChild(db);
+        badgeRow.appendChild(db);
       }
-      footer.appendChild(badges);
+
+      // Spacer + delete button
+      const spacer = document.createElement("span");
+      spacer.style.flex = "1";
+      const delBtn = document.createElement("button");
+      delBtn.textContent = "×";
+      delBtn.title = "Delete trigger";
+      delBtn.style.cssText = "background:none;border:1px solid #555;border-radius:3px;color:#adadb8;font-size:12px;line-height:1;cursor:pointer;padding:1px 5px;flex-shrink:0;";
+      delBtn.addEventListener("mouseenter", () => { delBtn.style.borderColor = "#ff5c5c"; delBtn.style.color = "#ff5c5c"; });
+      delBtn.addEventListener("mouseleave", () => { delBtn.style.borderColor = "#555"; delBtn.style.color = "#adadb8"; });
+      delBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        showDeleteConfirmOnCard(trigger, card, footer, [titleEl2, badgeRow]);
+      });
+      badgeRow.appendChild(spacer);
+      badgeRow.appendChild(delBtn);
+
+      footer.appendChild(badgeRow);
       card.appendChild(footer);
 
       // ── Click to select / deselect ──
