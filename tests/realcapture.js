@@ -8,6 +8,13 @@
 //   2. Run this script against the saved PNG.
 //   3. It reports the score for every trigger so you can see what the matcher
 //      sees and why a match is or isn't firing.
+//
+// Noise tolerance section (added after the main match report):
+//   For each matched trigger, applies increasing levels of H.264-like correlated
+//   noise to the capture and re-runs the matcher.  The "margin" shows how much
+//   additional noise the fixture can absorb before the match breaks — captures
+//   with a thin margin are likely to miss on live streams whose H.264 artifacts
+//   differ from the reference session.
 
 const fs   = require("fs");
 const path = require("path");
@@ -17,6 +24,8 @@ const MatcherCore = require("../extension/matcher-core.js");
 const PROFILE_DIR = path.resolve(__dirname, "../../streamGenieProfiles/games/slay-the-spire-2/profiles/community");
 const REFS_DIR    = path.join(PROFILE_DIR, "references");
 const CAPTURE_SIZE = 160;
+const NOISE_TRIALS = 20;  // trials per noise level
+const NOISE_LEVELS = [0, 3, 5, 8, 10, 15, 20];
 
 // ---------------------------------------------------------------------------
 // Args
@@ -52,6 +61,27 @@ function resize(srcPx, srcW, srcH, dstW, dstH) {
       const di = (y  * dstW + x)  * 4;
       out[di] = srcPx[si]; out[di+1] = srcPx[si+1];
       out[di+2] = srcPx[si+2]; out[di+3] = srcPx[si+3];
+    }
+  }
+  return out;
+}
+
+// H.264-like spatially correlated block noise.
+function addCorrelatedNoise(px, w, h, halfRange, blockSize = 8, correlation = 0.8) {
+  const out = new Uint8Array(px);
+  const cols = Math.ceil(w / blockSize);
+  const rows = Math.ceil(h / blockSize);
+  for (let by = 0; by < rows; by++) {
+    for (let bx = 0; bx < cols; bx++) {
+      const blockOffset = (Math.random() - 0.5) * halfRange * 2;
+      for (let dy = 0; dy < blockSize && (by * blockSize + dy) < h; dy++) {
+        for (let dx = 0; dx < blockSize && (bx * blockSize + dx) < w; dx++) {
+          const i = ((by * blockSize + dy) * w + (bx * blockSize + dx)) * 4;
+          const n = Math.round(blockOffset * correlation +
+            (Math.random() - 0.5) * halfRange * 2 * (1 - correlation));
+          for (let c = 0; c < 3; c++) out[i + c] = Math.max(0, Math.min(255, out[i + c] + n));
+        }
+      }
     }
   }
   return out;
@@ -113,7 +143,7 @@ for (const trigger of profile.triggers) {
     };
 
     const result = matcher.evaluateReference(ref, capPixels, capGray);
-    results.push({ trigger, ref0, result });
+    results.push({ trigger, ref0, ref, result });
     break; // use first reference only
   }
 }
@@ -125,7 +155,7 @@ results.sort((a, b) => {
 });
 
 // ---------------------------------------------------------------------------
-// Report
+// Report — match results
 // ---------------------------------------------------------------------------
 
 const matched = results.filter(r => r.result.matched);
@@ -150,6 +180,64 @@ if (unmatched.length) {
   for (const { trigger, result } of unmatched.slice(0, 10)) {
     const angleStr = result.angle ? ` @${result.angle}°` : "";
     console.log(`  ~ "${trigger.id}"${angleStr}  ratio=${result.ratio.toFixed(3)}>threshold=${result.threshold.toFixed(3)}  dist=${result.dist}/${result.validBits}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Noise tolerance sweep — for each matched trigger, how much H.264-like noise
+// can the capture absorb before the match breaks?
+//
+// This is the key gap between the saved-fixture test and live-stream reality:
+// a live frame has different H.264 compression artifacts than the fixture.
+// If the margin is thin here, the same trigger will miss on a fresh stream.
+// ---------------------------------------------------------------------------
+
+if (matched.length) {
+  console.log("\n=== NOISE TOLERANCE (H.264-like correlated noise, matched triggers only) ===");
+  console.log(`    ${NOISE_TRIALS} trials per level. "pass rate" = fraction that still match.\n`);
+
+  for (const { trigger, ref, result } of matched) {
+    const baseDistStr = `${result.dist}/${result.validBits}`;
+    console.log(`  "${trigger.id}"  (base dist=${baseDistStr}, threshold=${Math.ceil(result.threshold * result.validBits)}/${result.validBits})`);
+
+    let brokeAt = null;
+    for (const level of NOISE_LEVELS) {
+      if (level === 0) {
+        // Zero noise: should always match (same as the base test).
+        console.log(`    ±${String(level).padStart(2)} noise: 20/20 pass  (base)`);
+        continue;
+      }
+      let passes = 0;
+      let totalDist = 0;
+      for (let t = 0; t < NOISE_TRIALS; t++) {
+        const noisy = addCorrelatedNoise(capPixels, CAPTURE_SIZE, CAPTURE_SIZE, level);
+        const noisyGray = matcher.fillGrayBuffer(noisy);
+        const r = matcher.evaluateReference(ref, noisy, noisyGray);
+        if (r.matched) passes++;
+        totalDist += r.dist ?? Math.round(r.ratio * r.validBits);
+      }
+      const avgDist = (totalDist / NOISE_TRIALS).toFixed(1);
+      const bar = '█'.repeat(Math.round(passes / NOISE_TRIALS * 10)) +
+                  '░'.repeat(10 - Math.round(passes / NOISE_TRIALS * 10));
+      const flag = passes === NOISE_TRIALS ? '' : passes === 0 ? '  ✗ BROKEN' : '  ~ degraded';
+      console.log(`    ±${String(level).padStart(2)} noise: ${String(passes).padStart(2)}/${NOISE_TRIALS} pass  avgDist=${avgDist}  ${bar}${flag}`);
+      if (brokeAt === null && passes < NOISE_TRIALS) brokeAt = level;
+    }
+    const marginBits = result.validBits
+      ? Math.ceil(result.threshold * result.validBits) - result.dist
+      : '?';
+    console.log(`    → hash margin: ${marginBits} bit(s) remaining`);
+    if (brokeAt !== null) {
+      console.log(`    → match starts degrading at ±${brokeAt} noise`);
+      console.log(`    → live stream H.264 typically adds ±5–10 noise equivalent`);
+      if (brokeAt <= 5) {
+        console.log(`    ⚠ thin margin — this trigger likely misses on live streams`);
+        console.log(`      fix: recapture the reference from the live stream to align artifacts`);
+      }
+    } else {
+      console.log(`    → robust at all tested noise levels`);
+    }
+    console.log();
   }
 }
 
