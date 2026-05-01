@@ -433,7 +433,19 @@
           if (entry.ratio <= coarseThreshold) keepTopCandidate(coarse, entry);
         }
       }
-      if (!coarse.length) keepTopCandidate(coarse, best);
+      if (!coarse.length) {
+        // No coarse position passed the ratio threshold — the scene likely contains nothing
+        // matching the ref. The single-seed fallback can miss the true match when it falls
+        // between coarse grid lines (e.g., true match at x=21, coarse step=4, best seed at
+        // x=16 → fine range [12..20] never evaluates x=21). Fall back to a full step-1 scan
+        // so we never silently skip the correct position.
+        for (let y = 0; y <= maxY; y += config.slideStep) {
+          for (let x = 0; x <= maxX; x += config.slideStep) {
+            scanWindow(x, y);
+          }
+        }
+        return best;
+      }
 
       const visited = new Set();
       for (const seed of coarse) {
