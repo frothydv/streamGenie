@@ -137,12 +137,14 @@ for (const trigger of profile.triggers) {
       refVerifyValues: verify.values,
       refVerifyMask:   verify.mask,
       refVerifyActive: verify.active,
+      refNCC: matcher.buildRefNCC(refPx, refW, refH),
       rotatedHashes: trigger.rotates
         ? matcher.computeRotatedHashes(refPx, refW, refH, matcher.config.rotationAngles)
         : null,
     };
 
-    const result = matcher.evaluateReference(ref, capPixels, capGray);
+    const { sat, sat2 } = matcher.buildSAT(capGray, CAPTURE_SIZE, CAPTURE_SIZE);
+    const result = matcher.evaluateReference(ref, capPixels, capGray, false, sat, sat2);
     results.push({ trigger, ref0, ref, result });
     break; // use first reference only
   }
@@ -168,18 +170,26 @@ if (matched.length) {
     const verifyStr = result.verifyScore != null
       ? ` verify=${(result.verifyScore * 100).toFixed(1)}%<=${(result.verifyThreshold * 100).toFixed(1)}%`
       : "";
-    console.log(`  ✓ "${trigger.id}"${angleStr}  ratio=${result.ratio.toFixed(3)}<=${result.threshold.toFixed(3)}  dist=${result.dist}/${result.validBits}${verifyStr}`);
+    const nccStr = result.nccScore != null ? ` ncc=${result.nccScore.toFixed(3)}` : "";
+    console.log(`  ✓ "${trigger.id}"${angleStr}  ratio=${result.ratio.toFixed(3)}<=${result.threshold.toFixed(3)}  dist=${result.dist}/${result.validBits}${verifyStr}${nccStr}`);
   }
 } else {
   console.log("=== NO MATCH ===\n");
 }
 
-// Show the top-10 non-matched by ratio so you can see what came closest.
+// Show the top-10 non-matched — sorted by NCC score (descending) when available,
+// then by ratio. NCC score shows which near-misses are visually closest.
 if (unmatched.length) {
-  console.log(`\n=== CLOSEST NON-MATCHES (top 10 of ${unmatched.length}) ===\n`);
-  for (const { trigger, result } of unmatched.slice(0, 10)) {
+  const sorted = unmatched.slice().sort((a, b) => {
+    const an = a.result.nccScore ?? -1, bn = b.result.nccScore ?? -1;
+    if (an !== bn) return bn - an;
+    return a.result.ratio - b.result.ratio;
+  });
+  console.log(`\n=== CLOSEST NON-MATCHES (top 10 of ${unmatched.length}, by NCC) ===\n`);
+  for (const { trigger, result } of sorted.slice(0, 10)) {
     const angleStr = result.angle ? ` @${result.angle}°` : "";
-    console.log(`  ~ "${trigger.id}"${angleStr}  ratio=${result.ratio.toFixed(3)}>threshold=${result.threshold.toFixed(3)}  dist=${result.dist}/${result.validBits}`);
+    const nccStr = result.nccScore != null ? `  ncc=${result.nccScore.toFixed(3)}` : "";
+    console.log(`  ~ "${trigger.id}"${angleStr}  ratio=${result.ratio.toFixed(3)}>threshold=${result.threshold.toFixed(3)}  dist=${result.dist}/${result.validBits}${nccStr}`);
   }
 }
 
@@ -212,7 +222,8 @@ if (matched.length) {
       for (let t = 0; t < NOISE_TRIALS; t++) {
         const noisy = addCorrelatedNoise(capPixels, CAPTURE_SIZE, CAPTURE_SIZE, level);
         const noisyGray = matcher.fillGrayBuffer(noisy);
-        const r = matcher.evaluateReference(ref, noisy, noisyGray);
+        const { sat, sat2 } = matcher.buildSAT(noisyGray, CAPTURE_SIZE, CAPTURE_SIZE);
+        const r = matcher.evaluateReference(ref, noisy, noisyGray, false, sat, sat2);
         if (r.matched) passes++;
         totalDist += r.dist ?? Math.round(r.ratio * r.validBits);
       }

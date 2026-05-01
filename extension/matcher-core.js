@@ -21,6 +21,12 @@
     minMaskedBits: 16,
     centerBiasWeight: 0.01,
     maskedCenterBiasWeight: 0.018,
+    // NCC (Normalized Cross-Correlation) verification threshold.
+    // NCC runs on the dHash-best position as a secondary match criterion.
+    // Unlike dHash, NCC normalizes for local mean and variance, making it
+    // immune to H.264 brightness shifts that cause dHash near-misses on live streams.
+    // A true match typically scores ≥ 0.85; unrelated content scores ≤ 0.3.
+    nccMatchThreshold: 0.65,
     // Rotation: angles (degrees) tried when trigger.rotates = true.
     // Fine (±1°–±5°) + coarse (±5°–±30° at 5° steps), skipping 0° (handled by base hash).
     rotationAngles: [-30, -25, -20, -15, -10, -5, -4, -3, -2, -1, 1, 2, 3, 4, 5, 10, 15, 20, 25, 30],
@@ -230,6 +236,67 @@
         ref.verifySampleW = ref.w;
         ref.verifySampleH = ref.h;
       }
+    }
+
+    // Summed-area table (SAT) and squared SAT for O(1) rectangular mean/variance.
+    // Build once per hover event in findBestMatch; thread into evaluateReference.
+    function buildSAT(grayBuffer, W, H) {
+      const W1 = W + 1;
+      const sat  = new Float64Array(W1 * (H + 1));
+      const sat2 = new Float64Array(W1 * (H + 1));
+      for (let y = 1; y <= H; y++) {
+        for (let x = 1; x <= W; x++) {
+          const g = grayBuffer[(y - 1) * W + (x - 1)];
+          sat [y * W1 + x] = g     + sat [(y-1)*W1+x] + sat [y*W1+(x-1)] - sat [(y-1)*W1+(x-1)];
+          sat2[y * W1 + x] = g * g + sat2[(y-1)*W1+x] + sat2[y*W1+(x-1)] - sat2[(y-1)*W1+(x-1)];
+        }
+      }
+      return { sat, sat2 };
+    }
+
+    function satRectSum(sat, W, rx, ry, rw, rh) {
+      const W1 = W + 1;
+      return sat[(ry+rh)*W1+(rx+rw)] - sat[ry*W1+(rx+rw)] - sat[(ry+rh)*W1+rx] + sat[ry*W1+rx];
+    }
+
+    // Pre-compute mean-centred ref gray values and variance for NCC.
+    // refPixels: RGBA Uint8Array at native ref dimensions (refW×refH).
+    // Returns { gray: Float32Array (mean-centred luma), varG: number }.
+    function buildRefNCC(refPixels, refW, refH) {
+      const n = refW * refH;
+      const gray = new Float32Array(n);
+      let sumG = 0;
+      for (let i = 0; i < n; i++) {
+        const v = 0.299 * refPixels[i*4] + 0.587 * refPixels[i*4+1] + 0.114 * refPixels[i*4+2];
+        gray[i] = v;
+        sumG += v;
+      }
+      const meanG = sumG / n;
+      let varG = 0;
+      for (let i = 0; i < n; i++) {
+        gray[i] -= meanG;
+        varG += gray[i] * gray[i];
+      }
+      return { gray, varG };
+    }
+
+    // NCC score at scene position (sx, sy). Returns value in [-1, 1].
+    // Flat regions (low variance) return 0 to avoid false positives.
+    function nccScoreAt(sceneGray, sceneW, sat, sat2, sx, sy, refNCC, refW, refH) {
+      const { gray, varG } = refNCC;
+      const n = refW * refH;
+      const sceneSum  = satRectSum(sat,  sceneW, sx, sy, refW, refH);
+      const sceneSum2 = satRectSum(sat2, sceneW, sx, sy, refW, refH);
+      const sceneMean = sceneSum / n;
+      const sceneVar  = sceneSum2 - sceneSum * sceneSum / n;
+      if (varG < 1e-6 || sceneVar < 1e-6) return 0;
+      let dot = 0;
+      for (let y = 0; y < refH; y++) {
+        for (let x = 0; x < refW; x++) {
+          dot += gray[y * refW + x] * (sceneGray[(sy + y) * sceneW + (sx + x)] - sceneMean);
+        }
+      }
+      return dot / Math.sqrt(varG * sceneVar);
     }
 
     function dHashFromPixels(pixels, srcW, sx, sy, sw, sh) {
@@ -478,27 +545,41 @@
       return best;
     }
 
-    function evaluateReference(ref, capturePixels, captureGray, skipRotation) {
+    function evaluateReference(ref, capturePixels, captureGray, skipRotation, sat, sat2) {
       const threshold = matchThresholdForRef(ref);
       const verifyThreshold = verifyThresholdForRef(ref);
 
-      // Phase 1: try base hash with full verify protection.
+      // Phase 1: dHash sliding window locates the best position.
       const baseResult = slidingWindowMatch(ref, capturePixels, captureGray);
+
+      // NCC verification at the dHash-found position. NCC normalizes for local mean and
+      // variance, making it immune to H.264 brightness/contrast shifts that cause dHash
+      // near-misses on live streams. When available, NCC can rescue a dHash near-miss.
+      let nccScore = null;
+      if (sat && sat2 && ref.refNCC && ref.w > 0 && ref.h > 0) {
+        nccScore = nccScoreAt(captureGray, config.captureSize, sat, sat2,
+          baseResult.x, baseResult.y, ref.refNCC, ref.w, ref.h);
+      }
+
       const baseVerify = ref.refVerifyValues
         ? verifyScoreFromPixels(capturePixels, config.captureSize, baseResult.x, baseResult.y,
             ref.refVerifyValues, ref.refVerifyMask, ref.refVerifyActive,
             ref.verifySampleX, ref.verifySampleY)
         : null;
-      const baseMatched =
-        baseResult.ratio <= threshold &&
-        baseResult.validBits >= config.minMaskedBits &&
-        (verifyThreshold == null || baseVerify == null || baseVerify.score <= verifyThreshold);
+
+      const dHashPassed = baseResult.ratio <= threshold && baseResult.validBits >= config.minMaskedBits;
+      const nccPassed   = nccScore !== null && nccScore >= config.nccMatchThreshold;
+      const verifyOk    = verifyThreshold == null || baseVerify == null || baseVerify.score <= verifyThreshold;
+      // NCC alone is sufficient: it normalizes for brightness/contrast so H.264 level shifts
+      // can't cause false positives. dHash still requires verify as a second opinion because
+      // structural similarity (dHash) doesn't guarantee color match.
+      const baseMatched = nccPassed || (dHashPassed && verifyOk);
 
       if (baseMatched) {
         return {
           ...baseResult, angle: 0, threshold,
           verifyScore: baseVerify ? baseVerify.score : null,
-          verifyThreshold, matched: true,
+          verifyThreshold, nccScore, matched: true,
         };
       }
 
@@ -572,7 +653,7 @@
           angle: useBase ? 0 : bestRotAngle, threshold: useBase ? threshold : rotThreshold,
           verifyScore: useBase ? (baseVerify ? baseVerify.score : null) : null,
           verifyThreshold: useBase ? verifyThreshold : null,
-          matched: false,
+          nccScore, matched: false,
         };
       }
 
@@ -580,18 +661,21 @@
       return {
         ...baseResult, angle: 0, threshold,
         verifyScore: baseVerify ? baseVerify.score : null,
-        verifyThreshold, matched: false,
+        verifyThreshold, nccScore, matched: false,
       };
     }
 
     function findBestMatch(triggers, capturePixels, captureGray) {
+      // Build summed-area table once for all NCC calls in this hover event.
+      const { sat, sat2 } = buildSAT(captureGray, config.captureSize, config.captureSize);
+
       // Pass 1: run Phase 1 (base hash only, no rotation) for every trigger.
       const ranked = [];
       for (const trigger of triggers) {
         if (!trigger.references) continue;
         for (const ref of trigger.references) {
           if (!ref.refHash) continue;
-          const result = evaluateReference(ref, capturePixels, captureGray, /*skipRotation=*/true);
+          const result = evaluateReference(ref, capturePixels, captureGray, /*skipRotation=*/true, sat, sat2);
           ranked.push({
             trigger,
             ref,
@@ -621,7 +705,7 @@
           .slice(0, config.rotationCandidateMax);
 
         for (const entry of rotatingMisses) {
-          const result = evaluateReference(entry.ref, capturePixels, captureGray, /*skipRotation=*/false);
+          const result = evaluateReference(entry.ref, capturePixels, captureGray, /*skipRotation=*/false, sat, sat2);
           // Overwrite the Phase 1 result for this entry with the full Phase 1+2 result.
           Object.assign(entry, result);
         }
@@ -647,6 +731,7 @@
             threshold: ranked[0].threshold,
             verifyScore: ranked[0].verifyScore,
             verifyThreshold: ranked[0].verifyThreshold,
+            nccScore: ranked[0].nccScore ?? null,
             angle: ranked[0].angle ?? 0,
             matched: ranked[0].matched,
           }
@@ -661,6 +746,7 @@
           threshold: entry.threshold,
           verifyScore: entry.verifyScore,
           verifyThreshold: entry.verifyThreshold,
+          nccScore: entry.nccScore ?? null,
           angle: entry.angle ?? 0,
           matched: entry.matched,
           score: entry.score,
@@ -681,6 +767,9 @@
       matchThresholdForRef,
       verifyThresholdForRef,
       verifyScoreFromPixels,
+      buildSAT,
+      buildRefNCC,
+      nccScoreAt,
       slidingWindowMatch,
       evaluateReference,
       findBestMatch,

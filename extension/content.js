@@ -633,6 +633,21 @@
       ref.refVerifyActive = verifyRef.active;
     }
 
+    // Native-resolution pixels: needed for NCC stats and rotation hashes.
+    // Render once and reuse for both — avoids a second canvas draw when rotating.
+    let nativePx = null;
+    if (ref.refHash) {
+      const nativeTmp = document.createElement("canvas");
+      nativeTmp.width = w; nativeTmp.height = h;
+      const nCtx = nativeTmp.getContext("2d");
+      nCtx.imageSmoothingEnabled = false;
+      nCtx.drawImage(ref.sourceImg, 0, 0, w, h);
+      nativePx = nCtx.getImageData(0, 0, w, h).data;
+      ref.refNCC = matcher.buildRefNCC(nativePx, w, h);
+    } else {
+      ref.refNCC = null;
+    }
+
     // Pre-compute rotated hashes if the trigger opts into rotation-aware matching.
     // Rotation schema takes precedence over legacy rotates:true flag.
     // Rotate at native dimensions (w×h) so aspect ratio is preserved — rotating a
@@ -640,13 +655,7 @@
     const rotAngles = ref.rotation
       ? matcher.anglesForRotation(ref.rotation)
       : ref.rotates ? matcher.config.rotationAngles : null;
-    if (rotAngles && rotAngles.length && ref.refHash) {
-      const nativeTmp = document.createElement("canvas");
-      nativeTmp.width = w; nativeTmp.height = h;
-      const nCtx = nativeTmp.getContext("2d");
-      nCtx.imageSmoothingEnabled = false;
-      nCtx.drawImage(ref.sourceImg, 0, 0, w, h);
-      const nativePx = nCtx.getImageData(0, 0, w, h).data;
+    if (rotAngles && rotAngles.length && nativePx) {
       ref.rotatedHashes = matcher.computeRotatedHashes(nativePx, w, h, rotAngles);
     } else {
       ref.rotatedHashes = null;
@@ -2432,6 +2441,7 @@
         threshold,
         verifyScore: best.verifyScore,
         verifyThreshold,
+        nccScore: best.nccScore ?? null,
         angle: best.angle ?? 0,
         candidates: matchResult.candidates,
       };
@@ -2446,6 +2456,7 @@
         threshold,
         verifyScore: best.verifyScore,
         verifyThreshold,
+        nccScore: best.nccScore ?? null,
         angle: best.angle ?? 0,
         noMatch: true,
         candidates: matchResult.candidates,
@@ -2585,18 +2596,22 @@
       const verifyText = lastMatchInfo.verifyThreshold != null && lastMatchInfo.verifyScore != null
         ? ` v=${Math.round(lastMatchInfo.verifyScore * 100)}%<=${Math.round(lastMatchInfo.verifyThreshold * 100)}%`
         : "";
+      const nccText = lastMatchInfo.nccScore != null
+        ? ` ncc=${lastMatchInfo.nccScore.toFixed(2)}`
+        : "";
       const angleText = lastMatchInfo.angle ? ` @${lastMatchInfo.angle}°` : "";
       matchLine = lastMatchInfo.noMatch
-        ? `<span style="color:#adadb8">best: ${lastMatchInfo.dist}/${lastMatchInfo.validBits} (${Math.round(lastMatchInfo.ratio * 100)}%)<=${Math.round(lastMatchInfo.threshold * 100)}%${angleText}${verifyText} "${lastMatchInfo.title}"</span>`
-        : `<span style="color:#00f593">MATCH "${lastMatchInfo.title}" ${lastMatchInfo.dist}/${lastMatchInfo.validBits} (${Math.round(lastMatchInfo.ratio * 100)}%)<=${Math.round(lastMatchInfo.threshold * 100)}%${angleText}${verifyText}</span>`;
+        ? `<span style="color:#adadb8">best: ${lastMatchInfo.dist}/${lastMatchInfo.validBits} (${Math.round(lastMatchInfo.ratio * 100)}%)<=${Math.round(lastMatchInfo.threshold * 100)}%${angleText}${verifyText}${nccText} "${lastMatchInfo.title}"</span>`
+        : `<span style="color:#00f593">MATCH "${lastMatchInfo.title}" ${lastMatchInfo.dist}/${lastMatchInfo.validBits} (${Math.round(lastMatchInfo.ratio * 100)}%)<=${Math.round(lastMatchInfo.threshold * 100)}%${angleText}${verifyText}${nccText}</span>`;
     }
     const candidateLines = (lastMatchInfo?.candidates || [])
       .map((c, idx) => {
         const verifyText = c.verifyThreshold != null && c.verifyScore != null
           ? ` v${Math.round(c.verifyScore * 100)}<=${Math.round(c.verifyThreshold * 100)}`
           : "";
+        const nccText = c.nccScore != null ? ` ncc=${c.nccScore.toFixed(2)}` : "";
         const angleText = c.angle ? `@${c.angle}°` : "";
-        return `#${idx + 1} ${Math.round(c.ratio * 100)}%(${c.dist}/${c.validBits})<=${Math.round(c.threshold * 100)}%${angleText}${verifyText} ${c.title}`;
+        return `#${idx + 1} ${Math.round(c.ratio * 100)}%(${c.dist}/${c.validBits})<=${Math.round(c.threshold * 100)}%${angleText}${verifyText}${nccText} ${c.title}`;
       })
       .join("<br>");
     infoEl.innerHTML =
