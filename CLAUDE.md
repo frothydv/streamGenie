@@ -1,147 +1,231 @@
-# Stream Overlay — Project Primer
+# Stream Genie — Project Primer
 
-You are picking up a project in progress. This document captures the concept, architectural decisions made so far, the current state of the codebase, and the planned next steps. The user has been collaborating with a previous Claude instance in a web chat; they have now transitioned to Claude Code for faster iteration.
+You are picking up a project in progress. This document captures the concept, architectural decisions, current state, and what remains before a public beta.
 
 ## The concept
 
-A browser extension that adds **hover-to-reveal annotations** over Twitch streams (and eventually YouTube). When a viewer hovers over something on screen — a card in a card game, a relic, a UI icon — a popup appears showing text and/or images explaining it.
+A browser extension that adds **hover-to-reveal annotations** over Twitch streams (and eventually YouTube). When a viewer hovers over something on screen — a card in a card game, a relic, a UI icon — a popup appears showing text explaining it.
 
 The key insight: we read **pixels** from the video stream, not game state. This is intentionally game-agnostic. Any game works once a profile exists for it. Community members contribute the profiles.
 
-Inspired by the long-running Hearthstone Deck Tracker and Slay the Spire overlays, but generalized to work with any game without per-game engineering.
+Inspired by the Hearthstone Deck Tracker and Slay the Spire overlays, but generalized to work with any game without per-game engineering.
 
 ## Architectural decisions (already made, do not re-litigate)
 
 ### Viewer-side, not streamer-side
 
-Originally considered a streamer-side desktop app that would scan the framebuffer and broadcast metadata. Rejected in favor of a browser extension that runs viewer-side because:
-- Zero streamer install barrier
-- Works on VODs/clips as a bonus
-- Hover-scoping (next section) makes the pixel-quality gap on re-encoded Twitch video acceptable
+Browser extension that runs viewer-side. Zero streamer install barrier, works on VODs/clips, hover-scoping makes pixel quality on re-encoded Twitch video acceptable.
 
 ### Hover-scoped matching, not continuous scanning
 
-We only scan the region under the cursor on hover, not the whole frame continuously. This:
-- Cuts CPU cost by orders of magnitude (hover is a human-scale event)
-- Turns "detection" into "classification" — dramatically easier problem
-- Lets a perceptual-hash-nearest-neighbor approach work where template matching would struggle
+We only scan the region under the cursor on hover, not the whole frame continuously. Cuts CPU cost by orders of magnitude, turns detection into classification, and makes perceptual-hash nearest-neighbor viable.
 
-### Monorepo of profiles, hosted on GitHub + served via jsDelivr
+### Profiles repo hosted on GitHub, served via raw.githubusercontent.com (with jsDelivr as CDN fallback)
 
-One central repo with multiple profiles per game (official, community-x, etc.). GitHub for storage/versioning/moderation-via-PR; jsDelivr's free CDN for fast serving. Zero infrastructure cost.
+One central repo (`frothydv/streamGenieProfiles`) with multiple profiles per game. GitHub for storage/versioning/moderation-via-PR; `raw.githubusercontent.com` for fast serving with `ensureRawUrl()` converting jsDelivr URLs when needed. Zero infrastructure cost.
 
-### Permission tiers (as convention, not code, until needed)
+### Permission tiers via contributor keys, not a full roles system
 
-Four conceptual tiers: god mode (maintainer), profile owners (streamers/community leads), trusted contributors (scoped write access), and public (via PR). Implemented via GitHub CODEOWNERS rather than a custom permission system. Do not build a roles UI until multiple community profiles actually exist and force the issue.
+Trusted contributors get a UUID key that lets them commit directly to main via the Cloudflare Worker. Everyone else's submissions become PRs. Maintainer reviews and merges via the popup's proposal review UI. Do not build a richer roles UI until community scale forces the issue.
 
-### Streamer-declared profile bundles
+### Streamer-declared profile bundles (planned, not yet built)
 
-Creators (Twitch streamers, YouTubers) declare which profiles their viewers get via a config file in the repo (e.g., `creators/twitch/calpey.json`). Viewers can override, but additively only (add-to, not replace). This keeps streamer curation meaningful.
+Creators will declare which profiles their viewers get via `creators/twitch/{streamer}.json` in the profiles repo. Not yet implemented — current detection is game-category-based only.
 
-### Cross-platform by design, but Chrome-only for v1
+### Cross-platform by design, Chrome-only for v1
 
-Manifest V3 Chrome extension. YouTube support planned for milestone 5 (same code path, different platform module). Firefox later if project has legs.
+Manifest V3 Chrome extension. YouTube and Firefox are post-beta.
 
-## Current state
+## Current state — v0.9.0
 
-The extension is at **v0.2.3**, end of milestone 2 with a capture-mode extension. Milestones completed:
+All core milestones are complete. The extension can detect a game, load a community profile from GitHub, match triggers against live video pixels, show popups, and let contributors submit new triggers via a Cloudflare Worker that opens PRs.
 
-- **M1 (v0.1.0):** Hello-world extension. Manifest, service worker, content script, toolbar popup. Loads on Twitch, logs to console. Hotkey registered (does nothing yet).
-- **M2 (v0.2.0–0.2.2):** Hover detection + pixel capture. Content script finds the video element, tracks cursor at document level (bypasses Twitch's overlay divs that swallow events), captures 160×160 region under cursor via `drawImage(video, ...)` to a canvas. Debug panel in top-right shows live capture preview + coordinates.
-- **M2.3 (v0.2.3, current):** In-extension capture mode. Alt+Shift+C freezes the current frame as an overlay, user drags a box, releases → PNG downloads. Groundwork for the milestone 7 contribution flow, also used immediately to generate reference images for milestone 3.
+### Milestones shipped
+
+- **M1:** Hello-world extension — manifest, service worker, content script, toolbar popup.
+- **M2:** Hover detection + pixel capture. Finds video element, tracks cursor at document level (bypasses Twitch overlay divs), captures 160×160 region. Debug panel shows live preview.
+- **M2.3:** Capture mode. Alt+Shift+C freezes frame as overlay, user drags box → captured crop used as reference image in the contribution editor.
+- **M3:** Perceptual hash matching. dHash at native crop dimensions, sliding-window search, popup rendering (dark Twitch theme), match distance shown in debug panel.
+- **M4:** Profile loading. Fetches `catalog.json` then individual `profile.json` from `raw.githubusercontent.com`. 2-minute localStorage cache with stale-fallback. Hardcoded fallback catalog if CDN is unreachable.
+- **M5:** Game detection. `detectTwitchGame()` reads the stream-game-link from the Twitch DOM, extracts the category slug, polls every 500ms for SPA navigation. Popup matches `detectedSlug` against catalog entries (handles Twitch slug format differences).
+- **M6:** STS2 community profile seeded with real triggers.
+- **M7:** Full contribution flow. Capture → reference editor (payload text, popup offset, mask paint, rotation schema) → submit to `streamgenie-submit.vbjosh.workers.dev`. Trusted contributors commit directly to main; untrusted contributors open PRs. Popup shows pending proposals; maintainer can accept or reject from within the extension.
+- **M8 (rotation schema):** Rotation-aware matching. Triggers declare a rotation schema (mode: `orthogonal` | `free`, with configurable range/step/fine-steps). Phase 1 always matches the as-captured orientation; Phase 2 searches additional angles. Authoring UI includes animated inline preview and a live heat-map validation test. 39-test suite.
+- **M9 (NCC verification):** NCC (Normalized Cross-Correlation) secondary match pass. After dHash locates the best candidate position, NCC verifies it using a summed-area table for O(1) mean/variance. NCC normalizes for local brightness and contrast, making it immune to H.264 level shifts that cause dHash near-misses on live streams. Score ≥ 0.65 fires a match independently of the dHash ratio. SAT built once per hover event and shared across all triggers (~0.24ms overhead). Debug panel surfaces ncc= score. Map-icon went from failing at ±3 noise to holding at ±20.
+
+### Profile selection gap
+
+Profile selection in the popup is still manual — the user picks from a list of profiles for the detected game. Auto-selection (e.g. picking the top/verified profile automatically) and streamer-specific overrides (`creators/twitch/` lookup) are not yet built.
 
 ## File layout
 
 ```
 extension/
-  manifest.json         # Manifest V3, Chrome
-  background.js         # Service worker; handles hotkey, forwards to content
-  content.js            # Main content script (~570 lines). All the action.
-  popup.html + .js      # Toolbar popup, shows tab status
-  icons/                # Placeholder purple-square PNGs
-README.md               # User-facing test instructions
-CLAUDE.md               # This file
+  manifest.json           # Manifest V3, Chrome, v0.9.0
+  background.js           # Service worker; hotkey forwarding
+  content.js              # Main content script (~2900 lines). All matching, UI, editor.
+  matcher-core.js         # dHash, rotation, findBestMatch — loaded before content.js
+  popup.html + popup.js   # Toolbar popup: game detection, profile select, proposals
+  icons/                  # 16/48/128px PNGs
+workers/
+  submit-trigger/
+    index.js              # Cloudflare Worker — add/update/remove/create-profile/review ops
+    wrangler.toml         # Worker config (account: vbjosh)
+tests/
+  rotation-matching.js    # 39 tests — angle generation, accuracy, heat-map invariants, speed
 ```
 
-All of `content.js` is wrapped in an IIFE with `window.__streamOverlayLoaded` guard against double-injection on extension reload. It contains:
+`content.js` is an IIFE with `window.__streamOverlayLoaded` guard. Major sections:
+1. Config constants and profile loading
+2. Video discovery (`findBestVideo`, `attachToVideo`, 500ms heartbeat)
+3. Pixel capture (`clientToVideoCoords`, `captureRegion`, 160×160 + 480×480 wide)
+4. Matching pipeline (invokes `MatcherCore.findBestMatch`)
+5. Popup rendering (dark Twitch theme, auto-dismiss on cursor leave)
+6. Debug panel
+7. Capture mode (Alt+Shift+C freeze-and-drag)
+8. Trigger editor / contribution UI (payload, offset, mask, rotation schema, heat-map test)
+9. Toast notifications
+10. Message handlers (hotkey, get-game, review-proposal)
 
-1. Config constants (capture size, intervals)
-2. Video discovery (`findBestVideo`, `attachToVideo`, heartbeat)
-3. Pixel capture (`clientToVideoCoords`, `captureRegion`)
-4. Document-level mouse handler
-5. Debug panel UI
-6. Capture mode (the Alt+Shift+C freeze-and-crop flow)
-7. Toast notifications
-8. Message handler for the hotkey
+## Profile and catalog schema
 
-## Gotchas already discovered and handled
+### `catalog.json`
+```json
+{
+  "games": [
+    {
+      "id": "slay-the-spire-2",
+      "name": "Slay the Spire 2",
+      "twitchSlug": "slay-the-spire-ii",
+      "profiles": [
+        {
+          "id": "community",
+          "name": "STS2 Community",
+          "verified": true,
+          "url": "https://raw.githubusercontent.com/frothydv/streamGenieProfiles/main/games/slay-the-spire-2/profiles/community/profile.json"
+        }
+      ]
+    }
+  ]
+}
+```
 
-- **Chrome reserves Ctrl+Shift+C** for DevTools inspector. Use Alt+Shift+C.
-- **Twitch homepages have hidden `<video>` preloaders** that trip up naive `querySelector('video')`. We now pick the largest visible video with non-zero dimensions.
-- **Twitch's player has transparent overlay divs** that swallow pointer events on the `<video>` element. We listen at document level and check bounds instead of listening on the video directly.
-- **Video element can appear late after SPA navigation.** We use a 500ms heartbeat that re-evaluates video attachment, not just a URL-change listener.
-- **Resolution varies** — Twitch viewers pick their quality (1080p, 720p, etc.). Perceptual hashing at small sizes (16×16 or 32×32 dHash) is naturally resolution-robust. Build matching with this in mind.
+### `profile.json`
+```json
+{
+  "triggers": [
+    {
+      "id": "map-button",
+      "payloads": [
+        {
+          "title": "Map",
+          "text": "Opens the map.",
+          "popupOffset": { "x": 14, "y": 22 },
+          "image": null
+        }
+      ],
+      "references": [
+        {
+          "file": "map-button.png",
+          "w": 95,
+          "h": 116,
+          "srcW": 1920,
+          "srcH": 1080,
+          "maskDataUrl": "data:image/png;base64,..."
+        }
+      ],
+      "rotation": {
+        "mode": "free",
+        "minAngle": -30,
+        "maxAngle": 30,
+        "step": 5,
+        "fineStepNearZero": true,
+        "baseAngle": 0
+      },
+      "rotates": true
+    }
+  ]
+}
+```
+
+Reference PNGs live at `{profileBaseUrl}/references/{file}`.
+
+## Worker operations
+
+`POST https://streamgenie-submit.vbjosh.workers.dev` with JSON body `{ op, gameId, profileId, trigger?, triggerId?, contributorKey? }`.
+
+| op | trusted | untrusted |
+|----|---------|-----------|
+| `add` | direct commit to main | opens PR |
+| `update` | direct commit | opens PR |
+| `remove` | direct commit | opens PR |
+| `create-profile` | direct commit, returns contributor code | — |
+| `verify` | checks contributor key validity | — |
+| `list-proposals` | lists open PRs for game/profile | — |
+| `accept-proposal` | merges PR | — |
+| `reject-proposal` | closes PR with comment | — |
+
+## Gotchas discovered and handled
+
+- **Chrome reserves Ctrl+Shift+C** for DevTools. Use Alt+Shift+C.
+- **Twitch has hidden `<video>` preloaders** on homepages. Pick the largest visible video with non-zero dimensions.
+- **Twitch overlay divs swallow pointer events** on the video. Listen at document level and check bounds.
+- **Video appears late on SPA navigation.** 500ms heartbeat re-evaluates attachment.
+- **Resolution varies.** dHash at native crop dimensions is robust; heat-map stride fixed at 4 (guarantees ≤2px offset, ≤2 bit mismatch at threshold 7).
+- **`parseFloat("0") || default` treats 0 as falsy.** Use `parseOrDef(val, def)` with `isNaN` check everywhere rotation inputs are read.
+- **jsDelivr CDN lags behind main branch** by up to 24 hours. `ensureRawUrl()` converts CDN URLs to `raw.githubusercontent.com` on load.
+- **Rotation schema: Phase 1 always fires.** Phase 1 matches the as-captured orientation regardless of the configured rotation range. The range is additive (adds more angles to search), not a filter.
+- **baseAngle is preview-only.** It tells the animation where the ref is tilted in real life. It does NOT shift `anglesForRotation()`'s output.
 
 ## Testing workflow
 
-1. User makes code changes (you, as Claude Code, edit files directly).
-2. User goes to `chrome://extensions/`, clicks the reload icon on the "Stream Overlay (dev)" card.
-3. User reloads or revisits a Twitch page.
-4. User opens DevTools (F12), filters console by `[overlay` to see our logs.
-5. User reports back what they see; iterate.
+1. Edit files directly (Claude Code).
+2. `chrome://extensions/` → reload the "Stream Genie (pre-alpha)" card.
+3. Reload the Twitch page.
+4. F12 → Console, filter by `[overlay` for extension logs.
+5. Run `node tests/rotation-matching.js` for the matcher test suite.
 
-The user is not a streamer and is not deeply technical. Keep instructions concrete and minimal. They're happy to click reload, check a console, and paste errors. They're not going to want to set up a dev environment or debug JavaScript themselves.
+## Known limitations
 
-## Next milestone — M3: dummy matching
+### Low-resolution matching
+References smaller than ~40px at the viewer's stream resolution are silently skipped (insufficient discriminative power). In practice:
+- **1080p:** all refs match well.
+- **720p:** larger refs match; tiny refs (~35px) may miss.
+- **480p and below:** most small refs disabled.
 
-The user just captured a reference image using the M2.3 capture feature. The image is the "map button" (a scroll-with-X icon) from Slay the Spire 2 on streamer Calpey's channel. They may also capture additional references (cards, relics, other UI) for additional test coverage.
-
-**M3 scope:**
-- Add a hardcoded trigger list — for now just one or two reference images bundled in the extension, with text payloads.
-- Implement perceptual hash matching. dHash at 16×16 is the starting point; robust to compression and resolution scaling.
-- For small references (smaller than 160×160 capture), use sliding-window search: slide the reference across the capture region, take the best-matching position. This handles imprecise hovering.
-- On match above threshold, render a popup near the cursor with the payload text. Popup should be styled consistently (dark Twitch-ish theme). Should auto-dismiss when cursor moves away from match region.
-- Debug panel should show current best-match distance and which trigger matched (or "no match"). We want to see the numbers during testing.
-
-**What to ask the user for before starting M3:**
-- The reference image files from their M2.3 capture session
-- The payload text for each (what the popup should say)
-- Any preference on popup position (below cursor / above / follow cursor / etc.)
-
-**What NOT to do in M3:**
-- Do not load profiles from the cloud yet — that's M4.
-- Do not implement game detection — that's M5.
-- Do not build real contribution flow — M2.3 is a stub, M7 is the real thing.
+Acceptable while profiles are anchored to streamers who broadcast at source resolution. Future options: canonical-size hashing (resize both sides to 32×32), pHash (DCT-based), or color histogram confirmation pass.
 
 ## Working style notes
 
-The previous Claude was fairly opinionated about pushing back on over-engineering and scope creep. The user appreciates this. When the user floats an idea, evaluate it seriously and say "yes, and here's why" or "no, and here's why, and here's what I think instead." Do not default to agreement.
+Push back on scope creep. When the user floats an idea, evaluate seriously and say yes-and or no-and. Do not default to agreement.
 
-The user is fine with being told they need to do something that requires human hands (install, test, screenshot). They don't want to be asked unnecessary questions when a reasonable default exists. They also appreciate honest acknowledgment of uncertainty and risk.
+When a change is small, make it. When large or architectural, surface for discussion first.
 
-When a change is small, make it. When a change is large or architectural, surface it for discussion first.
+Commits should be semantic and descriptive.
 
-Commits should be semantic and descriptive. The user wants git history to be useful.
+The user is comfortable clicking reload and pasting console errors. Keep instructions concrete and minimal.
 
-## Known limitations (as of M3)
+## What remains before a public beta
 
-### Low-resolution matching
-dHash at 9×8 bits on a small reference (< ~40px) loses discriminative power — many different game UI elements hash similarly. Current behavior: refs that scale below `SMALL_REF_THRESHOLD` (40px) at the current stream resolution get their hash silently disabled and produce no matches. In practice:
-- **1080p native:** all refs match well.
-- **720p:** larger refs (map icon ~51px) match; smaller refs (coin ~35px) are near the threshold and may miss.
-- **480p and below:** most small refs are disabled entirely.
+### Must-haves
+- **Profile curation UX** — delete a trigger, overwrite a trigger (new image + import existing metadata), profile grid/review mode so a contributor can scan all triggers quickly. Near-duplicate detection (surface triggers whose hashes are close).
+- **Viewer onboarding** — "no profile found for this stream" state that explains the extension is working. First-run banner.
+- **Error states** — CDN down, malformed profile JSON, schema mismatch. Currently silent. Needs at minimum a debug panel indicator.
+- **Privacy/permissions disclosure** — store listing and first-run must state that pixels are read locally, nothing leaves the device.
 
-This is acceptable for M3/M4/M5 since profiles will be anchored to streamers who broadcast at source resolution. Address in a dedicated milestone if sub-720p support becomes a real need.
+### Nice-to-haves (post-beta)
+- Auto-profile selection in popup (pick top verified profile automatically)
+- Creator/streamer-specific profile config (`creators/twitch/{streamer}.json`)
+- Match quality indicator in editor (auto-run heat-map on open, show pass/fail)
+- Rate limiting / abuse prevention on the Cloudflare Worker
+- Profile upvotes + sorting (see wishlist memory)
+- Profile owner review UI and report button (see wishlist memory)
+- YouTube support, Firefox support, sub-720p matching improvements
 
-**Candidate approaches when we get there:**
-- Canonical-size hashing: resize both reference and each capture window to a fixed size (e.g. 32×32) before hashing, so comparison quality is resolution-independent.
-- pHash (DCT-based): captures low-frequency structure, more robust to compression artifacts and small scaling differences.
-- Color histogram confirmation: as a cheap second-pass on dHash candidates.
+## Planned future work (post-beta roadmap)
 
-## Planned milestones
-
-- **M4:** Profile loading from GitHub via jsDelivr. Profile schema. Caching.
-- **M5:** Game detection via Twitch category (and YouTube channel-based equivalent). Streamer/creator config lookup.
-- **M6:** First real profile. Seeded with Slay the Spire 2 content since Calpey streams it.
-- **M7:** Real contribution flow — refine M2.3 with payload entry, offset specification, preview-before-submit, and upload via a Cloudflare Worker that opens PRs.
-- **Later:** YouTube support, Firefox support, profile management UI for owners, NSFW scanning, sub-720p matching improvements, etc.
+- Creator-declared profile bundles (`creators/twitch/` lookup)
+- YouTube + Firefox support
+- Profile upvotes and community sorting
+- Owner review UI and viewer report button
+- Telemetry (which triggers match most) — requires backend + privacy consideration
