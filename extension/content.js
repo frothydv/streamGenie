@@ -499,31 +499,29 @@
   }
 
   async function applyProfile(profile, sourceUrl) {
-    const profileTriggers = profile.triggers.map(t => ({ ...t, source: "profile" }));
-    const userTriggers = TRIGGERS.filter(t => t.id && t.id.startsWith("user-"));
+    const ap = activeProfile || DEFAULT_PROFILE;
+    const profileIdSet = new Set(profile.triggers.map(t => t.id));
+    TRIGGERS = profile.triggers.map(t => ({ ...t, source: "profile" }));
 
-    // Load modified profile triggers from storage (survives page reloads)
-    const modifiedTriggers = await loadModifiedProfileTriggers();
+    // Clean up stale local data. The modified-triggers key is always dead code now.
+    // For user-triggers: only delete once the CDN profile contains all of them —
+    // if a recently-submitted trigger hasn't propagated yet, keep the backup and
+    // show it so the trigger remains visible until the next CDN refresh.
+    const uKey = userTriggersKey(ap.gameId, ap.profileId);
+    const mKey = modifiedTriggersKey(ap.gameId, ap.profileId);
+    const stored = await chrome.storage.local.get(uKey);
+    const pending = (stored[uKey] || []).filter(t => t.id && !profileIdSet.has(t.id));
+    if (pending.length === 0) {
+      await chrome.storage.local.remove([uKey, mKey]);
+    } else {
+      // Some locally-saved triggers haven't appeared in the CDN profile yet.
+      // Keep them visible and don't delete the backup.
+      for (const t of pending) TRIGGERS.push({ ...t, source: "pending" });
+      await chrome.storage.local.remove(mKey);
+      console.log(`[overlay/content] ${pending.length} pending trigger(s) not yet in CDN profile — showing locally`);
+    }
 
-    // Deduplicate: fresh profile triggers are overridden by locally modified versions
-    const mergedMap = new Map();
-    
-    // 1. Profile triggers from CDN (base)
-    profileTriggers.forEach(t => mergedMap.set(t.id, t));
-    
-    // 2. Locally modified profile triggers (override CDN)
-    modifiedTriggers.forEach(t => {
-      t.source = "profile"; 
-      mergedMap.set(t.id, t);
-    });
-    
-    // 3. Locally created user triggers
-    userTriggers.forEach(t => mergedMap.set(t.id, t));
-
-    TRIGGERS = Array.from(mergedMap.values());
-
-    console.log(`[overlay/content] profile applied: ${profileTriggers.length} profile + ${modifiedTriggers.length} modified + ${userTriggers.length} user = ${TRIGGERS.length} triggers (source: ${sourceUrl})`);
-
+    console.log(`[overlay/content] profile applied: ${TRIGGERS.length} triggers (source: ${sourceUrl})`);
     loadReferencesForTriggers(profileBaseUrl(sourceUrl));
     updateDebugPanelStatus();
   }
@@ -644,7 +642,18 @@
       nCtx.imageSmoothingEnabled = false;
       nCtx.drawImage(ref.sourceImg, 0, 0, w, h);
       nativePx = nCtx.getImageData(0, 0, w, h).data;
-      ref.refNCC = matcher.buildRefNCC(nativePx, w, h);
+
+      // Render mask at native size so NCC only correlates unmasked pixels.
+      let nativeMaskPx = null;
+      if (ref.maskDataUrl && ref.maskImg) {
+        const nMaskTmp = document.createElement("canvas");
+        nMaskTmp.width = w; nMaskTmp.height = h;
+        const nMaskCtx = nMaskTmp.getContext("2d");
+        nMaskCtx.imageSmoothingEnabled = false;
+        nMaskCtx.drawImage(ref.maskImg, 0, 0, w, h);
+        nativeMaskPx = nMaskCtx.getImageData(0, 0, w, h).data;
+      }
+      ref.refNCC = matcher.buildRefNCC(nativePx, w, h, nativeMaskPx);
     } else {
       ref.refNCC = null;
     }
@@ -672,25 +681,6 @@
   }
 
   // --- User triggers (locally saved) ---------------------------------------
-
-  async function loadUserTriggers() {
-    try {
-      const ap = activeProfile || DEFAULT_PROFILE;
-      const key = userTriggersKey(ap.gameId, ap.profileId);
-      const result = await chrome.storage.local.get(key);
-      // Only load actual user-created triggers (IDs starting with "user-")
-      const saved = (result[key] || []).filter(t => t.id && t.id.startsWith("user-"));
-      for (const trigger of saved) {
-        if (!TRIGGERS.find(t => t.id === trigger.id)) {
-          TRIGGERS.push(trigger);
-          loadRefImages(trigger);
-        }
-      }
-      if (saved.length) console.log(`[overlay/content] user triggers loaded: ${saved.length} for ${ap.profileId}`);
-    } catch (e) {
-      console.warn("[overlay/content] failed to load user triggers:", e.message);
-    }
-  }
 
   function loadRefImages(trigger) {
     if (!trigger.references) return;
@@ -751,60 +741,6 @@
     }
   }
 
-  async function saveModifiedProfileTrigger(trigger) {
-    try {
-      const ap = activeProfile || DEFAULT_PROFILE;
-      const key = modifiedTriggersKey(ap.gameId, ap.profileId);
-      const storable = {
-        id: trigger.id,
-        rotates: !!trigger.rotates,
-        rotation: trigger.rotation || null,
-        payloads: trigger.payloads,
-        references: trigger.references.map(({ dataUrl, maskDataUrl, file, w, h, srcW, srcH }) => ({ dataUrl, maskDataUrl, file, w, h, srcW, srcH })),
-        _isModified: true,
-      };
-      const result = await chrome.storage.local.get(key);
-      const saved = result[key] || [];
-      const idx = saved.findIndex(t => t.id === trigger.id);
-      if (idx >= 0) saved[idx] = storable;
-      else saved.push(storable);
-      await chrome.storage.local.set({ [key]: saved });
-      console.log(`[overlay/content] modified profile trigger saved: ${trigger.id} (${saved.length} total)`);
-    } catch (e) {
-      console.warn("[overlay/content] failed to save modified trigger:", e.message);
-    }
-  }
-
-  async function loadModifiedProfileTriggers() {
-    try {
-      const ap = activeProfile || DEFAULT_PROFILE;
-      const key = modifiedTriggersKey(ap.gameId, ap.profileId);
-      const result = await chrome.storage.local.get(key);
-      const saved = result[key] || [];
-      const triggers = saved.map(t => ({ ...t, source: "profile" }));
-      console.log(`[overlay/content] modified profile triggers loaded: ${triggers.length}`);
-      return triggers;
-    } catch (e) {
-      console.warn("[overlay/content] failed to load modified triggers:", e.message);
-      return [];
-    }
-  }
-
-  async function cleanupUserTriggers() {
-    try {
-      const ap = activeProfile || DEFAULT_PROFILE;
-      const key = userTriggersKey(ap.gameId, ap.profileId);
-      const result = await chrome.storage.local.get(key);
-      const saved = result[key] || [];
-      const filtered = saved.filter(t => t.id && t.id.startsWith("user-"));
-      if (filtered.length < saved.length) {
-        await chrome.storage.local.set({ [key]: filtered });
-        console.log(`[overlay/content] cleaned up ${saved.length - filtered.length} incorrectly saved profile triggers from user storage`);
-      }
-    } catch (e) {
-      console.warn("[overlay/content] cleanup failed:", e.message);
-    }
-  }
 
   async function submitToProfile(trigger, mode = "add", profileHint = null) {
     if (!WORKER_URL) throw new Error("Worker URL not configured");
@@ -1352,6 +1288,7 @@
 
           // Build mask bits from current mask editor state
           let refMaskResult = null;
+          let maskPixelsForNCC = null;
           const curMaskUrl = maskEditor.getMaskDataUrl();
           if (curMaskUrl) {
             const mImgEl = await hmLoadImage(curMaskUrl);
@@ -1362,10 +1299,19 @@
             mCtx.drawImage(mImgEl, 0, 0, winW0, winH0);
             const mPx = mCtx.getImageData(0, 0, winW0, winH0).data;
             const mr = matcher.maskBitsFromPixels(mPx, winW0, 0, 0, winW0, winH0);
-            if (mr.validBits >= 16) refMaskResult = mr;
+            if (mr.validBits >= 16) { refMaskResult = mr; maskPixelsForNCC = mPx; }
           }
           const refMaskBits = refMaskResult?.bits || matcher.allBitMask;
           const refValidBits = refMaskResult?.validBits || 64;
+
+          // Build ref NCC stats (mask-aware so masked regions don't skew correlation).
+          const refNCC = matcher.buildRefNCC(
+            new Uint8Array(cropPx), winW0, winH0,
+            maskPixelsForNCC ? new Uint8Array(maskPixelsForNCC) : null
+          );
+          // Build SAT once for the wide capture so NCC at candidate positions is O(1).
+          const wideGrayBuf = matcher.fillGrayBuffer(new Uint8Array(widePx));
+          const { sat: wideSat, sat2: wideSat2 } = matcher.buildSAT(wideGrayBuf, wideW, wideH);
 
           // winW/winH already defined as winW0/winH0 above.
           const winW = winW0;
@@ -1375,8 +1321,9 @@
           // that is wrong here — rotated card edges cause 10+ bit flips over a 3px
           // offset, so the coarse-only scan can produce bestDist=13 while directDist=0.
           const STRIDE = 1;
-          // Use the Phase-1 (base-hash) threshold — this is what live matching tests.
-          const threshold   = Math.ceil(matcher.config.matchThresholdRatio * refValidBits);
+          // Use the correct per-ref threshold — masked refs use the stricter masked ratio.
+          const thresholdRatio = refValidBits < 64 ? matcher.config.maskedMatchThresholdRatio : matcher.config.matchThresholdRatio;
+          const threshold   = Math.ceil(thresholdRatio * refValidBits);
           const closeThresh = threshold + 3; // amber "nearly matched" zone
 
           // Diagnostic: direct dist at the expected crop position (should be ≈ 0).
@@ -1385,24 +1332,30 @@
           const diagDist = diagFits
             ? hmHashDist(matcher.dHashFromPixels(widePx, wideW, diagCropX, diagCropY, winW, winH), refHash, refMaskBits)
             : -1;
-          console.log(`[heatmap] wide=${wideW}×${wideH} win=${winW}×${winH} stride=${STRIDE} crop@(${diagCropX},${diagCropY}) directDist=${diagDist} threshold=${threshold}`);
+          console.log(`[heatmap] wide=${wideW}×${wideH} win=${winW}×${winH} stride=${STRIDE} crop@(${diagCropX},${diagCropY}) directDist=${diagDist} threshold=${threshold} masked=${refValidBits < 64}`);
 
-          // Base-hash scan at stride=1. Rotation is tested separately at the best
-          // position only — checking all rotated hashes at every window is O(N²·angles)
-          // and unnecessary; the heat-map's job is to confirm the reference appears at
-          // its captured orientation, not to verify rotation coverage.
+          // Full scan: dHash at every position, NCC at dHash-passing positions.
+          // NCC is the secondary filter live matching uses, so only dHash+NCC confirmed
+          // positions show green. dHash-only passes (NCC filtered) show amber.
           const results = [];
           for (let ty = 0; ty + winH <= wideH; ty += STRIDE) {
             for (let tx = 0; tx + winW <= wideW; tx += STRIDE) {
               const winHash = matcher.dHashFromPixels(widePx, wideW, tx, ty, winW, winH);
               const dist = hmHashDist(winHash, refHash, refMaskBits);
-              results.push({ tx, ty, dist });
+              let nccScore = null;
+              if (dist <= threshold) {
+                nccScore = matcher.nccScoreAt(wideGrayBuf, wideW, wideSat, wideSat2, tx, ty, refNCC, winW, winH);
+              }
+              results.push({ tx, ty, dist, nccScore });
             }
           }
           const bestResult = results.length ? results.reduce((m, r) => r.dist < m.dist ? r : m) : null;
           console.log(`[heatmap] scanned ${results.length} windows, best dist=${bestResult?.dist?.toFixed(1)} at (${bestResult?.tx},${bestResult?.ty})`);
 
-          // Render overlay on top of the wide capture image
+          // Render overlay on top of the wide capture image.
+          // Green  = dHash passes AND NCC confirms (would fire in live matching).
+          // Amber  = dHash passes but NCC rejects (filtered in live matching).
+          // Yellow = near-miss (closeThresh zone, dHash only).
           const dispW = hmImg.offsetWidth  || hmImg.naturalWidth;
           const dispH = hmImg.offsetHeight || hmImg.naturalHeight;
           hmOverlay.width = dispW; hmOverlay.height = dispH;
@@ -1410,12 +1363,16 @@
           const oCtx = hmOverlay.getContext("2d");
           oCtx.clearRect(0, 0, dispW, dispH);
 
-          let matchCount = 0;
-          for (const { tx, ty, dist } of results) {
-            if (dist <= threshold) {
-              oCtx.fillStyle = "rgba(0,245,147,0.30)"; matchCount++;
+          let matchCount = 0, filteredCount = 0;
+          for (const { tx, ty, dist, nccScore } of results) {
+            const dHashPassed = dist <= threshold;
+            const nccPassed = nccScore !== null && nccScore >= matcher.config.nccMatchThreshold;
+            if (dHashPassed && nccPassed) {
+              oCtx.fillStyle = "rgba(0,245,147,0.35)"; matchCount++;
+            } else if (dHashPassed) {
+              oCtx.fillStyle = "rgba(245,140,0,0.25)"; filteredCount++; // NCC rejects this
             } else if (dist <= closeThresh) {
-              oCtx.fillStyle = "rgba(245,176,0,0.20)";
+              oCtx.fillStyle = "rgba(245,176,0,0.15)";
             } else { continue; }
             oCtx.fillRect(tx * scX, ty * scY, winW * scX, winH * scY);
           }
@@ -1426,10 +1383,11 @@
             (meta.cropW || WIN) * scX, (meta.cropH || WIN) * scY
           );
 
+          const filterNote = filteredCount > 0 ? ` (${filteredCount} amber = dHash only, filtered by NCC)` : "";
           const diagLine = `[diag: win=${winW}×${winH} wide=${wideW}×${wideH} directDist=${diagDist} bestDist=${bestResult?.dist?.toFixed(1)} threshold=${threshold}]`;
           if (matchCount > 0) {
             hmStatus.style.color = "#00f593";
-            hmStatus.textContent = `Match found (${matchCount} window${matchCount > 1 ? "s" : ""}) — looks good!`;
+            hmStatus.textContent = `Match found (${matchCount} window${matchCount > 1 ? "s" : ""})${filterNote} — looks good!`;
             heatMapPassed = true;
           } else {
             hmStatus.style.color = "#ff5c5c";
@@ -1538,13 +1496,8 @@
         TRIGGERS.push(trigger);
       }
       loadRefImages(trigger);
-      // Only save user-created triggers to user storage.
-      // Profile triggers are managed remotely and preserved via _isModified flag + modifiedTriggers storage.
       if (trigger.id.startsWith("user-")) {
         await saveUserTrigger(trigger, isEdit);
-      } else {
-        // Save modified profile trigger to separate storage so it survives page reloads.
-        await saveModifiedProfileTrigger(trigger);
       }
     }
 
@@ -1627,15 +1580,10 @@
           const result = await submitToProfile(trigger, "update", profileHint);
           closeEditor(result.direct ? "Update submitted directly!" : "Update proposed! PR opened.", "ok");
           if (result.prUrl) console.log("[overlay/content] update PR:", result.prUrl);
-
-          // Save modified trigger locally so it survives CDN staleness
-          await saveModifiedProfileTrigger(trigger);
-
-          // Refresh profile cache after successful update
-          console.log("[content] Refreshing profile cache after update...");
-          const cKey = profileCacheKey(activeProfile.gameId, activeProfile.profileId);
-          localStorage.removeItem(cKey); // Clear the cache
-          await fetchAndCacheProfile(); // Fetch fresh profile
+          // Don't re-fetch profile here: CDN propagation takes seconds–minutes, so
+          // fetchAndCacheProfile() would return stale content and overwrite the
+          // in-memory trigger we just edited. The user sees the update immediately;
+          // the next page load will pick it up from GitHub once CDN propagates.
         } catch (err) {
           console.error("[overlay/content] update submit FAILED:", err.message, err);
           submitBtn.textContent = "Retry Submit";
@@ -1663,12 +1611,10 @@
         const result = await submitToProfile(trigger, "add", profileHint);
         closeEditor(result.direct ? "Submitted directly!" : "Submitted! PR opened.", "ok");
         if (result.prUrl) console.log("[overlay/content] add PR:", result.prUrl);
-
-        // Refresh profile cache after successful add
-        console.log("[content] Refreshing profile cache after add...");
-        const cKey = profileCacheKey(activeProfile.gameId, activeProfile.profileId);
-        localStorage.removeItem(cKey); // Clear the cache
-        await fetchAndCacheProfile(); // Fetch fresh profile
+        // Don't re-fetch profile here: CDN propagation takes seconds–minutes, so
+        // fetchAndCacheProfile() would return stale content and delete the trigger
+        // we just added (applyProfile clears local storage). Trigger stays visible
+        // in TRIGGERS for this session; next page load picks it up from GitHub.
       } catch (err) {
         console.error("[overlay/content] submit FAILED:", err.message, err);
         submitBtn.textContent = "Retry Submit";
@@ -1700,8 +1646,8 @@
   }
 
   function buildOffsetDragArea(state, refImg) {
-    const AREA_H = 130;
-    const CX = 70, CY = 65; // cursor anchor within the drag area
+    const AREA_H = 145;
+    const CX = 24, CY = 72; // anchor = bottom-left corner of the reference thumbnail
 
     const area = document.createElement("div");
     Object.assign(area.style, {
@@ -1710,21 +1656,21 @@
       marginBottom: "10px", overflow: "hidden", userSelect: "none", boxSizing: "border-box",
     });
 
-    // Reference thumbnail centered on anchor
+    // Reference thumbnail — bottom-left at anchor (CX, CY)
     const thumb = document.createElement("img");
     thumb.src = refImg.src;
     Object.assign(thumb.style, {
-      position: "absolute", maxWidth: "56px", maxHeight: "48px",
-      left: (CX - 28) + "px", top: (CY - 24) + "px",
+      position: "absolute", maxWidth: "60px", maxHeight: "60px",
+      left: CX + "px", top: (CY - 60) + "px",
       border: "1px solid #9146ff", borderRadius: "2px", pointerEvents: "none",
     });
     area.appendChild(thumb);
 
-    // Cursor dot at anchor
+    // Small dot marking the anchor (trigger bottom-left)
     const dot = document.createElement("div");
     Object.assign(dot.style, {
-      position: "absolute", width: "8px", height: "8px", borderRadius: "50%",
-      background: "#ff3860", left: (CX - 4) + "px", top: (CY - 4) + "px",
+      position: "absolute", width: "6px", height: "6px", borderRadius: "50%",
+      background: "#9146ff", left: (CX - 3) + "px", top: (CY - 3) + "px",
       pointerEvents: "none", zIndex: "2",
     });
     area.appendChild(dot);
@@ -1755,6 +1701,8 @@
         `<div style="font-weight:bold;color:#bf94ff;margin-bottom:2px">${t}</div>` +
         `<div style="color:#ccc;">${b.length > 60 ? b.slice(0, 60) + "…" : b}</div>`;
       readout.textContent = `x: ${state.ox}  y: ${state.oy}`;
+      popupEl.style.left = (CX + state.ox) + "px";
+      popupEl.style.top  = (CY + state.oy) + "px";
     }
     updatePreview();
 
@@ -1769,8 +1717,8 @@
       const areaRect = area.getBoundingClientRect();
 
       function onMove(e) {
-        const newLeft = Math.max(0, Math.min(areaRect.width  - 20, startLeft + e.clientX - startCX));
-        const newTop  = Math.max(0, Math.min(AREA_H - 20,          startTop  + e.clientY - startCY));
+        const newLeft = Math.max(-CX, Math.min(areaRect.width  - 20, startLeft + e.clientX - startCX));
+        const newTop  = Math.max(-CY, Math.min(AREA_H - 20,          startTop  + e.clientY - startCY));
         popupEl.style.left = newLeft + "px";
         popupEl.style.top  = newTop  + "px";
         state.ox = Math.round(newLeft - CX);
@@ -2283,13 +2231,20 @@
     return el;
   }
 
-  function showPopups(payloads, clientX, clientY, trigger) {
+  function showPopups(payloads, clientX, clientY, trigger, matchPos) {
     currentMatchedTrigger = trigger || null;
     // Reuse or create one DOM element per payload.
     while (activePopups.length < payloads.length) activePopups.push(makePopupEl());
 
     const isProfileTrigger = trigger && !trigger.id?.startsWith("user-");
     const editLabel = isProfileTrigger ? "✏ Suggest edit" : "✏ Edit";
+
+    // Anchor to the trigger's bottom-left corner in viewport coords.
+    // matchPos = { x, y, w, h } — top-left + size of best match within the 160×160 capture.
+    // Capture is centered on cursor, so trigger bottom-left = cursor + (matchX - half, matchY + h - half).
+    const half = CAPTURE_SIZE / 2;
+    const anchorX = matchPos ? clientX - half + matchPos.x           : clientX;
+    const anchorY = matchPos ? clientY - half + matchPos.y + matchPos.h : clientY;
 
     payloads.forEach((payload, i) => {
       const el = activePopups[i];
@@ -2309,8 +2264,8 @@
       }
 
       el.innerHTML = html;
-      el.style.left = Math.min(clientX + ox, window.innerWidth  - 280) + "px";
-      el.style.top  = Math.min(clientY + oy, window.innerHeight - 100) + "px";
+      el.style.left = Math.min(anchorX + ox, window.innerWidth  - 280) + "px";
+      el.style.top  = Math.min(anchorY + oy, window.innerHeight - 100) + "px";
       el.style.display = "block";
 
       if (i === 0 && trigger) {
@@ -2446,7 +2401,8 @@
         angle: best.angle ?? 0,
         candidates: matchResult.candidates,
       };
-      showPopups(best.trigger.payloads || [], event.clientX, event.clientY, best.trigger);
+      showPopups(best.trigger.payloads || [], event.clientX, event.clientY, best.trigger,
+        { x: best.x, y: best.y, w: best.ref.w, h: best.ref.h });
     } else {
       const label = best ? (best.trigger.payloads ? best.trigger.payloads[0].title : best.trigger.id) : null;
       lastMatchInfo = best ? {
@@ -2516,7 +2472,7 @@
     closeBtn.innerHTML = "&#10005;";
     closeBtn.title = "Close debug panel";
     closeBtn.style.cssText = "background:none;border:none;color:#adadb8;font-size:13px;cursor:pointer;padding:0 2px;line-height:1;";
-    closeBtn.addEventListener("click", hideDebugPanel);
+    closeBtn.addEventListener("click", closeDebugPanel);
     titleRow.append(title, closeBtn);
     debugPanel.appendChild(titleRow);
 
@@ -2563,18 +2519,17 @@
   function showDebugPanel() {
     ensureDebugPanel();
     debugPanel.style.display = "block";
-    chrome.storage.local.set({ [DEBUG_PANEL_KEY]: true });
     updateDebugPanelStatus();
   }
 
   function hideDebugPanel() {
     if (debugPanel) debugPanel.style.display = "none";
-    chrome.storage.local.set({ [DEBUG_PANEL_KEY]: false });
   }
 
-  function toggleDebugPanel() {
-    if (debugPanel && debugPanel.style.display !== "none") hideDebugPanel();
-    else showDebugPanel();
+  // Called from the × close button only — persists state to storage.
+  function closeDebugPanel() {
+    hideDebugPanel();
+    chrome.storage.local.set({ [DEBUG_PANEL_KEY]: false });
   }
 
   function updateDebugPanelStatus() {
@@ -2904,9 +2859,10 @@
     function dotPos(ox, oy, ref) {
       const scaleX = IMG_W / Math.max(ref?.w || 160, 1);
       const scaleY = IMG_H / Math.max(ref?.h || 160, 1);
+      // Origin is the trigger's bottom-left corner (0, IMG_H in image-preview coords).
       return {
-        x: Math.max(5, Math.min(IMG_W - 5, Math.round(IMG_W / 2 + ox * scaleX))),
-        y: Math.max(5, Math.min(IMG_H - 5, Math.round(IMG_H / 2 + oy * scaleY))),
+        x: Math.max(2, Math.min(IMG_W - 2, Math.round(ox * scaleX))),
+        y: Math.max(2, Math.min(IMG_H - 2, Math.round(IMG_H + oy * scaleY))),
       };
     }
 
@@ -3262,7 +3218,7 @@
           offset.y = Math.round(startOffset.y + (ev.clientY - startMouse.y) / scaleY);
           const p = dotPos(offset.x, offset.y, ref);
           dot.style.left = p.x + "px";
-          dot.style.top  = p.y + "px";
+          dot.style.top  = p.y  + "px";
           offLbl.textContent = fmtOffset(offset.x, offset.y);
         }
 
@@ -3420,13 +3376,19 @@
   // --- React to active profile changes made in the popup --------------------
 
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "local" || !changes[ACTIVE_PROFILE_KEY]) return;
-    const next = changes[ACTIVE_PROFILE_KEY].newValue;
-    if (!next) return;
-    const cur = activeProfile || DEFAULT_PROFILE;
-    if (next.gameId !== cur.gameId || next.profileId !== cur.profileId) {
-      console.log(`[overlay/content] profile changed to ${next.gameId}/${next.profileId}, reloading`);
-      loadProfile();
+    if (area !== "local") return;
+    if (changes[ACTIVE_PROFILE_KEY]) {
+      const next = changes[ACTIVE_PROFILE_KEY].newValue;
+      if (!next) return;
+      const cur = activeProfile || DEFAULT_PROFILE;
+      if (next.gameId !== cur.gameId || next.profileId !== cur.profileId) {
+        console.log(`[overlay/content] profile changed to ${next.gameId}/${next.profileId}, reloading`);
+        loadProfile();
+      }
+    }
+    if (changes[DEBUG_PANEL_KEY]) {
+      if (changes[DEBUG_PANEL_KEY].newValue) showDebugPanel();
+      else hideDebugPanel();
     }
   });
 
@@ -3454,7 +3416,6 @@
       }
     }
     if (msg && msg.type === "get-game") { sendResponse({ game: detectedGame }); }
-    if (msg && msg.type === "toggle-debug-panel") { toggleDebugPanel(); sendResponse({ ok: true }); }
     if (msg && msg.type === "review-proposal") {
       if (!editorModalOpen) {
         const { proposal, gameId, profileId, contributorCode } = msg;
@@ -3673,10 +3634,7 @@
     showToast(`Click #${window.__streamOverlayClicks.length} logged. window.__streamOverlayClicks to dump.`, "info");
   }
 
-  // Clean up any profile triggers incorrectly saved as user triggers
-  cleanupUserTriggers().then(() => {
-    loadProfile().then(() => loadUserTriggers());
-  });
+  loadProfile();
   chrome.storage.local.get(DEBUG_PANEL_KEY).then(res => { if (res[DEBUG_PANEL_KEY]) showDebugPanel(); });
   document.addEventListener("mousemove", onDocumentMouseMove, { passive: true });
   document.addEventListener("mousedown", onDocumentClick, true);
