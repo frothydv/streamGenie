@@ -707,6 +707,11 @@ function ensureRawUrl(urlStr) {
         if (profileRes.ok) {
           const profileData = await profileRes.json();
           allTriggers = (profileData.triggers || []).map(t => ({ ...t, source: "profile" }));
+          // Sync triggerCount into in-memory catalog so the dropdown shows it immediately.
+          if (prof && prof.triggerCount !== allTriggers.length) {
+            prof.triggerCount = allTriggers.length;
+            rebuildProfileSelect();
+          }
         } else {
           profileLoadError = `HTTP ${profileRes.status}`;
         }
