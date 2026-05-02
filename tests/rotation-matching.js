@@ -1034,6 +1034,249 @@ test("sharp-border card with ±10 correlated noise (H.264-like) matches", () => 
 });
 
 // ---------------------------------------------------------------------------
+// 13. Masked NCC — mask must constrain NCC to avoid background false positives
+//
+// A trigger with a mask should only correlate against the masked (interesting)
+// pixels, not the background. Before the fix, buildRefNCC used all pixels
+// including the background, so NCC could fire on regions that merely had a
+// similar background brightness profile.
+// ---------------------------------------------------------------------------
+
+console.log("\n— masked NCC ---");
+
+// Build a ref with a small distinctive icon centered in a plain background.
+// The mask covers only the icon area. We test two things:
+//   1. Masked NCC correctly matches the scene where the icon IS present.
+//   2. Masked NCC does NOT match a scene containing only the background color.
+
+function makeIconInBackground(iconW, iconH, bgR, bgG, bgB, iconPattern = "checkerboard") {
+  // Full-capture-size ref: background + small icon at center.
+  const W = CAPTURE_SIZE, H = CAPTURE_SIZE;
+  const px = new Uint8Array(W * H * 4);
+  const ox = Math.floor((W - iconW) / 2), oy = Math.floor((H - iconH) / 2);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      const inIcon = x >= ox && x < ox + iconW && y >= oy && y < oy + iconH;
+      if (inIcon) {
+        const lx = x - ox, ly = y - oy;
+        if (iconPattern === "checkerboard") {
+          const v = ((lx + ly) % 2 === 0) ? 230 : 30;
+          px[i] = v; px[i+1] = v; px[i+2] = v;
+        } else {
+          px[i] = Math.round(255 * lx / iconW);
+          px[i+1] = Math.round(255 * ly / iconH);
+          px[i+2] = 100;
+        }
+      } else {
+        px[i] = bgR; px[i+1] = bgG; px[i+2] = bgB;
+      }
+      px[i+3] = 255;
+    }
+  }
+  return { px, ox, oy };
+}
+
+// Build a mask image (RGBA, alpha=255 inside icon, alpha=0 outside).
+function makeIconMask(W, H, ox, oy, iconW, iconH) {
+  const mask = new Uint8Array(W * H * 4);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      const inIcon = x >= ox && x < ox + iconW && y >= oy && y < oy + iconH;
+      mask[i] = mask[i+1] = mask[i+2] = 255;
+      mask[i+3] = inIcon ? 255 : 0;
+    }
+  }
+  return mask;
+}
+
+// Build a ref object with NCC, optionally with mask.
+function makeRefWithNCC(refPx, refW, refH, maskPx) {
+  const canPx = new Uint8Array(CANONICAL_SIZE * CANONICAL_SIZE * 4);
+  // Nearest-neighbour downsample to canonical size
+  for (let y = 0; y < CANONICAL_SIZE; y++) {
+    for (let x = 0; x < CANONICAL_SIZE; x++) {
+      const sx = Math.floor(x * refW / CANONICAL_SIZE);
+      const sy = Math.floor(y * refH / CANONICAL_SIZE);
+      const si = (sy * refW + sx) * 4;
+      const di = (y * CANONICAL_SIZE + x) * 4;
+      canPx[di] = refPx[si]; canPx[di+1] = refPx[si+1];
+      canPx[di+2] = refPx[si+2]; canPx[di+3] = 255;
+    }
+  }
+  const hash = matcher.dHashFromPixels(canPx, CANONICAL_SIZE, 0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
+  const verify = matcher.buildVerifyRefFromPixels(canPx, null);
+  return {
+    w: refW, h: refH,
+    refHash: hash,
+    refBitMask: null, refValidBits: 64,
+    refVerifyValues: verify.values, refVerifyMask: verify.mask, refVerifyActive: verify.active,
+    refNCC: matcher.buildRefNCC(refPx, refW, refH, maskPx || null),
+    rotatedHashes: null,
+  };
+}
+
+const ICON_W = 30, ICON_H = 30;
+const BG = { r: 120, g: 100, b: 80 }; // warm grey background (common in UI panels)
+
+const { px: refPx, ox: refOx, oy: refOy } = makeIconInBackground(ICON_W, ICON_H, BG.r, BG.g, BG.b);
+const iconMask = makeIconMask(CAPTURE_SIZE, CAPTURE_SIZE, refOx, refOy, ICON_W, ICON_H);
+
+const refMasked   = makeRefWithNCC(refPx, CAPTURE_SIZE, CAPTURE_SIZE, iconMask);
+const refUnmasked = makeRefWithNCC(refPx, CAPTURE_SIZE, CAPTURE_SIZE, null);
+
+// Scene A: contains the icon at exact position → should match
+const sceneWithIcon = new Uint8Array(refPx); // identical to reference
+
+// Scene B: background only, no icon (same background color, different icon area)
+const { px: bgOnlyPx } = makeIconInBackground(ICON_W, ICON_H, BG.r, BG.g, BG.b, "gradient");
+// Replace the icon area with pure background so there's no icon in sceneB
+const sceneNoIcon = new Uint8Array(bgOnlyPx);
+for (let y = refOy; y < refOy + ICON_H; y++) {
+  for (let x = refOx; x < refOx + ICON_W; x++) {
+    const i = (y * CAPTURE_SIZE + x) * 4;
+    sceneNoIcon[i] = BG.r; sceneNoIcon[i+1] = BG.g; sceneNoIcon[i+2] = BG.b; sceneNoIcon[i+3] = 255;
+  }
+}
+
+function nccForRef(ref, scenePx) {
+  const gray = matcher.fillGrayBuffer(scenePx);
+  const { sat, sat2 } = matcher.buildSAT(gray, CAPTURE_SIZE, CAPTURE_SIZE);
+  return matcher.nccScoreAt(gray, CAPTURE_SIZE, sat, sat2,
+    0, 0, ref.refNCC, CAPTURE_SIZE, CAPTURE_SIZE);
+}
+
+test("masked NCC scores high on scene containing the icon", () => {
+  const score = nccForRef(refMasked, sceneWithIcon);
+  assert(score >= 0.65, `expected masked NCC ≥ 0.65 on matching scene, got ${score.toFixed(3)}`);
+});
+
+test("masked NCC scores low on background-only scene (no icon)", () => {
+  const score = nccForRef(refMasked, sceneNoIcon);
+  assert(score < 0.65, `expected masked NCC < 0.65 on background-only scene, got ${score.toFixed(3)}`);
+});
+
+test("unmasked NCC false-positive check — background-only should be lower than masked version", () => {
+  const maskedScore   = nccForRef(refMasked,   sceneNoIcon);
+  const unmaskedScore = nccForRef(refUnmasked, sceneNoIcon);
+  console.log(`    background-only: masked NCC=${maskedScore.toFixed(3)}  unmasked NCC=${unmaskedScore.toFixed(3)}`);
+  // The masked version should be strictly less susceptible to background-only false positives.
+  // We don't assert the unmasked version fires (it may not, depending on content) but
+  // we do assert the masked version is either lower or at least no worse.
+  assert(maskedScore <= unmaskedScore + 0.05,
+    `masked NCC (${maskedScore.toFixed(3)}) should not be worse than unmasked (${unmaskedScore.toFixed(3)}) on background-only scene`);
+});
+
+test("masked NCC fires correctly despite wildly different background", () => {
+  // Place a wildly different pattern in the background area only.
+  // Masked NCC now computes scene mean/variance over UNMASKED positions only,
+  // so the background has no influence — the score should be ~1.0 at the icon.
+  const sceneWeirdBg = new Uint8Array(sceneWithIcon);
+  for (let y = 0; y < CAPTURE_SIZE; y++) {
+    for (let x = 0; x < CAPTURE_SIZE; x++) {
+      const inIcon = x >= refOx && x < refOx + ICON_W && y >= refOy && y < refOy + ICON_H;
+      if (!inIcon) {
+        const i = (y * CAPTURE_SIZE + x) * 4;
+        sceneWeirdBg[i] = (x + y) % 255;
+        sceneWeirdBg[i+1] = (x * 3) % 255;
+        sceneWeirdBg[i+2] = (y * 7) % 255;
+      }
+    }
+  }
+  const maskedScore   = nccForRef(refMasked,   sceneWeirdBg);
+  const unmaskedScore = nccForRef(refUnmasked, sceneWeirdBg);
+  console.log(`    weird background: masked NCC=${maskedScore.toFixed(3)}  unmasked NCC=${unmaskedScore.toFixed(3)}`);
+  // Masked NCC ignores background on BOTH sides (ref and scene), so it should
+  // score ≥ 0.65 even when the background is completely wrong.
+  assert(maskedScore >= 0.65,
+    `masked NCC should fire at icon despite weird background, got ${maskedScore.toFixed(3)}`);
+  // Unmasked NCC includes the background, so it will score lower (or even negative).
+  assert(maskedScore > unmaskedScore,
+    `masked NCC (${maskedScore.toFixed(3)}) should beat unmasked (${unmaskedScore.toFixed(3)}) when background differs`);
+});
+
+// ---------------------------------------------------------------------------
+// Section 14: Popup anchor stability — trigger-relative positioning
+//
+// The popup must stay locked to the trigger's on-screen position regardless
+// of where within the item the cursor happens to be when the match fires.
+//
+// Model: source video is W×H, displayed at scale (scaleX, scaleY) inside a
+// video element at (rectLeft, rectTop) with letterbox (offsetX, offsetY).
+//
+// Forward transform (content.js clientToVideoCoords):
+//   videoX = (clientX - rectLeft - offsetX) * scaleX
+//   videoY = (clientY - rectTop  - offsetY) * scaleY
+//
+// Inverse (showPopups anchor):
+//   anchorX = videoX / scaleX + rectLeft + offsetX
+//   anchorY = videoY / scaleY + rectTop  + offsetY
+// ---------------------------------------------------------------------------
+
+console.log("\n14. Popup anchor stability\n");
+
+function computeAnchor(captureInfo, matchPos) {
+  // Pure-math replica of the showPopups anchor logic from content.js.
+  const trigVideoX = captureInfo.sx + matchPos.x;
+  const trigVideoY = captureInfo.sy + matchPos.y + matchPos.h;
+  return {
+    x: trigVideoX / captureInfo.scaleX + captureInfo.rectLeft + captureInfo.offsetX,
+    y: trigVideoY / captureInfo.scaleY + captureInfo.rectTop  + captureInfo.offsetY,
+  };
+}
+
+function simulateHover(videoW, videoH, ci, trigVideoX, trigVideoY, refW, refH, cursorClientX, cursorClientY) {
+  // clientToVideoCoords inverse: cursor client → cursor video
+  const cursorVideoX = (cursorClientX - ci.rectLeft - ci.offsetX) * ci.scaleX;
+  const cursorVideoY = (cursorClientY - ci.rectTop  - ci.offsetY) * ci.scaleY;
+  // captureRegion clamping
+  const half = 80; // CAPTURE_SIZE / 2
+  const sx = Math.max(0, Math.min(videoW - 160, cursorVideoX - half));
+  const sy = Math.max(0, Math.min(videoH - 160, cursorVideoY - half));
+  // Sliding window best position within capture
+  const matchX = trigVideoX - sx;
+  const matchY = trigVideoY - sy;
+  return computeAnchor({ ...ci, sx, sy }, { x: matchX, y: matchY, w: refW, h: refH });
+}
+
+test("anchor is identical for two cursor positions over the same trigger (no letterbox)", () => {
+  const ci = { scaleX: 2, scaleY: 2, rectLeft: 0, rectTop: 0, offsetX: 0, offsetY: 0 };
+  // Trigger top-left at source video (300, 200), size 80×60
+  const a1 = simulateHover(1920, 1080, ci, 300, 200, 80, 60, 230, 130); // cursor near top-left of trigger
+  const a2 = simulateHover(1920, 1080, ci, 300, 200, 80, 60, 270, 160); // cursor near center of trigger
+  assertClose(a1.x, a2.x, 0.5, "anchor X should be cursor-independent");
+  assertClose(a1.y, a2.y, 0.5, "anchor Y should be cursor-independent");
+});
+
+test("anchor is identical for two cursor positions over the same trigger (letterbox offset)", () => {
+  // Video: 1920×1080 displayed at 960×540, element 1024×576 → offsetX=32, offsetY=18
+  const ci = { scaleX: 2, scaleY: 2, rectLeft: 0, rectTop: 0, offsetX: 32, offsetY: 18 };
+  const a1 = simulateHover(1920, 1080, ci, 800, 400, 100, 80, 432, 218);
+  const a2 = simulateHover(1920, 1080, ci, 800, 400, 100, 80, 460, 238);
+  assertClose(a1.x, a2.x, 0.5, "anchor X");
+  assertClose(a1.y, a2.y, 0.5, "anchor Y");
+});
+
+test("anchor maps to correct viewport position (letterbox)", () => {
+  const ci = { scaleX: 2, scaleY: 2, rectLeft: 0, rectTop: 0, offsetX: 32, offsetY: 18 };
+  // Trigger top-left at (800, 400), size 100×80 → bottom-left at video (800, 480)
+  // Expected anchor viewport: (800/2 + 32, 480/2 + 18) = (432, 258)
+  const a = simulateHover(1920, 1080, ci, 800, 400, 100, 80, 450, 230);
+  assertClose(a.x, 432, 0.5, "anchor X should be trigger bottom-left in viewport");
+  assertClose(a.y, 258, 0.5, "anchor Y should be trigger bottom-left in viewport");
+});
+
+test("anchor stable when capture clamps at video edge", () => {
+  const ci = { scaleX: 1, scaleY: 1, rectLeft: 50, rectTop: 10, offsetX: 0, offsetY: 0 };
+  // Trigger near top-left of video — capture will clamp to sx=0, sy=0
+  const a1 = simulateHover(1920, 1080, ci, 20, 20, 50, 40, 70, 30); // cursor inside trigger
+  const a2 = simulateHover(1920, 1080, ci, 20, 20, 50, 40, 85, 45); // cursor elsewhere in trigger
+  assertClose(a1.x, a2.x, 0.5, "anchor X stable at video edge");
+  assertClose(a1.y, a2.y, 0.5, "anchor Y stable at video edge");
+});
+
+// ---------------------------------------------------------------------------
 
 console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

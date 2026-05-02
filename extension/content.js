@@ -2231,7 +2231,7 @@
     return el;
   }
 
-  function showPopups(payloads, clientX, clientY, trigger, matchPos) {
+  function showPopups(payloads, clientX, clientY, trigger, matchPos, captureInfo) {
     currentMatchedTrigger = trigger || null;
     // Reuse or create one DOM element per payload.
     while (activePopups.length < payloads.length) activePopups.push(makePopupEl());
@@ -2240,11 +2240,19 @@
     const editLabel = isProfileTrigger ? "✏ Suggest edit" : "✏ Edit";
 
     // Anchor to the trigger's bottom-left corner in viewport coords.
-    // matchPos = { x, y, w, h } — top-left + size of best match within the 160×160 capture.
-    // Capture is centered on cursor, so trigger bottom-left = cursor + (matchX - half, matchY + h - half).
-    const half = CAPTURE_SIZE / 2;
-    const anchorX = matchPos ? clientX - half + matchPos.x           : clientX;
-    const anchorY = matchPos ? clientY - half + matchPos.y + matchPos.h : clientY;
+    // matchPos = { x, y, w, h } — best match top-left + size within the 160×160 capture (source-video pixels).
+    // captureInfo = { sx, sy, scaleX, scaleY, rectLeft, rectTop, offsetX, offsetY } from captureRegion + clientToVideoCoords.
+    //
+    // Inverse of clientToVideoCoords:
+    //   clientX = videoX / scaleX + rectLeft + offsetX
+    //   clientY = videoY / scaleY + rectTop  + offsetY
+    let anchorX = clientX, anchorY = clientY;
+    if (matchPos && captureInfo) {
+      const trigVideoX = captureInfo.sx + matchPos.x;
+      const trigVideoY = captureInfo.sy + matchPos.y + matchPos.h;
+      anchorX = trigVideoX / captureInfo.scaleX + captureInfo.rectLeft + captureInfo.offsetX;
+      anchorY = trigVideoY / captureInfo.scaleY + captureInfo.rectTop  + captureInfo.offsetY;
+    }
 
     payloads.forEach((payload, i) => {
       const el = activePopups[i];
@@ -2402,7 +2410,11 @@
         candidates: matchResult.candidates,
       };
       showPopups(best.trigger.payloads || [], event.clientX, event.clientY, best.trigger,
-        { x: best.x, y: best.y, w: best.ref.w, h: best.ref.h });
+        { x: best.x, y: best.y, w: best.ref.w, h: best.ref.h },
+        { sx: result.sx, sy: result.sy,
+          scaleX: coords.scaleX, scaleY: coords.scaleY,
+          rectLeft: coords.rectLeft, rectTop: coords.rectTop,
+          offsetX: coords.offsetX,  offsetY: coords.offsetY });
     } else {
       const label = best ? (best.trigger.payloads ? best.trigger.payloads[0].title : best.trigger.id) : null;
       lastMatchInfo = best ? {
