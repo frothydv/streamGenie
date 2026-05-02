@@ -120,11 +120,36 @@
         width: 32px; height: 32px; object-fit: contain; border-radius: 2px;
         background: #0e0e10; flex-shrink: 0;
       }
+      .first-run-banner {
+        display: flex; align-items: flex-start; gap: 8px;
+        background: rgba(145,70,255,0.1); border: 1px solid #9146ff; border-radius: 4px;
+        padding: 8px 10px; margin-bottom: 12px; font-size: 11px; color: #c9b3ff; line-height: 1.4;
+      }
+      .dismiss-btn {
+        background: none; border: 1px solid #9146ff; border-radius: 3px;
+        color: #9146ff; font-size: 10px; cursor: pointer; padding: 2px 8px;
+        white-space: nowrap; flex-shrink: 0; margin-top: 1px;
+      }
+      .dismiss-btn:hover { background: rgba(145,70,255,0.2); }
+      .sort-pill {
+        background: none; border: 1px solid #444; border-radius: 3px;
+        color: #666; font-size: 9px; cursor: pointer; padding: 1px 5px; line-height: 14px;
+      }
+      .sort-pill:hover { border-color: #9146ff; color: #9146ff; }
+      .sort-pill.active { border-color: #9146ff; color: #9146ff; background: rgba(145,70,255,0.12); }
+      .connectivity-note {
+        font-size: 10px; color: #f5b000; margin: -8px 0 10px; padding: 0 2px; display: none;
+      }
     </style>
   </head>
   <body>
     <h1>Stream Genie (pre-alpha)</h1>
+    <div id="first-run-banner" class="first-run-banner" style="display:none;">
+      <div style="flex:1;">Stream Genie shows tooltips when you hover over recognized game elements on Twitch streams. Pixel matching runs locally — nothing leaves your device.</div>
+      <button id="first-run-dismiss" class="dismiss-btn">Got it</button>
+    </div>
     <div id="status" class="status wait">Checking…</div>
+    <div id="connectivity-note" class="connectivity-note">⚠ Catalog unavailable — using built-in fallback</div>
 
     <div class="section-title">Active Profile</div>
     <label class="field-label">Game</label>
@@ -134,7 +159,15 @@
       <p id="no-profile-text"></p>
       <button class="create-profile-btn" id="create-profile-btn"></button>
     </div>
-    <label class="field-label">Profile</label>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+      <label class="field-label" style="margin-bottom:0;">Profile</label>
+      <div style="display:flex; gap:3px; align-items:center;">
+        <span style="font-size:9px;color:#555;margin-right:1px;">sort:</span>
+        <button class="sort-pill active" data-sort="upvotes">▲ Votes</button>
+        <button class="sort-pill" data-sort="triggers">Triggers</button>
+        <button class="sort-pill" data-sort="users">Users</button>
+      </div>
+    </div>
     <select id="profile-select"></select>
     <div id="new-profile-form" style="display:none; margin-bottom:8px;">
       <input id="new-profile-name" type="text" placeholder="Profile name (e.g. competitive)"

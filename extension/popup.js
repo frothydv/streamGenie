@@ -24,8 +24,6 @@ const FALLBACK_CATALOG = [
   },
 ];
 
-const userTriggersKey     = (gId, pId) => `streamGenie_triggers_${gId}_${pId}`;
-const modifiedTriggersKey = (gId, pId) => `streamGenie_modified_${gId}_${pId}`;
 const contributorCodeKey  = (gId, pId) => `streamGenie_code_${gId}_${pId}`;
 
 /**
@@ -64,6 +62,7 @@ function ensureRawUrl(urlStr) {
 
   // --- Load catalog from CDN (fall back to hardcoded if unavailable) ---
   let CATALOG = FALLBACK_CATALOG;
+  let catalogLoadedOk = false;
   try {
     const url = new URL(CATALOG_URL);
     url.searchParams.set("_cb", Date.now());
@@ -75,16 +74,25 @@ function ensureRawUrl(urlStr) {
         gameId:      g.id,
         gameName:    g.name,
         twitchSlug:  g.twitchSlug  || null,
-        profiles:    g.profiles.map(p => ({ 
-          id: p.id, 
-          name: p.name, 
-          verified: p.verified ?? false, 
-          url: ensureRawUrl(p.url) 
+        profiles:    g.profiles.map(p => ({
+          id:           p.id,
+          name:         p.name,
+          verified:     p.verified     ?? false,
+          url:          ensureRawUrl(p.url),
+          triggerCount: p.triggerCount ?? null,
+          userCount:    p.userCount    ?? null,
+          upvotes:      p.upvotes      ?? null,
         })),
       }));
+      catalogLoadedOk = true;
     }
   } catch (_) {
     // Network unavailable — fallback catalog still works
+  }
+
+  if (!catalogLoadedOk) {
+    const connNote = document.getElementById("connectivity-note");
+    if (connNote) connNote.style.display = "block";
   }
 
   // Always apply FALLBACK_CATALOG overrides — twitchSlug and verified are authoritative
@@ -177,9 +185,13 @@ function ensureRawUrl(urlStr) {
     gameSelect.appendChild(opt);
   }
 
-  // Show detected game badge or no-profile banner.
+  // Show detected game badge, no-profile banner, or waiting hint.
   if (detectedSlug && catalogMatch) {
     detectedEl.textContent = "✓ Auto-detected from stream";
+    detectedEl.style.display = "block";
+  } else if (!detectedSlug && currentTab && (currentTab.url || "").includes("twitch.tv")) {
+    detectedEl.textContent = "No game detected — browse to a live stream";
+    detectedEl.style.color = "#777";
     detectedEl.style.display = "block";
   } else if (detectedSlug && !catalogMatch) {
     const label = detectedName || detectedSlug;
@@ -290,14 +302,35 @@ function ensureRawUrl(urlStr) {
     console.log("[overlay/popup] profile created:", data.profileUrl);
   }
 
+  let profileSortBy = "upvotes";
+
+  function sortProfiles(profiles, sortBy) {
+    return [...profiles].sort((a, b) => {
+      if (sortBy === "upvotes")  return (b.upvotes      ?? -1) - (a.upvotes      ?? -1);
+      if (sortBy === "triggers") return (b.triggerCount ?? -1) - (a.triggerCount ?? -1);
+      if (sortBy === "users")    return (b.userCount    ?? -1) - (a.userCount    ?? -1);
+      return 0;
+    });
+  }
+
+  function profileOptionLabel(p) {
+    const badge = p.verified ? "✓ " : "";
+    const stats = [];
+    if (p.triggerCount != null) stats.push(`${p.triggerCount}T`);
+    if (p.userCount    != null) stats.push(`${p.userCount}U`);
+    if (p.upvotes      != null) stats.push(`▲${p.upvotes}`);
+    return stats.length ? `${badge}${p.name}  ·  ${stats.join("  ")}` : `${badge}${p.name}`;
+  }
+
   function rebuildProfileSelect() {
     profileSelect.innerHTML = "";
     const game = CATALOG.find(g => g.gameId === gameSelect.value);
     if (!game) return;
-    for (const p of game.profiles) {
+    const sorted = sortProfiles(game.profiles, profileSortBy);
+    for (const p of sorted) {
       const opt = document.createElement("option");
       opt.value = p.id;
-      opt.textContent = p.verified ? `✓ ${p.name}` : p.name;
+      opt.textContent = profileOptionLabel(p);
       if (game.gameId === active.gameId && p.id === active.profileId) opt.selected = true;
       profileSelect.appendChild(opt);
     }
@@ -306,6 +339,14 @@ function ensureRawUrl(urlStr) {
   rebuildProfileSelect();
   gameSelect.addEventListener("change", () => { rebuildProfileSelect(); renderTriggers(); renderContributorStatus(); });
   profileSelect.addEventListener("change", () => { renderTriggers(); renderContributorStatus(); });
+
+  document.querySelectorAll(".sort-pill").forEach(btn => {
+    btn.addEventListener("click", () => {
+      profileSortBy = btn.dataset.sort;
+      document.querySelectorAll(".sort-pill").forEach(b => b.classList.toggle("active", b.dataset.sort === profileSortBy));
+      rebuildProfileSelect();
+    });
+  });
 
   applyBtn.addEventListener("click", async () => {
     const game = CATALOG.find(g => g.gameId === gameSelect.value);
@@ -371,22 +412,12 @@ function ensureRawUrl(urlStr) {
   });
 
   document.getElementById("debug-panel-btn").addEventListener("click", async () => {
-    if (!currentTab) return;
-    try {
-      await chrome.tabs.sendMessage(currentTab.id, { type: "toggle-debug-panel" });
-    } catch (_) {}
+    const KEY = "streamGenie_debugPanel";
+    const stored = await chrome.storage.local.get(KEY);
+    await chrome.storage.local.set({ [KEY]: !stored[KEY] });
     window.close();
   });
 
-  // --- Delete confirmation ---
-
-  async function deleteLocally(key, triggerId) {
-    const res = await chrome.storage.local.get(key);
-    const saved = res[key] || [];
-    const filtered = saved.filter(t => t.id !== triggerId);
-    await chrome.storage.local.set({ [key]: filtered });
-    renderTriggers();
-  }
 
   async function workerPost(body) {
     const gId     = body.gameId    || active.gameId;
@@ -552,38 +583,6 @@ function ensureRawUrl(urlStr) {
 
   // ---------------------------------------------------------------------------
 
-  function showDeleteConfirm(row, trigger, idx, key) {
-    const name = (trigger.payloads?.[0]?.title || trigger.payloads?.[0]?.text || trigger.id);
-
-    const confirmRow = document.createElement("div");
-    confirmRow.className = "trigger-row";
-    confirmRow.style.cssText = "flex-direction:column;align-items:flex-start;gap:6px;";
-
-    const msg = document.createElement("div");
-    msg.style.cssText = "font-size:11px;color:#efeff1;";
-    msg.textContent = `Delete "${name}"?`;
-    confirmRow.appendChild(msg);
-
-    const btns = document.createElement("div");
-    btns.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;";
-
-    const cancelBtn = document.createElement("button");
-    cancelBtn.className = "delete-btn";
-    cancelBtn.textContent = "Cancel";
-    cancelBtn.onclick = () => row.parentNode.replaceChild(row, confirmRow);
-
-    const localBtn = document.createElement("button");
-    localBtn.className = "delete-btn";
-    localBtn.textContent = "Delete locally";
-    localBtn.onclick = () => deleteLocally(key, trigger.id);
-
-    btns.appendChild(cancelBtn);
-    btns.appendChild(localBtn);
-    confirmRow.appendChild(btns);
-
-    row.parentNode.replaceChild(confirmRow, row);
-  }
-
   // --- Contributor status ---
   async function renderContributorStatus() {
     const trustedEl  = document.getElementById("contributor-trusted");
@@ -688,47 +687,35 @@ function ensureRawUrl(urlStr) {
     labelEl.textContent = prof?.name || active.name;
     listEl.innerHTML = "";
 
-    // Get local triggers (only show actual user-created triggers)
-    const uKey = userTriggersKey(gId, pId);
-    const mKey = modifiedTriggersKey(gId, pId);
-    const res = await chrome.storage.local.get([uKey, mKey]);
-    
-    const localTriggers = (res[uKey] || []).filter(t => t.id && t.id.startsWith("user-"));
-    const modifiedTriggers = res[mKey] || [];
-
     // Load remote profile triggers
-    let remoteTriggers = [];
+    let allTriggers = [];
+    let profileLoadError = null;
     try {
       const pUrl = ensureRawUrl(prof?.url);
       if (pUrl) {
         const url = new URL(pUrl);
         url.searchParams.set("_cb", Date.now());
-        console.log("[overlay/popup] Fetching profile:", url.toString());
         const profileRes = await fetch(url.toString(), { cache: "no-store" });
         if (profileRes.ok) {
           const profileData = await profileRes.json();
-          remoteTriggers = profileData.triggers || [];
+          allTriggers = (profileData.triggers || []).map(t => ({ ...t, source: "profile" }));
+        } else {
+          profileLoadError = `HTTP ${profileRes.status}`;
         }
       }
     } catch (err) {
       console.warn("[overlay/popup] Failed to load remote profile:", err);
+      profileLoadError = "network error";
     }
 
-    // Combine and deduplicate:
-    // 1. Profile triggers (deduplicated by ID, latest wins)
-    const remoteMap = new Map();
-    remoteTriggers.forEach(rt => {
-      const mod = modifiedTriggers.find(mt => mt.id === rt.id);
-      const merged = mod ? { ...mod, source: "profile", _isModified: true } : { ...rt, source: "profile" };
-      remoteMap.set(merged.id, merged);
-    });
-    const mergedRemote = Array.from(remoteMap.values());
-
-    // 2. User-created triggers
-    const allTriggers = [
-      ...mergedRemote,
-      ...localTriggers.map(t => ({ ...t, source: "local" }))
-    ];
+    if (profileLoadError) {
+      const note = document.createElement("div");
+      note.className = "empty-note";
+      note.style.color = "#f5b000";
+      note.textContent = `⚠ Couldn't load profile (${profileLoadError}) — check your connection.`;
+      listEl.appendChild(note);
+      return;
+    }
 
     allTriggers.sort((a, b) => {
       const tA = (a.payloads?.[0]?.title || a.id || "").toLowerCase();
@@ -739,8 +726,16 @@ function ensureRawUrl(urlStr) {
     if (allTriggers.length === 0) {
       const note = document.createElement("div");
       note.className = "empty-note";
-      note.textContent = "No triggers found.";
+      const onDetectedGame = detectedSlug && catalogMatch && gId === catalogMatch.gameId;
+      if (onDetectedGame) {
+        note.innerHTML = 'No triggers yet for this profile. <span style="color:#9146ff;cursor:pointer;text-decoration:underline;" id="contribute-from-empty">Add the first one →</span>';
+      } else {
+        note.textContent = "No triggers found.";
+      }
       listEl.appendChild(note);
+      document.getElementById("contribute-from-empty")?.addEventListener("click", () => {
+        document.getElementById("contribute-btn").click();
+      });
       return;
     }
 
@@ -748,7 +743,6 @@ function ensureRawUrl(urlStr) {
       const first = (trigger.payloads || [])[0] || {};
       const label = first.title || first.text || trigger.id;
       const extras = (trigger.payloads || []).length - 1;
-      const sourceBadge = trigger.source === "local" ? "[Local]" : "[Profile]";
 
       const row = document.createElement("div");
       row.className = "trigger-row";
@@ -765,33 +759,33 @@ function ensureRawUrl(urlStr) {
         labelEl.appendChild(sm);
       }
 
-      const sourceEl = document.createElement("small");
-      sourceEl.textContent = sourceBadge;
-      sourceEl.style.cssText = "color:" + (trigger.source === "local" ? "#00f593" : "#adadb8");
-
       labelContainer.appendChild(labelEl);
-      labelContainer.appendChild(sourceEl);
 
       const editBtn = document.createElement("button");
       editBtn.className = "edit-btn";
       editBtn.textContent = "Edit";
       editBtn.onclick = () => openTriggerEditorFromPopup(trigger);
 
-      const delBtn = document.createElement("button");
-      delBtn.className = "delete-btn";
-      delBtn.textContent = "Delete";
-      delBtn.style.display = trigger.source === "local" ? "block" : "none";
-      delBtn.onclick = () => showDeleteConfirm(row, trigger, trigger.id, uKey);
-
       row.appendChild(labelContainer);
       row.appendChild(editBtn);
-      row.appendChild(delBtn);
       listEl.appendChild(row);
     });
   }
 
   renderTriggers();
   renderContributorStatus();
+
+  // --- First-run onboarding banner ---
+  const FIRST_RUN_KEY = "streamGenie_first_run_seen";
+  const firstRunStore = await chrome.storage.local.get(FIRST_RUN_KEY);
+  if (!firstRunStore[FIRST_RUN_KEY]) {
+    const banner = document.getElementById("first-run-banner");
+    if (banner) banner.style.display = "flex";
+    document.getElementById("first-run-dismiss")?.addEventListener("click", async () => {
+      await chrome.storage.local.set({ [FIRST_RUN_KEY]: true });
+      document.getElementById("first-run-banner").style.display = "none";
+    });
+  }
 
   // --- Interference Settings ---
   const globalDisableExtEl = document.getElementById("global-disable-ext");
