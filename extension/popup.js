@@ -80,7 +80,7 @@ function ensureRawUrl(urlStr) {
           verified:     p.verified     ?? false,
           url:          ensureRawUrl(p.url),
           triggerCount: p.triggerCount ?? null,
-          userCount:    p.userCount    ?? null,
+          timesUsed:    p.timesUsed    ?? null,
           upvotes:      p.upvotes      ?? null,
         })),
       }));
@@ -308,7 +308,7 @@ function ensureRawUrl(urlStr) {
     return [...profiles].sort((a, b) => {
       if (sortBy === "upvotes")  return (b.upvotes      ?? -1) - (a.upvotes      ?? -1);
       if (sortBy === "triggers") return (b.triggerCount ?? -1) - (a.triggerCount ?? -1);
-      if (sortBy === "users")    return (b.userCount    ?? -1) - (a.userCount    ?? -1);
+      if (sortBy === "used")     return (b.timesUsed    ?? -1) - (a.timesUsed    ?? -1);
       return 0;
     });
   }
@@ -317,7 +317,7 @@ function ensureRawUrl(urlStr) {
     const badge = p.verified ? "✓ " : "";
     const stats = [];
     if (p.triggerCount != null) stats.push(`${p.triggerCount}T`);
-    if (p.userCount    != null) stats.push(`${p.userCount}U`);
+    if (p.timesUsed    != null) stats.push(`${p.timesUsed}×`);
     if (p.upvotes      != null) stats.push(`▲${p.upvotes}`);
     return stats.length ? `${badge}${p.name}  ·  ${stats.join("  ")}` : `${badge}${p.name}`;
   }
@@ -353,6 +353,14 @@ function ensureRawUrl(urlStr) {
     const prof = game && game.profiles.find(p => p.id === profileSelect.value);
     if (!game || !prof) return;
     const unchanged = game.gameId === active.gameId && prof.id === active.profileId;
+    // Activation ping — fire-and-forget, non-blocking
+    if (!unchanged) {
+      fetch(WORKER_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Submit-Secret": SUBMIT_SECRET },
+        body: JSON.stringify({ gameId: game.gameId, profileId: prof.id, mode: "activate" }),
+      }).catch(() => {});
+    }
     active = { gameId: game.gameId, profileId: prof.id, name: prof.name, url: prof.url };
     await chrome.storage.local.set({ [ACTIVE_PROFILE_KEY]: active });
     if (unchanged) {

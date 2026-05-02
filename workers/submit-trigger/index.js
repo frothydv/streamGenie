@@ -52,6 +52,26 @@ export default {
 
     const contributorKey = request.headers.get("X-Contributor-Key") || null;
 
+    // --- activate mode (anonymous usage ping) --------------------------------
+    if (mode === "activate") {
+      if (!gameId || !profileId) return json({ ok: false, error: "Missing gameId/profileId" }, 400);
+      try {
+        let timesUsed = 1;
+        if (env.PROFILE_STATS) {
+          const key = `timesUsed:${gameId}:${profileId}`;
+          const current = await env.PROFILE_STATS.get(key);
+          timesUsed = parseInt(current || "0", 10) + 1;
+          await env.PROFILE_STATS.put(key, String(timesUsed));
+        }
+        const gh = githubClient(env.GITHUB_TOKEN);
+        await updateCatalogStats(gh, gameId, profileId, { timesUsed });
+        return json({ ok: true, timesUsed });
+      } catch (err) {
+        console.error("activate failed:", err.message);
+        return json({ ok: false, error: err.message }, 500);
+      }
+    }
+
     // --- verify mode --------------------------------------------------------
     if (mode === "verify") {
       if (!gameId || !profileId) return json({ ok: false, error: "Missing gameId/profileId" }, 400);
@@ -227,7 +247,10 @@ async function addTrigger(gh, gameId, profileId, trigger, direct, hint) {
   await writeProfile(gh, profilePath, profile, profileFile.sha, branch,
     `feat: add trigger "${title}" [contributor: ${hint}]`);
 
-  if (direct) return { direct: true };
+  if (direct) {
+    await updateCatalogStats(gh, gameId, profileId, { triggerCount: profile.triggers.length });
+    return { direct: true };
+  }
 
   const pr = await gh(`repos/${OWNER}/${REPO}/pulls`, "POST", {
     title: `Add trigger: ${title}`,
@@ -279,7 +302,10 @@ async function updateTrigger(gh, gameId, profileId, trigger, direct, hint) {
   await writeProfile(gh, profilePath, profile, profileFile.sha, branch,
     `fix: update trigger "${title}" [contributor: ${hint}]`);
 
-  if (direct) return { direct: true };
+  if (direct) {
+    await updateCatalogStats(gh, gameId, profileId, { triggerCount: profile.triggers.length });
+    return { direct: true };
+  }
 
   const pr = await gh(`repos/${OWNER}/${REPO}/pulls`, "POST", {
     title: `Update trigger: ${title}`,
@@ -311,7 +337,10 @@ async function removeTrigger(gh, gameId, profileId, trigger, direct, hint) {
   await writeProfile(gh, profilePath, profile, profileFile.sha, branch,
     `fix: remove trigger "${title}" [contributor: ${hint}]`);
 
-  if (direct) return { direct: true };
+  if (direct) {
+    await updateCatalogStats(gh, gameId, profileId, { triggerCount: profile.triggers.length });
+    return { direct: true };
+  }
 
   const pr = await gh(`repos/${OWNER}/${REPO}/pulls`, "POST", {
     title: `Remove trigger: ${title}`,
@@ -474,6 +503,7 @@ async function acceptProposal(gh, gameId, profileId, prNumber, branch, editedTri
   const title = trigger.payloads?.[0]?.title || trigger.id;
   await writeProfile(gh, profilePath, mainProfile, mainFile.sha, null,
     `feat: accept "${title}" from PR #${prNumber} [reviewer: ${hint}]`);
+  await updateCatalogStats(gh, gameId, profileId, { triggerCount: mainProfile.triggers.length });
 
   // Close PR with acceptance comment (shown as "closed" not "merged", but clearly accepted).
   await gh(`repos/${OWNER}/${REPO}/issues/${prNumber}/comments`, "POST",
@@ -509,6 +539,28 @@ async function writeProfile(gh, profilePath, profile, sha, branch, message) {
   const body = { message, content: b64encode(JSON.stringify(profile, null, 2)), sha };
   if (branch) body.branch = branch;
   await gh(`repos/${OWNER}/${REPO}/contents/${profilePath}/profile.json`, "PUT", body);
+}
+
+async function updateCatalogStats(gh, gameId, profileId, stats) {
+  // stats = { triggerCount?, timesUsed? }
+  // Non-fatal: SHA conflicts from concurrent activations are silently dropped.
+  try {
+    const catalogFile = await gh(`repos/${OWNER}/${REPO}/contents/catalog.json?ref=${BASE}`, "GET");
+    const catalog = JSON.parse(b64decode(catalogFile.content));
+    const game = catalog.games.find(g => g.id === gameId);
+    if (!game) return;
+    const prof = game.profiles.find(p => p.id === profileId);
+    if (!prof) return;
+    if (stats.triggerCount != null) prof.triggerCount = stats.triggerCount;
+    if (stats.timesUsed    != null) prof.timesUsed    = stats.timesUsed;
+    await gh(`repos/${OWNER}/${REPO}/contents/catalog.json`, "PUT", {
+      message: `chore: update stats for ${gameId}/${profileId}`,
+      content: b64encode(JSON.stringify(catalog, null, 2)),
+      sha:     catalogFile.sha,
+    });
+  } catch (err) {
+    console.warn("[worker] updateCatalogStats failed (non-fatal):", err.message);
+  }
 }
 
 function normalisedPayloads(payloads) {

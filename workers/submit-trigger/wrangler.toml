@@ -6,6 +6,10 @@ compatibility_date = "2024-09-23"
 binding = "CONTRIBUTOR_KEYS"
 id = "004b66d57d684ae5b0c969d5a825d30b"
 
+[[kv_namespaces]]
+binding = "PROFILE_STATS"
+id = "REPLACE_WITH_ID_FROM: wrangler kv:namespace create PROFILE_STATS"
+
 # Secrets are NOT stored here — set them with:
 #   wrangler secret put GITHUB_TOKEN
 #   wrangler secret put SUBMIT_SECRET
