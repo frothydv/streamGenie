@@ -370,6 +370,14 @@ function ensureRawUrl(urlStr) {
     window.close();
   });
 
+  document.getElementById("debug-panel-btn").addEventListener("click", async () => {
+    if (!currentTab) return;
+    try {
+      await chrome.tabs.sendMessage(currentTab.id, { type: "toggle-debug-panel" });
+    } catch (_) {}
+    window.close();
+  });
+
   // --- Delete confirmation ---
 
   async function deleteLocally(key, triggerId) {

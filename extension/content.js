@@ -67,8 +67,9 @@
   // SUBMIT_SECRET must match the SUBMIT_SECRET secret set on the Worker.
   // NOTE: this secret is readable by anyone who unpacks the extension — acceptable
   // for a dev build; use proper OAuth for a production release.
-  const WORKER_URL    = "https://streamgenie-submit.vbjosh.workers.dev";
-  const SUBMIT_SECRET = "YorkshireTractorFactor";
+  const WORKER_URL      = "https://streamgenie-submit.vbjosh.workers.dev";
+  const SUBMIT_SECRET   = "YorkshireTractorFactor";
+  const DEBUG_PANEL_KEY = "streamGenie_debugPanel";
 
   // Triggers populated from the loaded profile. Each entry mirrors the profile
   // schema trigger shape, augmented with runtime fields (sourceImg, refHash, w, h).
@@ -2503,12 +2504,21 @@
       padding: "8px", background: "rgba(24,24,27,0.92)", border: "1px solid #9146ff",
       borderRadius: "6px", color: "#efeff1", fontFamily: "monospace", fontSize: "11px",
       zIndex: "2147483647", pointerEvents: "none", backdropFilter: "blur(4px)",
+      display: "none",
     });
 
+    const titleRow = document.createElement("div");
+    titleRow.style.cssText = "display:flex;align-items:center;margin-bottom:6px;pointer-events:auto;";
     const title = document.createElement("div");
     title.textContent = "overlay debug";
-    title.style.cssText = "color:#bf94ff;font-weight:bold;margin-bottom:6px;";
-    debugPanel.appendChild(title);
+    title.style.cssText = "color:#bf94ff;font-weight:bold;flex:1;";
+    const closeBtn = document.createElement("button");
+    closeBtn.innerHTML = "&#10005;";
+    closeBtn.title = "Close debug panel";
+    closeBtn.style.cssText = "background:none;border:none;color:#adadb8;font-size:13px;cursor:pointer;padding:0 2px;line-height:1;";
+    closeBtn.addEventListener("click", hideDebugPanel);
+    titleRow.append(title, closeBtn);
+    debugPanel.appendChild(titleRow);
 
     const status = document.createElement("div");
     status.id = "stream-overlay-debug-status";
@@ -2550,8 +2560,25 @@
     return debugPanel;
   }
 
-  function updateDebugPanelStatus() {
+  function showDebugPanel() {
     ensureDebugPanel();
+    debugPanel.style.display = "block";
+    chrome.storage.local.set({ [DEBUG_PANEL_KEY]: true });
+    updateDebugPanelStatus();
+  }
+
+  function hideDebugPanel() {
+    if (debugPanel) debugPanel.style.display = "none";
+    chrome.storage.local.set({ [DEBUG_PANEL_KEY]: false });
+  }
+
+  function toggleDebugPanel() {
+    if (debugPanel && debugPanel.style.display !== "none") hideDebugPanel();
+    else showDebugPanel();
+  }
+
+  function updateDebugPanelStatus() {
+    if (!debugPanel || debugPanel.style.display === "none") return;
     const status = document.getElementById("stream-overlay-debug-status");
     if (!status) return;
     const stats = window.__streamOverlayStats || { total: 0, visible: 0 };
@@ -2573,7 +2600,7 @@
   }
 
   function renderDebugPanel(info) {
-    ensureDebugPanel();
+    if (!debugPanel || debugPanel.style.display === "none") return;
     const displayCanvas = document.getElementById("stream-overlay-debug-canvas");
     if (!displayCanvas) return;
     const dctx = displayCanvas.getContext("2d");
@@ -3427,6 +3454,7 @@
       }
     }
     if (msg && msg.type === "get-game") { sendResponse({ game: detectedGame }); }
+    if (msg && msg.type === "toggle-debug-panel") { toggleDebugPanel(); sendResponse({ ok: true }); }
     if (msg && msg.type === "review-proposal") {
       if (!editorModalOpen) {
         const { proposal, gameId, profileId, contributorCode } = msg;
@@ -3649,7 +3677,7 @@
   cleanupUserTriggers().then(() => {
     loadProfile().then(() => loadUserTriggers());
   });
-  ensureDebugPanel();
+  chrome.storage.local.get(DEBUG_PANEL_KEY).then(res => { if (res[DEBUG_PANEL_KEY]) showDebugPanel(); });
   document.addEventListener("mousemove", onDocumentMouseMove, { passive: true });
   document.addEventListener("mousedown", onDocumentClick, true);
   heartbeat();
