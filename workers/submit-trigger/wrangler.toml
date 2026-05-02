@@ -8,7 +8,7 @@ id = "004b66d57d684ae5b0c969d5a825d30b"
 
 [[kv_namespaces]]
 binding = "PROFILE_STATS"
-id = "REPLACE_WITH_ID_FROM: wrangler kv:namespace create PROFILE_STATS"
+id = "c99c33e573154e329620555d731d3c60"
 
 # Secrets are NOT stored here — set them with:
 #   wrangler secret put GITHUB_TOKEN
