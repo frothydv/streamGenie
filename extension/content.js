@@ -2322,19 +2322,27 @@
       const ox = (payload.popupOffset && payload.popupOffset.x != null) ? payload.popupOffset.x : 14;
       const oy = (payload.popupOffset && payload.popupOffset.y != null) ? payload.popupOffset.y : 22;
 
-      let html =
-        `<div style="font-weight:bold;color:#bf94ff;margin-bottom:4px;">${payload.title}</div>` +
-        `<div>${payload.text}</div>`;
+      el.innerHTML = "";
+      const titleEl = document.createElement("div");
+      titleEl.style.cssText = "font-weight:bold;color:#bf94ff;margin-bottom:4px;";
+      titleEl.textContent = payload.title;
+      el.appendChild(titleEl);
+      const textEl = document.createElement("div");
+      textEl.textContent = payload.text;
+      el.appendChild(textEl);
 
       // Add edit link on the first popup for any matched trigger.
       if (i === 0 && trigger) {
-        html +=
-          `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #333;">` +
-          `<a class="sg-edit-link" href="#" style="font-size:11px;color:#adadb8;text-decoration:none;">` +
-          `${editLabel}</a></div>`;
+        const editDiv = document.createElement("div");
+        editDiv.style.cssText = "margin-top:6px;padding-top:6px;border-top:1px solid #333;";
+        const editA = document.createElement("a");
+        editA.className = "sg-edit-link";
+        editA.href = "#";
+        editA.style.cssText = "font-size:11px;color:#adadb8;text-decoration:none;";
+        editA.textContent = editLabel;
+        editDiv.appendChild(editA);
+        el.appendChild(editDiv);
       }
-
-      el.innerHTML = html;
       el.style.left = Math.min(anchorX + ox, window.innerWidth  - 280) + "px";
       el.style.top  = Math.min(anchorY + oy, window.innerHeight - 100) + "px";
       el.style.display = "block";

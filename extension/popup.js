@@ -477,7 +477,11 @@ function ensureRawUrl(urlStr) {
       const data = await workerPost({ gameId: gId, profileId: pId, mode: "list-proposals" });
       proposals = data.proposals || [];
     } catch (err) {
-      listEl.innerHTML = `<div class="empty-note">Error: ${err.message}</div>`;
+      const errEl = document.createElement("div");
+      errEl.className = "empty-note";
+      errEl.textContent = `Error: ${err.message}`;
+      listEl.innerHTML = "";
+      listEl.appendChild(errEl);
       return;
     }
 
