@@ -254,7 +254,7 @@ async function addTrigger(gh, gameId, profileId, trigger, direct, hint) {
 
   const pr = await gh(`repos/${OWNER}/${REPO}/pulls`, "POST", {
     title: `Add trigger: ${title}`,
-    body:  prBody("New trigger submitted via Stream Genie.", gameId, profileId, [`**Payloads:** ${trigger.payloads.length}`]),
+    body:  prBody("New trigger submitted via Stream Genie.", gameId, profileId, [`**Action:** add`, `**Trigger ID:** ${rawId}`]),
     head:  branch, base: BASE,
   });
   return { prUrl: pr.html_url };
@@ -309,7 +309,7 @@ async function updateTrigger(gh, gameId, profileId, trigger, direct, hint) {
 
   const pr = await gh(`repos/${OWNER}/${REPO}/pulls`, "POST", {
     title: `Update trigger: ${title}`,
-    body:  prBody("Proposed update via Stream Genie.", gameId, profileId, [`**Trigger ID:** ${triggerId}`]),
+    body:  prBody("Proposed update via Stream Genie.", gameId, profileId, [`**Action:** update`, `**Trigger ID:** ${triggerId}`]),
     head:  branch, base: BASE,
   });
   return { prUrl: pr.html_url };
@@ -344,7 +344,7 @@ async function removeTrigger(gh, gameId, profileId, trigger, direct, hint) {
 
   const pr = await gh(`repos/${OWNER}/${REPO}/pulls`, "POST", {
     title: `Remove trigger: ${title}`,
-    body:  prBody("Requested removal via Stream Genie.", gameId, profileId, [`**Trigger ID:** ${triggerId}`]),
+    body:  prBody("Requested removal via Stream Genie.", gameId, profileId, [`**Action:** remove`, `**Trigger ID:** ${triggerId}`]),
     head:  branch, base: BASE,
   });
   return { prUrl: pr.html_url };
@@ -410,31 +410,71 @@ async function listProposals(gh, gameId, profileId) {
   );
   if (relevant.length === 0) return [];
 
-  let mainTriggers = [];
-  try {
-    const { profile } = await readProfile(gh, profilePath, BASE);
-    mainTriggers = profile.triggers;
-  } catch {}
-  const mainById = new Map(mainTriggers.map(t => [t.id, t]));
-
   const proposals = [];
+  const seen = new Set(); // dedup key: `${prNumber}` or `${action}:${triggerId}`
+
   for (const pr of relevant) {
     try {
       const branch = pr.head.ref;
-      const { profile: branchProfile } = await readProfile(gh, profilePath, branch);
-      const branchIds = new Set(branchProfile.triggers.map(t => t.id));
+      const body   = pr.body || "";
 
-      for (const t of branchProfile.triggers) {
-        const mainT = mainById.get(t.id);
-        if (!mainT) {
-          proposals.push({ prNumber: pr.number, prUrl: pr.html_url, branch, prTitle: pr.title, action: "add", trigger: t });
-        } else if (JSON.stringify(t.payloads) !== JSON.stringify(mainT.payloads)) {
-          proposals.push({ prNumber: pr.number, prUrl: pr.html_url, branch, prTitle: pr.title, action: "update", trigger: t, triggerBefore: mainT });
+      const actionMatch = body.match(/\*\*Action:\*\* (add|update|remove)/);
+      const idMatch     = body.match(/\*\*Trigger ID:\*\* ([^\s\n]+)/);
+
+      if (actionMatch && idMatch) {
+        // New PRs: use embedded metadata — immune to branch drift
+        const action    = actionMatch[1];
+        const triggerId = idMatch[1];
+        const dedupKey  = `${action}:${triggerId}`;
+        if (seen.has(dedupKey)) continue;
+        seen.add(dedupKey);
+
+        if (action === "add") {
+          const { profile: branchProfile } = await readProfile(gh, profilePath, branch);
+          const trigger = branchProfile.triggers.find(t => t.id === triggerId);
+          if (trigger) proposals.push({ prNumber: pr.number, prUrl: pr.html_url, branch, prTitle: pr.title, action, trigger });
+
+        } else if (action === "update") {
+          const [{ profile: branchProfile }, { profile: mainProfile }] = await Promise.all([
+            readProfile(gh, profilePath, branch),
+            readProfile(gh, profilePath, BASE),
+          ]);
+          const trigger       = branchProfile.triggers.find(t => t.id === triggerId);
+          const triggerBefore = mainProfile.triggers.find(t => t.id === triggerId);
+          if (trigger) proposals.push({ prNumber: pr.number, prUrl: pr.html_url, branch, prTitle: pr.title, action, trigger, triggerBefore });
+
+        } else if (action === "remove") {
+          const { profile: mainProfile } = await readProfile(gh, profilePath, BASE);
+          const trigger = mainProfile.triggers.find(t => t.id === triggerId);
+          if (trigger) proposals.push({ prNumber: pr.number, prUrl: pr.html_url, branch, prTitle: pr.title, action, trigger });
         }
-      }
-      for (const mainT of mainTriggers) {
-        if (!branchIds.has(mainT.id)) {
-          proposals.push({ prNumber: pr.number, prUrl: pr.html_url, branch, prTitle: pr.title, action: "remove", trigger: mainT });
+
+      } else {
+        // Legacy PRs (created before this fix): diff approach with deduplication
+        const { profile: branchProfile } = await readProfile(gh, profilePath, branch);
+        let mainTriggers = [];
+        try { ({ profile: { triggers: mainTriggers } } = await readProfile(gh, profilePath, BASE)); } catch {}
+        const mainById  = new Map(mainTriggers.map(t => [t.id, t]));
+        const branchIds = new Set(branchProfile.triggers.map(t => t.id));
+
+        for (const t of branchProfile.triggers) {
+          const mainT    = mainById.get(t.id);
+          const dedupKey = mainT ? `update:${t.id}` : `add:${t.id}`;
+          if (seen.has(dedupKey)) continue;
+          if (!mainT) {
+            seen.add(dedupKey);
+            proposals.push({ prNumber: pr.number, prUrl: pr.html_url, branch, prTitle: pr.title, action: "add", trigger: t });
+          } else if (JSON.stringify(t.payloads) !== JSON.stringify(mainT.payloads)) {
+            seen.add(dedupKey);
+            proposals.push({ prNumber: pr.number, prUrl: pr.html_url, branch, prTitle: pr.title, action: "update", trigger: t, triggerBefore: mainT });
+          }
+        }
+        for (const mainT of mainTriggers) {
+          const dedupKey = `remove:${mainT.id}`;
+          if (!branchIds.has(mainT.id) && !seen.has(dedupKey)) {
+            seen.add(dedupKey);
+            proposals.push({ prNumber: pr.number, prUrl: pr.html_url, branch, prTitle: pr.title, action: "remove", trigger: mainT });
+          }
         }
       }
     } catch (err) {
