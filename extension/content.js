@@ -3437,7 +3437,8 @@
           sendResponse({ ok: false, error: "No reference image" });
           return true;
         }
-        const imageUrl = `https://raw.githubusercontent.com/frothydv/streamGenieProfiles/${proposal.branch}/games/${gameId}/profiles/${profileId}/references/${ref.file}`;
+        const imgBranch = proposal.action === "remove" ? "main" : proposal.branch;
+        const imageUrl = `https://raw.githubusercontent.com/frothydv/streamGenieProfiles/${imgBranch}/games/${gameId}/profiles/${profileId}/references/${ref.file}`;
         const img = new Image();
         img.crossOrigin = "anonymous";
         img.onload = () => {
