@@ -1510,50 +1510,113 @@
 
     if (isReview) {
       const proposal = opts.proposal;
-      const acceptBtn = editorBtn("Accept", true);
-      acceptBtn.style.flex = "1";
-      const rejectBtn = editorBtn("Reject", false);
-      Object.assign(rejectBtn.style, { flex: "1", borderColor: "#ff5c5c", color: "#ff5c5c" });
+      const isRemoval = proposal.action === "remove";
 
-      acceptBtn.onclick = async () => {
-        if (!validate()) return;
-        const trigger = buildTrigger();
-        acceptBtn.disabled = rejectBtn.disabled = cancelBtn.disabled = true;
-        acceptBtn.textContent = "Accepting…";
+      const allBtns = () => [confirmBtn, editBtn, rejectBtn, cancelBtn].filter(Boolean);
+      const disableAll = () => allBtns().forEach(b => { if (b) b.disabled = true; });
+      const enableAll  = () => allBtns().forEach(b => { if (b) b.disabled = false; });
+
+      // Primary action — "Accept" for add/update, "Delete" for remove
+      const confirmBtn = editorBtn(isRemoval ? "Delete" : "Accept", !isRemoval);
+      if (isRemoval) {
+        Object.assign(confirmBtn.style, { flex: "1", background: "#7f1d1d", borderColor: "#ff5c5c", color: "#ff5c5c" });
+      } else {
+        confirmBtn.style.flex = "1";
+      }
+
+      confirmBtn.onclick = async () => {
+        if (!isRemoval && !validate()) return;
+        const trigger = isRemoval ? proposal.trigger : buildTrigger();
+        disableAll();
+        confirmBtn.textContent = isRemoval ? "Deleting…" : "Accepting…";
         try {
           await reviewWorkerCall(
             { gameId: opts.gameId, profileId: opts.profileId, mode: "accept-proposal",
               prNumber: proposal.prNumber, branch: proposal.branch, trigger },
             opts.contributorCode
           );
-          closeEditor("Proposal accepted!", "ok");
+          closeEditor(isRemoval ? "Trigger deleted." : "Proposal accepted!", "ok");
         } catch (err) {
-          acceptBtn.textContent = "Accept";
-          acceptBtn.disabled = rejectBtn.disabled = cancelBtn.disabled = false;
+          confirmBtn.textContent = isRemoval ? "Delete" : "Accept";
+          enableAll();
           showSubmitError(footer, err.message);
         }
       };
 
+      // For REMOVE: "Edit" rejects the deletion and switches editor to update mode
+      let editBtn = null;
+      if (isRemoval) {
+        editBtn = editorBtn("Edit Instead", false);
+        Object.assign(editBtn.style, { flex: "1", borderColor: "#f5b000", color: "#f5b000" });
+        editBtn.onclick = async () => {
+          disableAll();
+          editBtn.textContent = "Rejecting deletion…";
+          try {
+            await reviewWorkerCall(
+              { gameId: opts.gameId, profileId: opts.profileId, mode: "reject-proposal",
+                prNumber: proposal.prNumber },
+              opts.contributorCode
+            );
+            // Switch footer to submit-update mode
+            footer.innerHTML = "";
+            const cancelBtn2 = editorBtn("Cancel", false);
+            cancelBtn2.onclick = () => closeEditor();
+            const submitBtn = editorBtn("Submit Update", true);
+            submitBtn.style.flex = "1";
+            submitBtn.onclick = async () => {
+              if (!validate()) return;
+              submitBtn.disabled = cancelBtn2.disabled = true;
+              submitBtn.textContent = "Submitting…";
+              try {
+                const trigger = buildTrigger();
+                await workerPost({ gameId: opts.gameId, profileId: opts.profileId,
+                  mode: "update", trigger, contributorKey: opts.contributorCode });
+                closeEditor("Update submitted!", "ok");
+              } catch (err) {
+                submitBtn.textContent = "Submit Update";
+                submitBtn.disabled = cancelBtn2.disabled = false;
+                showSubmitError(footer, err.message);
+              }
+            };
+            footer.appendChild(cancelBtn2);
+            footer.appendChild(submitBtn);
+          } catch (err) {
+            editBtn.textContent = "Edit Instead";
+            enableAll();
+            showSubmitError(footer, err.message);
+          }
+        };
+      }
+
+      // Reject button — "Reject" for add/update, "Reject Deletion" for remove
+      const rejectBtn = editorBtn(isRemoval ? "Reject Deletion" : "Reject", false);
+      Object.assign(rejectBtn.style, {
+        flex: "1",
+        borderColor: isRemoval ? "#00f593" : "#ff5c5c",
+        color:       isRemoval ? "#00f593" : "#ff5c5c",
+      });
+
       rejectBtn.onclick = async () => {
-        rejectBtn.disabled = acceptBtn.disabled = cancelBtn.disabled = true;
-        rejectBtn.textContent = "Rejecting…";
+        disableAll();
+        rejectBtn.textContent = isRemoval ? "Rejecting…" : "Rejecting…";
         try {
           await reviewWorkerCall(
             { gameId: opts.gameId, profileId: opts.profileId, mode: "reject-proposal",
               prNumber: proposal.prNumber },
             opts.contributorCode
           );
-          closeEditor("Proposal rejected.", "info");
+          closeEditor(isRemoval ? "Deletion rejected." : "Proposal rejected.", "info");
         } catch (err) {
-          rejectBtn.textContent = "Reject";
-          rejectBtn.disabled = acceptBtn.disabled = cancelBtn.disabled = false;
+          rejectBtn.textContent = isRemoval ? "Reject Deletion" : "Reject";
+          enableAll();
           showSubmitError(footer, err.message);
         }
       };
 
       footer.appendChild(cancelBtn);
-      footer.appendChild(acceptBtn);
-      footer.appendChild(rejectBtn);
+      if (editBtn) footer.appendChild(editBtn);
+      footer.appendChild(isRemoval ? rejectBtn : confirmBtn);
+      footer.appendChild(isRemoval ? confirmBtn : rejectBtn);
       modal.appendChild(footer);
       return;
     }

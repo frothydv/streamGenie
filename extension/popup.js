@@ -525,11 +525,25 @@ function ensureRawUrl(urlStr) {
     const header = document.createElement("div");
     header.style.cssText = "display:flex; align-items:center; gap:6px;";
 
-    if (ref) {
+    if (ref?.file) {
+      const imgBranch = proposal.action === "remove" ? "main" : proposal.branch;
       const img = document.createElement("img");
       img.className = "proposal-img-thumb";
-      img.src = `${PROFILES_REPO_BASE}/${proposal.branch}/games/${gId}/profiles/${pId}/references/${ref.file}`;
+      img.src = `${PROFILES_REPO_BASE}/${imgBranch}/games/${gId}/profiles/${pId}/references/${ref.file}`;
+      img.onerror = () => {
+        img.replaceWith(noImgPlaceholder());
+      };
       header.appendChild(img);
+    } else {
+      header.appendChild(noImgPlaceholder());
+    }
+
+    function noImgPlaceholder() {
+      const ph = document.createElement("div");
+      ph.className = "proposal-img-thumb";
+      ph.style.cssText = "display:flex;align-items:center;justify-content:center;background:#1a0a0a;color:#ff5c5c;font-size:16px;flex-shrink:0;";
+      ph.textContent = "✕";
+      return ph;
     }
 
     const info = document.createElement("div");
