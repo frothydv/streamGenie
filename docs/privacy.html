@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Privacy Policy — Stream Genie</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --purple: #7c3aed;
+      --purple-light: #a78bfa;
+      --bg: #0d0d14;
+      --bg2: #13131f;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --border: #2d2d44;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.7;
+    }
+    nav {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 2rem; height: 60px;
+      border-bottom: 1px solid var(--border);
+    }
+    .nav-brand { display: flex; align-items: center; gap: 0.75rem; font-weight: 700; text-decoration: none; color: var(--text); }
+    .nav-brand img { width: 28px; height: 28px; }
+    main { max-width: 680px; margin: 0 auto; padding: 60px 2rem 100px; }
+    h1 { font-size: 2rem; font-weight: 800; margin-bottom: 0.5rem; }
+    .updated { font-size: 0.85rem; color: var(--muted); margin-bottom: 3rem; }
+    h2 { font-size: 1.15rem; font-weight: 700; margin: 2.5rem 0 0.75rem; color: var(--text); }
+    p { color: var(--muted); margin-bottom: 1rem; }
+    ul { color: var(--muted); padding-left: 1.5rem; margin-bottom: 1rem; }
+    ul li { margin-bottom: 0.4rem; }
+    .highlight {
+      background: var(--bg2); border: 1px solid var(--border);
+      border-left: 3px solid var(--purple);
+      border-radius: 8px; padding: 1rem 1.25rem;
+      margin: 2rem 0;
+    }
+    .highlight p { color: var(--text); margin: 0; }
+    a { color: var(--purple-light); }
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 2rem; text-align: center;
+      font-size: 0.85rem; color: var(--muted);
+    }
+    footer a { color: var(--muted); }
+  </style>
+</head>
+<body>
+
+  <nav>
+    <a class="nav-brand" href="index.html">
+      <img src="images/icon.png" alt="Stream Genie" />
+      Stream Genie
+    </a>
+  </nav>
+
+  <main>
+    <h1>Privacy Policy</h1>
+    <p class="updated">Effective: May 2026</p>
+
+    <div class="highlight">
+      <p><strong>Short version:</strong> During normal use, Stream Genie reads pixels locally in your browser and nothing leaves your device. When you voluntarily submit a contribution, that submission becomes publicly visible on GitHub.</p>
+    </div>
+
+    <h2>What Stream Genie does during normal use</h2>
+    <p>When you hover over a Twitch stream, Stream Genie reads pixel data from the video element in your browser tab. This pixel data is processed locally using perceptual image hashing to compare against community-built trigger references. No pixel data, video frames, or hover activity is transmitted to any server.</p>
+    <p>Stream Genie fetches community profiles (lists of triggers and reference images) from <a href="https://github.com/frothydv/streamGenieProfiles">GitHub</a>. These are read-only requests — no data about you or your session is included.</p>
+
+    <h2>Local storage</h2>
+    <p>Stream Genie stores the following in your browser's local Chrome extension storage:</p>
+    <ul>
+      <li>Your selected profile for each game</li>
+      <li>Your contributor code (if you have one), stored only on your device</li>
+      <li>Cached profile data (expires after 2 minutes)</li>
+    </ul>
+    <p>This data stays on your device and is never transmitted.</p>
+
+    <h2>When you submit a contribution</h2>
+    <p>Submitting a trigger is a voluntary act. When you do, the following information is sent to our Cloudflare Worker and then committed to the public <a href="https://github.com/frothydv/streamGenieProfiles">streamGenieProfiles GitHub repository</a>:</p>
+    <ul>
+      <li><strong>A reference image</strong> — a pixel crop you drag from a frozen frame of the stream you were watching</li>
+      <li><strong>Your annotation text</strong> — the title and description you wrote</li>
+      <li><strong>Game and profile metadata</strong> — which game and profile the trigger belongs to</li>
+    </ul>
+    <div class="highlight">
+      <p><strong>Important:</strong> Submissions are public. Your reference image and description become part of a public GitHub repository, visible to anyone. GitHub's <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">Privacy Statement</a> governs how GitHub stores this data. Stream Genie does not attach your name, account, or any identifier to submissions — they are pseudonymous — but the content itself is public.</p>
+    </div>
+    <p>If you submit via a contributor code, your submission goes directly to the main branch. Without a code, it becomes a GitHub pull request, which is also public and subject to review before merging.</p>
+
+    <h2>No analytics or tracking</h2>
+    <p>Stream Genie collects no analytics. There is no tracking of which streams you watch, which triggers match, how often you use the extension, or any behavioral data. There are no third-party analytics scripts.</p>
+
+    <h2>Permissions</h2>
+    <p>Stream Genie requests the following Chrome permissions:</p>
+    <ul>
+      <li><strong>activeTab</strong> — to read video pixel data from the currently active Twitch tab</li>
+      <li><strong>storage</strong> — to save your selected profile and contributor code locally</li>
+      <li><strong>Host access to twitch.tv</strong> — to run the content script on Twitch pages</li>
+      <li><strong>Host access to raw.githubusercontent.com and cdn.jsdelivr.net</strong> — to fetch community profiles</li>
+      <li><strong>Host access to *.workers.dev</strong> — to submit contributions via the Cloudflare Worker</li>
+    </ul>
+
+    <h2>Children's privacy</h2>
+    <p>Stream Genie is not directed at children under 13. We do not knowingly collect information from children.</p>
+
+    <h2>Changes to this policy</h2>
+    <p>If we make material changes, we will update the effective date above. Continued use of the extension after changes constitutes acceptance of the updated policy.</p>
+
+    <h2>Contact</h2>
+    <p>Questions? Open an issue at <a href="https://github.com/frothydv/streamGenie/issues">github.com/frothydv/streamGenie/issues</a>.</p>
+  </main>
+
+  <footer>
+    <a href="index.html">Stream Genie</a> &nbsp;·&nbsp; <a href="https://github.com/frothydv/streamGenie">GitHub</a>
+  </footer>
+
+</body>
+</html>

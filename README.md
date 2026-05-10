@@ -1,65 +1,76 @@
-# Stream Genie — pre-alpha (v0.6.5)
+<div align="center">
+  <img src="extension/icons/icon128.png" width="96" alt="Stream Genie" /><br/>
+  <h1>Stream Genie</h1>
+  <p><strong>A living wiki, built into the stream.</strong></p>
+  <p>Hover over anything in the video. A popup tells you what it is — without leaving the page.</p>
+</div>
 
-Hover-to-reveal overlays for Twitch streams. Point your cursor at something on screen — a card, a relic, a UI icon — and a popup tells you what it is. No streamer setup required; it all runs in your browser.
+---
 
-> **Pre-alpha:** Profiles exist for Slay the Spire 2. Everything else is rough edges.
+![Stream Genie popup appearing over a Stardew Valley stream](docs/images/view.png)
+
+## What is this?
+
+Stream Genie is a Chrome extension that reads pixels from a Twitch stream and shows community-built annotations when you hover over recognized items. No streamer setup required. No game API. It runs entirely in your browser.
+
+Think of it like Steam's controller profiles — Stream Genie is the framework. The community builds the knowledge, one game at a time.
 
 ## Install
 
-1. Download **[stream-genie-pre-alpha.zip](https://github.com/frothydv/streamGenie/releases/latest)** and unzip it anywhere.
-2. In Chrome, go to `chrome://extensions/` and enable **Developer mode** (top-right toggle).
-3. Click **Load unpacked** and select the unzipped `extension/` folder.
-4. The Stream Genie icon appears in your toolbar.
+> **Chrome Web Store listing coming soon.** For now, sideload it:
 
-## Using it
+1. Download **[stream-genie-v0.9.zip](https://github.com/frothydv/streamGenie/releases/latest)** and unzip it anywhere.
+2. Open Chrome → `chrome://extensions/` → enable **Developer mode** (top-right toggle).
+3. Click **Load unpacked** → select the unzipped `extension/` folder.
+4. The Stream Genie lamp icon appears in your toolbar.
 
-1. Open a Twitch stream. Stream Genie auto-detects the game from the Twitch category.
-2. Click the toolbar icon to confirm the active profile or switch games/profiles.
-3. Hover over things in the video. If a match is found, a popup appears near your cursor.
-4. Move your cursor away and the popup disappears.
+## How it works
 
-**Keyboard shortcut:** Alt+Shift+C opens the trigger capture editor (for contributors).
+1. Open any Twitch stream. Stream Genie detects the game from the Twitch category.
+2. Click the toolbar icon to select a community profile for that game.
+3. Hover over items in the video — cards, relics, icons, anything the community has annotated.
+4. A popup appears near your cursor. Move away and it disappears.
+
+Matching is done locally in your browser using perceptual image hashing. Nothing is sent to a server during normal use.
 
 ## Contributing triggers
 
-Anyone can contribute. Stream Genie sends your contributions as GitHub pull requests, which the profile owner can review and merge.
+Anyone can add annotations. No setup beyond a GitHub account.
 
-**If you have a contributor code** (shared by the profile owner), your submissions go directly — no PR needed.
+1. While watching a stream, press **Alt+Shift+C** (or click **+ Contribute a Trigger** in the popup).
+2. The frame freezes. Drag a box around the thing you want to annotate.
+3. Fill in the title and description. Click **Submit to Profile**.
 
-To add a trigger:
-1. Click **+ Contribute a Trigger** in the popup while watching a stream.
-2. A frame freezes. Drag a box around the thing you want to annotate.
-3. Fill in the title and description, then click **Submit to Profile**.
+![Trigger editor](docs/images/create.png)
 
-If you have a code, paste it in the **Contributor Status** section of the popup.
+Your submission goes to [streamGenieProfiles](https://github.com/frothydv/streamGenieProfiles) as a pull request. The profile owner reviews and merges it. Once merged, all viewers see your annotation automatically.
 
-## For profile owners
+**Trusted contributors** (given a contributor code by the profile owner) skip the PR step and commit directly.
 
-When you create a new profile via the popup, you receive a **contributor code**. Share it with people you trust to submit directly.
+> **Heads up:** submissions are public. Your reference image crop and description text become part of a public GitHub repository. See the [privacy policy](https://frothydv.github.io/streamGenie/privacy) for details.
 
-Your contributors' PRs (from untrusted users) appear at:  
-[github.com/frothydv/streamGenieProfiles/pulls](https://github.com/frothydv/streamGenieProfiles/pulls)
+## For streamers and game developers
 
-## Updating
+Want your viewers to have instant context while watching?
 
-To update to a newer version:
-
-1. Download the new zip from [Releases](https://github.com/frothydv/streamGenie/releases).
-2. Unzip it, replacing the old folder.
-3. Go to `chrome://extensions/`, find **Stream Genie (pre-alpha)**, and click the reload icon (↺).
-
-You do **not** need to remove and reinstall — reload is enough. Your saved profiles and contributor codes are preserved in Chrome storage.
+- **Profile owners** create and manage profiles for their game. Creating a profile gives you a contributor code to share with trusted contributors.
+- **Streamers** can declare a default profile for their channel — viewers who install Stream Genie get your preferred profile automatically (config in the profiles repo).
+- Community PRs appear at [streamGenieProfiles/pulls](https://github.com/frothydv/streamGenieProfiles/pulls) for you to review and merge.
 
 ## Supported games
+
+Stream Genie works with any game once a community profile exists. Profiles live in [streamGenieProfiles](https://github.com/frothydv/streamGenieProfiles). Open a PR or create a profile from the extension popup to start one for your game.
 
 | Game | Profile | Status |
 |------|---------|--------|
 | Slay the Spire 2 | community | Active |
 
-More games and profiles can be added by anyone — see [Contributing triggers](#contributing-triggers) above.
-
 ## Known limitations
-- **Matching resolution:** Matching works best at 1080p. At 720p some small UI elements may miss; at 480p and below most small elements won't match.
-- **Sync delay:** The extension caches profiles for **2 minutes**. If someone merges a change to the GitHub repository, it may take up to 2 minutes (plus CDN propagation time) for other users to see it automatically. Refreshing the page will fetch the latest if the cache is older than 2 minutes.
-- **Debug panel:** The debug panel (top-right) is visible on all Twitch pages. Toggle it with the hotkey or ignore it.
-- **Browser support:** Chrome only for now. Firefox support is planned.
+
+- **Resolution:** Best at 1080p. Small elements may miss at 720p; most small elements skip at 480p and below.
+- **Cache:** Profiles cache for 2 minutes. New contributions may take up to 2 minutes to appear.
+- **Browser:** Chrome only. Firefox planned post-beta.
+
+## Contributing to the extension
+
+Issues and PRs welcome on this repo. No build step — edit files, reload the extension at `chrome://extensions/`, done.
