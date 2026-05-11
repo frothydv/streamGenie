@@ -4,7 +4,7 @@ const CATALOG_URL        = "https://raw.githubusercontent.com/frothydv/streamGen
 const PROFILES_REPO_BASE = "https://raw.githubusercontent.com/frothydv/streamGenieProfiles";
 const ACTIVE_PROFILE_KEY = "streamGenie_active_profile";
 const WORKER_URL         = "https://streamgenie-submit.vbjosh.workers.dev";
-const SUBMIT_SECRET      = "YorkshireTractorFactor";
+const SUBMIT_SECRET      = StreamGenieConfig.SUBMIT_SECRET;
 const LOCAL_CATALOG_KEY  = "streamGenie_local_catalog";
 const DEFAULT_PROFILE = {
   gameId:    "slay-the-spire-2",

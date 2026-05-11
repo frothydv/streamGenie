@@ -64,11 +64,10 @@
 
   // --- Worker config --------------------------------------------------------
   // Set WORKER_URL after deploying the Cloudflare Worker (`wrangler deploy`).
-  // SUBMIT_SECRET must match the SUBMIT_SECRET secret set on the Worker.
-  // NOTE: this secret is readable by anyone who unpacks the extension — acceptable
-  // for a dev build; use proper OAuth for a production release.
-  const WORKER_URL      = "https://streamgenie-submit.vbjosh.workers.dev";
-  const SUBMIT_SECRET   = "YorkshireTractorFactor";
+  // SUBMIT_SECRET is loaded from extension/config.js (gitignored) so it doesn't
+  // appear in the public repo. Rate limiting in the Worker is the real control.
+  const WORKER_URL    = "https://streamgenie-submit.vbjosh.workers.dev";
+  const SUBMIT_SECRET = StreamGenieConfig.SUBMIT_SECRET;
   const DEBUG_PANEL_KEY = "streamGenie_debugPanel";
 
   // Triggers populated from the loaded profile. Each entry mirrors the profile
@@ -91,6 +90,7 @@
   let detectedGame = null;  // { name, slug } scraped from Twitch category link
   let lastUrl = location.href;
   let firstRunHintDone = false;
+  let profileLoadError = null; // null | string — set when profile fetch fails with no stale cache
 
   // --- Extension Interference State ---
   let extensionToggleUI = null;
@@ -556,16 +556,23 @@
       const profile = await res.json();
       localStorage.setItem(cKey, JSON.stringify({ ts: Date.now(), profile }));
       console.log("[overlay/content] profile: fetched from CDN (cache-busted)");
+      profileLoadError = null;
       await applyProfile(profile, ap.url);
     } catch (err) {
       console.warn("[overlay/content] profile fetch failed:", err.message);
+      let usedStale = false;
       try {
         const cached = JSON.parse(localStorage.getItem(cKey) || "null");
         if (cached) {
           console.warn("[overlay/content] profile: using stale cache");
           applyProfile(cached.profile, ap.url);
+          usedStale = true;
         }
       } catch (_) {}
+      if (!usedStale) {
+        profileLoadError = err.message;
+        showToast(`Profile failed to load: ${err.message}`, "error");
+      }
     }
   }
 
@@ -2625,6 +2632,9 @@
     const lines = [
       `<span style="color:#adadb8">videos: ${stats.total}t ${stats.visible}v | refs: ${refsLoaded}/${refsTotal}</span>`,
     ];
+    if (profileLoadError) {
+      lines.push(`<span style="color:#ff5c5c">profile error: ${profileLoadError}</span>`);
+    }
     if (!currentVideo) {
       lines.unshift(`<span style="color:#f5b000">no video</span>`);
     } else if (!currentVideo.videoWidth) {

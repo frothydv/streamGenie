@@ -134,6 +134,9 @@ export default {
       if (!gameId || !gameName || !newProfileId) {
         return json({ ok: false, error: "Missing gameId, gameName, or newProfileId" }, 400);
       }
+      if (!await checkRateLimit(env, request, "create-profile", 5)) {
+        return json({ ok: false, error: "Rate limit exceeded — try again later" }, 429);
+      }
       try {
         const gh = githubClient(env.GITHUB_TOKEN);
         const result = await createProfile(gh, env, gameId, gameName, twitchSlug || gameId, newProfileId, newProfileName || newProfileId);
@@ -162,6 +165,10 @@ export default {
     const trusted = await isTrustedContributor(env, contributorKey, gameId, profileId);
     const hint    = contributorHint(contributorKey);
 
+    if (!trusted && !await checkRateLimit(env, request, "write", 20)) {
+      return json({ ok: false, error: "Rate limit exceeded — try again later" }, 429);
+    }
+
     try {
       const gh = githubClient(env.GITHUB_TOKEN);
       const result = mode === "update"
@@ -189,6 +196,21 @@ async function isTrustedContributor(env, key, gameId, profileId) {
     const data = JSON.parse(value);
     return data.gameId === gameId && data.profileId === profileId;
   } catch { return false; }
+}
+
+// Returns true if under limit, false if limit exceeded.
+// Uses PROFILE_STATS KV with rl: prefix; allows through on KV error.
+async function checkRateLimit(env, request, bucket, limit) {
+  if (!env.PROFILE_STATS) return true;
+  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+  const hour = Math.floor(Date.now() / (60 * 60 * 1000));
+  const key = `rl:${bucket}:${ip}:${hour}`;
+  try {
+    const current = parseInt(await env.PROFILE_STATS.get(key) || "0", 10);
+    if (current >= limit) return false;
+    await env.PROFILE_STATS.put(key, String(current + 1), { expirationTtl: 7200 });
+    return true;
+  } catch { return true; }
 }
 
 function contributorHint(key) {
