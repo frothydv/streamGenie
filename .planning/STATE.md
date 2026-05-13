@@ -10,9 +10,9 @@ See: CLAUDE.md (last updated 2026-05-13)
 ## Current Position
 
 Phase: 12 of 13 (Error States)
-Plan: 0 of TBD in current phase
-Status: Ready to plan
-Last activity: 2026-05-13 — corrected phase status: phases 10 and 11 already shipped; phase 13 partially done (GitHub privacy page exists, not in extension yet)
+Plan: 0 of 2 in current phase
+Status: Ready to execute
+Last activity: 2026-05-13 — Phase 12 planned: 2 plans (12-01 CDN warning + get-game extension, 12-02 schema validation + popup error note)
 
 Progress: [████░░░░░░] 50% (of beta phases — 10 and 11 shipped)
 
