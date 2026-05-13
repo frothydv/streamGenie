@@ -39,11 +39,11 @@ Milestones 1–9 are complete: hello-world, hover detection, capture mode, perce
   1. Debug panel shows a red indicator when the profile CDN is unreachable
   2. Debug panel shows a warning when profile JSON fails to parse or fails schema validation
   3. Popup reflects load-error state (not just "no profile selected")
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 12-01: CDN/fetch error surfacing in debug panel and popup
-- [ ] 12-02: JSON parse + schema mismatch error surfacing
+- [ ] 12-01-PLAN.md — CDN unreachable warning (stale-cache amber) + get-game response extension
+- [ ] 12-02-PLAN.md — Schema validation in applyProfile + popup error-state note
 
 #### Phase 13: Privacy & Permissions Disclosure
 **Goal**: The extension's store listing and first-run experience clearly state that pixels are read locally and nothing leaves the device, satisfying Chrome Web Store review requirements and user trust expectations.
