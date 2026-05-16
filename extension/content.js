@@ -93,6 +93,7 @@
   let profileLoadError = null; // null | string — set when profile fetch fails with no stale cache
   let profileStaleWarning = null; // null | string — CDN unreachable but stale cache used
   let profileSchemaWarnings = []; // string[] — IDs of triggers skipped due to invalid schema
+  let profileTriggersStructureError = false; // true when profile.triggers is not an array at all
 
   // --- Extension Interference State ---
   let extensionToggleUI = null;
@@ -505,9 +506,11 @@
 
     // --- Schema validation (ERR-03) ---
     profileSchemaWarnings = [];
+    profileTriggersStructureError = false;
     if (!Array.isArray(profile.triggers)) {
-      profileSchemaWarnings.push("triggers is not an array");
+      profileTriggersStructureError = true;
       profile.triggers = [];
+      console.warn("[overlay/content] schema: profile.triggers is not an array — all triggers skipped");
     } else {
       profile.triggers = profile.triggers.filter(t => {
         const idOk = typeof t.id === "string" && t.id.length > 0;
@@ -590,7 +593,8 @@
         const cached = JSON.parse(localStorage.getItem(cKey) || "null");
         if (cached) {
           console.warn("[overlay/content] profile: using stale cache");
-          applyProfile(cached.profile, ap.url);
+          profileLoadError = null;
+          await applyProfile(cached.profile, ap.url);
           profileStaleWarning = err.message;
           usedStale = true;
         }
@@ -2664,7 +2668,9 @@
     if (profileStaleWarning) {
       lines.push(`<span style="color:#f5b000">WARNING CDN unreachable — using cached profile (${profileStaleWarning})</span>`);
     }
-    if (profileSchemaWarnings && profileSchemaWarnings.length > 0) {
+    if (profileTriggersStructureError) {
+      lines.push(`<span style="color:#f5b000">profile structure invalid — triggers is not an array</span>`);
+    } else if (profileSchemaWarnings && profileSchemaWarnings.length > 0) {
       lines.push(`<span style="color:#f5b000">${profileSchemaWarnings.length} trigger(s) skipped — invalid schema: ${profileSchemaWarnings.join(", ")}</span>`);
     }
     if (!currentVideo) {

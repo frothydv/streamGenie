@@ -378,8 +378,11 @@ function ensureRawUrl(urlStr) {
     active = { gameId: game.gameId, profileId: prof.id, name: prof.name, url: prof.url };
     await chrome.storage.local.set({ [ACTIVE_PROFILE_KEY]: active });
     if (unchanged) {
-      applyNote.textContent = "Already active.";
-      applyNote.style.color = "#adadb8";
+      // Don't clobber error/stale notes — "already active" isn't a state change
+      if (!contentProfileLoadError && !contentProfileStaleWarning) {
+        applyNote.textContent = "Already active.";
+        applyNote.style.color = "#adadb8";
+      }
     } else {
       applyNote.textContent = "Reload the Twitch page to activate.";
       applyNote.style.color = "#00f593";
