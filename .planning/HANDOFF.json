@@ -1,0 +1,36 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-05-16T19:35:00.000Z",
+  "phase": "03",
+  "phase_name": "game-detection",
+  "phase_dir": "03-game-detection",
+  "plan": 1,
+  "task": 5,
+  "total_tasks": 5,
+  "status": "paused_between_phases",
+  "completed_tasks": [
+    {"id": 1, "name": "Add detectYouTubeGame() + update get-game handler", "status": "done", "commit": "6c52f11"},
+    {"id": 2, "name": "Update popup tab detection for YouTube + send get-game on YouTube", "status": "done", "commit": "6c52f11"},
+    {"id": 3, "name": "Add fuzzyMatchTitle() + YouTube fuzzy matching in popup", "status": "done", "commit": "6c52f11"},
+    {"id": 4, "name": "Rename twitchSlug -> legacyTwitchSlug with backward compat", "status": "done", "commit": "6c52f11"},
+    {"id": 5, "name": "Manual test: verify game detection on YouTube VOD", "status": "done", "commit": "manual"}
+  ],
+  "remaining_tasks": [],
+  "blockers": [
+    {"description": "Playwright tests require libnspr4.so which is not installed in WSL (no sudo)", "type": "technical", "workaround": "Manual testing in Chrome on user's Windows machine"}
+  ],
+  "human_actions_pending": [
+    {"action": "Run e2e tests on Windows machine (npx playwright test tests/e2e/)", "context": "Verify all test specs for Phases 1-3 pass in proper environment", "blocking": false}
+  ],
+  "decisions": [
+    {"decision": "Fuzzy matching is client-side only (no cloud calls)", "rationale": "No API keys, no latency, works offline", "phase": "3"},
+    {"decision": "Threshold of 0.4 for fuzzy title matching", "rationale": "Lenient enough to catch partial matches (e.g., 'Slay the Spire 2 - Ironclad run'), strict enough to avoid obvious mismatches", "phase": "3"},
+    {"decision": "legacyTwitchSlug renamed from twitchSlug with backward compat", "rationale": "Cleaner model when games span platforms; CDN old field still accepted as fallback", "phase": "3"},
+    {"decision": "Catalog match checks gameId, legacyTwitchSlug, AND twitchSlug", "rationale": "Full transition period — old CDN entries still have twitchSlug", "phase": "3"}
+  ],
+  "uncommitted_files": [
+    ".planning/STATE.md"
+  ],
+  "next_action": "Advance to Phase 4: Popup & Testing — polish popup YouTube integration, ensure fallback works on YouTube when no game match, update e2e test spec for Phase 3 behaviors.",
+  "context_notes": "Phase 3 is fully implemented and user-confirmed. Popup auto-detects game from YouTube video title, shows 'Active on YouTube: /watch?v=XXX', and auto-selects matched catalog game. The existing twitchSlug->legacyTwitchSlug rename is backward compatible with old CDN fields. Next phase is to polish the popup YouTube UI (ensure fallback catalog shows on no-match, add any missing YouTube state indicators) and update e2e tests."
+}
