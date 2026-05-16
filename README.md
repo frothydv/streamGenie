@@ -43,7 +43,7 @@ Stream Genie requests the minimum permissions required to function.
 | `storage` | Save profile selections and first-run state |
 | `https://*.twitch.tv/*` | Run the hover overlay on Twitch pages |
 | `https://raw.githubusercontent.com/*` | Download community annotation profiles |
-| `https://cdn.jsdelivr.net/*` | Fetch the game catalog |
+| `https://cdn.jsdelivr.net/*` | CDN fallback for community profiles |
 | `https://*.workers.dev/*` | Submit new trigger contributions |
 
 ## Contributing triggers

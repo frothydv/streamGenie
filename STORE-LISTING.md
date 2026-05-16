@@ -4,7 +4,7 @@
 
 Hover over anything in a Twitch stream and get instant community-built explanations. No streamer setup. Works with any game.
 
-_(128 chars)_
+_(124 chars)_
 
 ## Full Description
 
@@ -21,7 +21,7 @@ Hover over a card, a relic, an icon — anything the community has annotated —
 
 **Privacy**
 
-Pixel matching runs locally in your browser using perceptual image hashing. Nothing leaves your device during normal use. The only outbound requests are to download community profiles from GitHub (raw.githubusercontent.com / cdn.jsdelivr.net) and to submit contributions (workers.dev). No analytics. No telemetry. No account required. Pixel processing stays on your device — nothing is transmitted.
+Pixel matching runs locally in your browser using perceptual image hashing. Nothing leaves your device during normal hovering. The only outbound requests are to download community profiles from GitHub (raw.githubusercontent.com) and to submit contributions you initiate (workers.dev). No analytics. No telemetry. No account required — nothing you watch is ever collected.
 
 **Contributing annotations**
 
@@ -43,7 +43,7 @@ Profile owners can create and manage annotation sets for their game. Creating a 
 - Profiles cache for 2 minutes. New contributions may take up to 2 minutes to appear.
 - Chrome only. Firefox planned post-beta.
 
-_(1,647 chars)_
+_(1,936 chars plain text)_
 
 ## Permissions Justification
 
@@ -55,7 +55,7 @@ Stream Genie requests only the permissions needed to run the overlay and load co
 | `storage` | Save profile selections and first-run state |
 | `https://*.twitch.tv/*` | Run the hover overlay on Twitch pages |
 | `https://raw.githubusercontent.com/*` | Download community annotation profiles |
-| `https://cdn.jsdelivr.net/*` | Fetch the game catalog |
+| `https://cdn.jsdelivr.net/*` | CDN fallback for community profiles |
 | `https://*.workers.dev/*` | Submit new trigger contributions |
 
 ## Version
