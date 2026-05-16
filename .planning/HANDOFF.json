@@ -1,45 +1,61 @@
 {
   "version": "1.0",
-  "timestamp": "2026-05-16T14:20:19Z",
-  "phase": "12",
-  "phase_name": "error-states",
-  "phase_dir": ".planning/phases/12-error-states",
-  "plan": 2,
-  "task": "post-execution",
-  "total_tasks": 2,
-  "status": "paused",
+  "timestamp": "2026-05-16T00:00:00Z",
+  "phase": "13",
+  "phase_name": "privacy-permissions-disclosure",
+  "phase_dir": ".planning/phases/13-privacy-permissions-disclosure",
+  "plan": 1,
+  "task": 3,
+  "total_tasks": 3,
+  "status": "complete",
   "completed_tasks": [
-    {"id": "12-01", "name": "CDN warning + get-game extension", "status": "done", "commit": "ea24287"},
-    {"id": "12-02", "name": "Schema validation + popup error note", "status": "done", "commit": "829537e"},
-    {"id": "review-fixes", "name": "Fix 4 code review warnings (WR-01 to WR-04)", "status": "done", "commit": "e8d19af"},
-    {"id": "e2e-tests", "name": "Playwright e2e test suite (6 tests)", "status": "done", "commit": "4de17ff"},
-    {"id": "test-debug", "name": "Fix 3 test failures (URL comparison, TTL, popup tab-query)", "status": "in_progress", "progress": "Fixes in uncommitted working tree — need one confirming test run"}
+    {"id": 1, "name": "Privacy link in first-run banner", "status": "done", "commit": "8ea13a7"},
+    {"id": 2, "name": "README Permissions section", "status": "done", "commit": "b4c1610"},
+    {"id": 3, "name": "STORE-LISTING.md creation", "status": "done", "commit": "c7e0bfc"}
   ],
-  "remaining_tasks": [
-    {"id": "confirm-tests", "name": "Run npm run test:e2e and confirm 6/6 pass", "status": "not_started"},
-    {"id": "commit-test-fixes", "name": "Commit test fixes in working tree", "status": "not_started"},
-    {"id": "phase-complete", "name": "Mark phase 12 complete (user approval + gsd-sdk query phase.complete 12)", "status": "not_started"},
-    {"id": "claude-md-update", "name": "Update CLAUDE.md — remove error states from must-haves, note Playwright setup", "status": "not_started"}
-  ],
-  "blockers": [
-    {"description": "Test 3 flaky (passes on retry) — uncommitted fix uses waitForFunction + old cache timestamp", "type": "technical", "workaround": "Fixes are in working tree; run test:e2e to confirm"},
-    {"description": "Phase 12 not marked complete — verification is human_needed, user must approve", "type": "human_action", "workaround": "Say 'approved' after tests pass"}
-  ],
+  "remaining_tasks": [],
+  "blockers": [],
   "human_actions_pending": [
-    {"action": "Run npm run test:e2e and confirm 6/6 pass", "context": "Tests have uncommitted fixes that should resolve flakiness", "blocking": true},
-    {"action": "Say 'approved' to trigger phase.complete 12", "context": "Verification returned human_needed; Playwright tests are the proxy for human sign-off", "blocking": true}
+    {
+      "action": "Fix manifest.json action.default_title: 'Stream Overlay' -> 'Stream Genie'",
+      "context": "Branding mismatch flagged in code review (WR-02)",
+      "blocking": false
+    },
+    {
+      "action": "Delete stray root-level files: BRANCH_SUMMARY.md, CLEANUP_INSTRUCTIONS.md, ISSUE_ANALYSIS.md, ISSUE_SUMMARY.md",
+      "context": "Untracked noise files at repo root",
+      "blocking": false
+    },
+    {
+      "action": "Verify https://frothydv.github.io/streamGenie/privacy loads",
+      "context": "Linked from banner and STORE-LISTING; CWS reviewers will click it",
+      "blocking": false
+    },
+    {
+      "action": "Package extension/ and submit to Chrome Web Store using STORE-LISTING.md copy",
+      "context": "All four required CWS fields are ready to paste",
+      "blocking": false
+    }
   ],
   "decisions": [
-    {"decision": "profileStaleWarning and profileLoadError are mutually exclusive per fetch attempt", "rationale": "Stale path sets warning only; no-cache path sets error only — avoids double indicators", "phase": "12"},
-    {"decision": "profileTriggersStructureError bool introduced for not-an-array case", "rationale": "Separate from per-trigger schema warnings to give accurate panel message", "phase": "12"},
-    {"decision": "Playwright test 4 sends get-game directly via service worker", "rationale": "chrome.tabs.query({ active:true }) returns popup itself after popup opens — bypass needed", "phase": "12"}
+    {
+      "decision": "cdn.jsdelivr.net described as CDN fallback, not catalog fetch",
+      "rationale": "Catalog uses raw.githubusercontent.com; jsdelivr is URL-rewrite fallback via ensureRawUrl()",
+      "phase": "13"
+    },
+    {
+      "decision": "CR-01 (hardcoded secret) was false alarm - no action needed",
+      "rationale": "config.js never committed, gitignored at .gitignore:37",
+      "phase": "13"
+    }
   ],
   "uncommitted_files": [
-    "tests/e2e/error-states.spec.js",
-    "tests/e2e/helpers.js",
-    ".planning/STATE.md",
-    ".claude/settings.local.json"
+    ".claude/settings.local.json",
+    "BRANCH_SUMMARY.md",
+    "CLEANUP_INSTRUCTIONS.md",
+    "ISSUE_ANALYSIS.md",
+    "ISSUE_SUMMARY.md"
   ],
-  "next_action": "Run npm run test:e2e — should show 6/6 passing with uncommitted fixes. If clean, commit and say approved.",
-  "context_notes": "Phase 12 is functionally complete. The only open item is confirming the Playwright tests pass 6/6 and then doing the administrative phase completion. CLAUDE.md still lists error states as a must-have — needs one-paragraph update."
+  "next_action": "Fix manifest.json action.default_title, delete 4 stray root files, verify privacy policy URL, then package and submit to CWS",
+  "context_notes": "All v1.0 Beta phases complete. Project is at the CWS submission step. Remaining items are pre-submission housekeeping, not feature work."
 }
