@@ -33,6 +33,19 @@ Think of it like Steam's controller profiles — Stream Genie is the framework. 
 
 Matching is done locally in your browser using perceptual image hashing. Nothing is sent to a server during normal use.
 
+## Permissions
+
+Stream Genie requests the minimum permissions required to function.
+
+| Permission | Why it's needed |
+|---|---|
+| `activeTab` | Detect which game you're watching |
+| `storage` | Save profile selections and first-run state |
+| `https://*.twitch.tv/*` | Run the hover overlay on Twitch pages |
+| `https://raw.githubusercontent.com/*` | Download community annotation profiles |
+| `https://cdn.jsdelivr.net/*` | Fetch the game catalog |
+| `https://*.workers.dev/*` | Submit new trigger contributions |
+
 ## Contributing triggers
 
 Anyone can add annotations. No setup beyond a GitHub account.
