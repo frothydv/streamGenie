@@ -17,7 +17,7 @@ const FALLBACK_CATALOG = [
   {
     gameId:     "slay-the-spire-2",
     gameName:   "Slay the Spire 2",
-    twitchSlug: "slay-the-spire-ii",
+    legacyTwitchSlug: "slay-the-spire-ii",
     profiles: [
       { id: "community", name: "STS2 Community", verified: true, url: DEFAULT_PROFILE.url },
     ],
@@ -51,9 +51,14 @@ function ensureRawUrl(urlStr) {
     } else if ((tab.url || "").includes("twitch.tv")) {
       statusEl.className = "status ok";
       statusEl.textContent = "Active on Twitch: " + new URL(tab.url).pathname;
+    } else if ((tab.url || "").includes("youtube.com/watch")) {
+      statusEl.className = "status ok";
+      const ytUrl = new URL(tab.url);
+      const v = ytUrl.searchParams.get("v");
+      statusEl.textContent = "Active on YouTube: " + (v ? "/watch?v=" + v : ytUrl.pathname);
     } else {
       statusEl.className = "status off";
-      statusEl.textContent = "Not on Twitch.";
+      statusEl.textContent = "Not on Twitch or YouTube.";
     }
   } catch (err) {
     statusEl.className = "status off";
@@ -73,7 +78,7 @@ function ensureRawUrl(urlStr) {
       CATALOG = raw.games.map(g => ({
         gameId:      g.id,
         gameName:    g.name,
-        twitchSlug:  g.twitchSlug  || null,
+        legacyTwitchSlug: g.legacyTwitchSlug || g.twitchSlug || null,
         profiles:    g.profiles.map(p => ({
           id:           p.id,
           name:         p.name,
@@ -95,12 +100,12 @@ function ensureRawUrl(urlStr) {
     if (connNote) connNote.style.display = "block";
   }
 
-  // Always apply FALLBACK_CATALOG overrides — twitchSlug and verified are authoritative
+  // Always apply FALLBACK_CATALOG overrides — legacyTwitchSlug and verified are authoritative
   // here so CDN cache staleness never breaks matching or badge display.
   for (const fallback of FALLBACK_CATALOG) {
     const existing = CATALOG.find(g => g.gameId === fallback.gameId);
     if (!existing) continue;
-    if (fallback.twitchSlug) existing.twitchSlug = fallback.twitchSlug;
+    if (fallback.legacyTwitchSlug) existing.legacyTwitchSlug = fallback.legacyTwitchSlug;
     for (const fp of fallback.profiles) {
       const ep = existing.profiles.find(p => p.id === fp.id);
       if (ep && fp.verified !== undefined) ep.verified = fp.verified;
@@ -108,12 +113,12 @@ function ensureRawUrl(urlStr) {
   }
 
   // Merge in locally-created profiles (persist across reloads until CDN cache refreshes).
-  // Also propagates twitchSlug if CDN entry is missing it, fixing catalogMatch.
+  // Also propagates legacyTwitchSlug if CDN entry is missing it, fixing catalogMatch.
   const localCatalogStore = await chrome.storage.local.get(LOCAL_CATALOG_KEY);
   for (const localGame of (localCatalogStore[LOCAL_CATALOG_KEY] || [])) {
     const existing = CATALOG.find(g => g.gameId === localGame.gameId);
     if (existing) {
-      if (!existing.twitchSlug && localGame.twitchSlug) existing.twitchSlug = localGame.twitchSlug;
+      if (!existing.legacyTwitchSlug && (localGame.legacyTwitchSlug || localGame.twitchSlug)) existing.legacyTwitchSlug = localGame.legacyTwitchSlug || localGame.twitchSlug;
       for (const p of localGame.profiles) {
         if (!existing.profiles.find(ep => ep.id === p.id)) existing.profiles.push(p);
       }
@@ -125,9 +130,11 @@ function ensureRawUrl(urlStr) {
   // --- Detect game from content script ---
   let detectedSlug = null;
   let detectedName = null;
+  let detectedVideoTitle = null;
   let contentProfileLoadError = null;
   let contentProfileStaleWarning = null;
-  if (currentTab && (currentTab.url || "").includes("twitch.tv")) {
+  const isYouTube = currentTab && (currentTab.url || "").includes("youtube.com/watch");
+  if (currentTab && ((currentTab.url || "").includes("twitch.tv") || isYouTube)) {
     try {
       const resp = await new Promise((resolve) => {
         chrome.tabs.sendMessage(currentTab.id, { type: "get-game" }, (r) => {
@@ -136,9 +143,45 @@ function ensureRawUrl(urlStr) {
         });
       });
       if (resp?.game?.slug) { detectedSlug = resp.game.slug; detectedName = resp.game.name; }
+      if (resp?.videoTitle) { detectedVideoTitle = resp.videoTitle; }
       contentProfileLoadError = resp?.profileLoadError || null;
       contentProfileStaleWarning = resp?.profileStaleWarning || null;
     } catch (_) {}
+  }
+
+  // --- YouTube title-based game detection (client-side fuzzy match) ---
+  function fuzzyMatchTitle(title, catalog) {
+    if (!title) return null;
+    const tl = title.toLowerCase();
+    let best = null, bestScore = 0;
+    for (const game of catalog) {
+      const gn = game.gameName.toLowerCase();
+      let score = 0;
+      if (tl === gn) score = 1.0;
+      else if (tl.includes(gn)) score = gn.length / tl.length;
+      else if (gn.includes(tl)) score = tl.length / gn.length;
+      // Word overlap scoring
+      const titleWords = new Set(tl.split(/\s+/));
+      const gameWords = gn.split(/\s+/);
+      const common = gameWords.filter(w => titleWords.has(w));
+      if (common.length > 0) {
+        const wordScore = common.length / Math.max(gameWords.length, 1);
+        score = Math.max(score, wordScore * 0.8);
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        best = game;
+      }
+    }
+    return bestScore >= 0.4 ? best : null;
+  }
+
+  if (isYouTube && detectedVideoTitle) {
+    const match = fuzzyMatchTitle(detectedVideoTitle, CATALOG);
+    if (match) {
+      detectedSlug = match.gameId;
+      detectedName = match.gameName;
+    }
   }
 
   // --- Load active profile ---
@@ -150,7 +193,7 @@ function ensureRawUrl(urlStr) {
   if (active?.url) {
     let game = CATALOG.find(g => g.gameId === active.gameId);
     if (!game) {
-      game = { gameId: active.gameId, gameName: active.gameId, twitchSlug: null, profiles: [] };
+      game = { gameId: active.gameId, gameName: active.gameId, legacyTwitchSlug: null, profiles: [] };
       CATALOG.push(game);
     }
     if (!game.profiles.find(p => p.id === active.profileId)) {
@@ -185,9 +228,9 @@ function ensureRawUrl(urlStr) {
     applyNote.style.display = "block";
   }
 
-  // Match detectedSlug against gameId OR twitchSlug (Twitch slugs often differ from our IDs).
+  // Match detectedSlug against gameId, legacyTwitchSlug, or twitchSlug (backward compat).
   const catalogMatch = detectedSlug
-    ? CATALOG.find(g => g.gameId === detectedSlug || g.twitchSlug === detectedSlug)
+    ? CATALOG.find(g => g.gameId === detectedSlug || g.legacyTwitchSlug === detectedSlug || g.twitchSlug === detectedSlug)
     : null;
   const selectedGameId = catalogMatch ? catalogMatch.gameId : active.gameId;
 
@@ -203,7 +246,7 @@ function ensureRawUrl(urlStr) {
   if (detectedSlug && catalogMatch) {
     detectedEl.textContent = "✓ Auto-detected from stream";
     detectedEl.style.display = "block";
-  } else if (!detectedSlug && currentTab && (currentTab.url || "").includes("twitch.tv")) {
+  } else if (!detectedSlug && currentTab && ((currentTab.url || "").includes("twitch.tv") || isYouTube)) {
     detectedEl.textContent = "No game detected — browse to a live stream";
     detectedEl.style.color = "#777";
     detectedEl.style.display = "block";
@@ -218,10 +261,10 @@ function ensureRawUrl(urlStr) {
       try {
         // Use the canonical gameId — if detectedSlug is a Twitch category slug for a
         // known game (e.g. "slay-the-spire-ii" → "slay-the-spire-2"), use that ID.
-        const fbMatch  = FALLBACK_CATALOG.find(g => g.gameId === detectedSlug || g.twitchSlug === detectedSlug);
+        const fbMatch  = FALLBACK_CATALOG.find(g => g.gameId === detectedSlug || g.legacyTwitchSlug === detectedSlug || g.twitchSlug === detectedSlug);
         const cId      = fbMatch ? fbMatch.gameId                      : detectedSlug;
         const cName    = fbMatch ? fbMatch.gameName                    : (detectedName || detectedSlug);
-        const cSlug    = fbMatch ? (fbMatch.twitchSlug || detectedSlug): detectedSlug;
+        const cSlug    = fbMatch ? (fbMatch.legacyTwitchSlug || fbMatch.twitchSlug || detectedSlug): detectedSlug;
         await doCreateProfile(cId, cName, cSlug, "community");
         noProfileBanner.style.display = "none";
         detectedEl.textContent = "✓ Profile created — ready to use";
@@ -256,7 +299,7 @@ function ensureRawUrl(urlStr) {
     newProfileSubmit.textContent = "Creating…";
     newProfileNote.textContent = "";
     try {
-      await doCreateProfile(currentGame.gameId, currentGame.gameName, currentGame.twitchSlug || currentGame.gameId, profileId, rawName);
+      await doCreateProfile(currentGame.gameId, currentGame.gameName, currentGame.legacyTwitchSlug || currentGame.twitchSlug || currentGame.gameId, profileId, rawName);
       newProfileForm.style.display = "none";
       newProfileNote.textContent = "";
     } catch (err) {
@@ -287,7 +330,7 @@ function ensureRawUrl(urlStr) {
     const localAdditions = stored[LOCAL_CATALOG_KEY] || [];
     let localGame = localAdditions.find(g => g.gameId === gameId);
     if (!localGame) {
-      localGame = { gameId, gameName, twitchSlug, profiles: [] };
+      localGame = { gameId, gameName, legacyTwitchSlug: twitchSlug, profiles: [] };
       localAdditions.push(localGame);
     }
     if (!localGame.profiles.find(p => p.id === data.profileId)) localGame.profiles.push(newProf);
@@ -298,7 +341,7 @@ function ensureRawUrl(urlStr) {
     if (game) {
       if (!game.profiles.find(p => p.id === data.profileId)) game.profiles.push(newProf);
     } else {
-      game = { gameId, gameName, twitchSlug, profiles: [newProf] };
+      game = { gameId, gameName, legacyTwitchSlug: twitchSlug, profiles: [newProf] };
       CATALOG.push(game);
       const opt = document.createElement("option");
       opt.value = gameId; opt.textContent = gameName; opt.selected = true;

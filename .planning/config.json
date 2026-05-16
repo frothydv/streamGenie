@@ -1,0 +1,15 @@
+{
+  "mode": "yolo",
+  "granularity": "standard",
+  "parallelization": false,
+  "commit_docs": true,
+  "model_profile": "inherit",
+  "workflow": {
+    "research": true,
+    "plan_check": false,
+    "verifier": false,
+    "nyquist_validation": true,
+    "auto_advance": true,
+    "_auto_chain_active": false
+  }
+}

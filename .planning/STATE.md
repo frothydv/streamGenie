@@ -3,11 +3,11 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: Executing Phase 02
-last_updated: "2026-05-16T15:10:46.876Z"
+last_updated: "2026-05-16T15:18:56.880Z"
 progress:
   total_phases: 4
   completed_phases: 0
-  total_plans: 1
+  total_plans: 2
   completed_plans: 0
 ---
 
@@ -18,7 +18,7 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-16)
 
 **Core value:** The extension loads and annotations work on any YouTube video page, with sensible fallback game detection that the viewer can override.
-**Current focus:** Phase 2 — YouTube-Aware Content Script
+**Current focus:** Phase 3 — Game Detection
 
 ## Current Phase
 
@@ -26,27 +26,25 @@ See: .planning/PROJECT.md (updated 2026-05-16)
 |---|-------|--------|-------|----------|
 | 1 | Platform Setup | ✓ | 1/1 | 100% |
 | 2 | YouTube-Aware Content Script | ✓ | 1/1 | 100% |
-| 3 | Game Detection | ⬜ | 0/1 | 0% |
+| 3 | Game Detection | ▶ | 1/1 | 0% |
 | 4 | Popup & Testing | ⬜ | 0/1 | 0% |
 
 ## Current Phase Work
 
-**Phase 2: YouTube-Aware Content Script** — Content script runs on YouTube without errors, discovers video, handles coordinate math, skips Twitch-specific logic
+**Phase 3: Game Detection** — Title-based game detection from YouTube video pages. Fuzzy match video title against catalog game names; auto-select matched profile or fall back to manual catalog selection.
 
-## Phase 2 (02-PLAN.md) ✓
+## Phase 3 (03-PLAN.md) ▶
 
-**All 5 tasks complete:**
+**Tasks:**
 
-1. Added `PLATFORM` constant + updated top-level comment ✓
-2. Guarded Twitch-specific calls in heartbeat with `if (PLATFORM === "twitch")` ✓
-3. Manual test: YouTube video discovery confirmed in Chrome ✓
-4. Manual test: coordinate math confirmed correct on YouTube ✓
-5. Created `phase2-youtube-content-script.spec.js` with 5 e2e tests ✓
+1. Add `detectYouTubeGame()` to content.js + update `"get-game"` message handler ✓
+2. Update popup tab detection for YouTube + send `"get-game"` on YouTube ✓
+3. Add `fuzzyMatchTitle()` + YouTube fuzzy matching in popup ✓
+4. Rename `twitchSlug` → `legacyTwitchSlug` with backward compat ✓
+5. Manual test: verify game detection on YouTube VOD (user action)
 
-**Key insight confirmed:** Only `heartbeat()` needed changes (3 guard conditions). Everything else was already platform-agnostic.
-
-**Blockers:** Playwright tests can't run in WSL (missing libnspr4.so), but manual Chrome test confirmed everything works.
+**Blockers:** Same Playwright/libnspr4 issue — manual Chrome test needed.
 
 ## Next
 
-Phase 3: Game Detection — title-based game detection from YouTube video pages.
+Manual test on YouTube VOD, then Phase 4: Popup & Testing.

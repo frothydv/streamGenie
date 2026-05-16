@@ -125,6 +125,22 @@
     console.log(`[overlay/content] game detected: "${name}" (${slug})`);
   }
 
+  function detectYouTubeGame() {
+    // Extract video title from YouTube's DOM. Priority: <h1> element -> document.title.
+    // The video title is used by the popup for fuzzy matching against catalog game names.
+    const titleEl = document.querySelector('h1 yt-formatted-string');
+    if (titleEl) {
+      const title = titleEl.textContent.trim();
+      if (title) return title;
+    }
+    // Fallback: parse from document.title ("Video Title - YouTube")
+    const docTitle = document.title;
+    if (docTitle && docTitle.endsWith(' - YouTube')) {
+      return docTitle.slice(0, -' - YouTube'.length);
+    }
+    return null;
+  }
+
   async function maybeShowFirstRunHint() {
     if (firstRunHintDone) return;
     firstRunHintDone = true;
@@ -3552,7 +3568,14 @@
         sendResponse({ ok: false, error: "No video or editor open" });
       }
     }
-    if (msg && msg.type === "get-game") { sendResponse({ game: detectedGame, profileLoadError: profileLoadError, profileStaleWarning: profileStaleWarning }); }
+    if (msg && msg.type === "get-game") {
+      if (PLATFORM === "youtube") {
+        const videoTitle = detectYouTubeGame();
+        sendResponse({ game: null, videoTitle: videoTitle, profileLoadError: profileLoadError, profileStaleWarning: profileStaleWarning });
+      } else {
+        sendResponse({ game: detectedGame, profileLoadError: profileLoadError, profileStaleWarning: profileStaleWarning });
+      }
+    }
     if (msg && msg.type === "review-proposal") {
       if (!editorModalOpen) {
         const { proposal, gameId, profileId, contributorCode } = msg;
