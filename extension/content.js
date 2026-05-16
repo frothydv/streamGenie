@@ -1,4 +1,4 @@
-// Content script. Runs in the context of twitch.tv pages.
+// Content script. Runs in the context of Twitch or YouTube pages.
 
 (function () {
   if (window.__streamOverlayLoaded) {
@@ -8,6 +8,8 @@
   window.__streamOverlayLoaded = true;
 
   console.log("[overlay/content] loaded on", location.href);
+
+  const PLATFORM = location.hostname.includes("youtube.com") ? "youtube" : "twitch";
 
   // --- Config ---------------------------------------------------------------
 
@@ -306,17 +308,21 @@
 
   let lastKnownVideoDims = "";
   function heartbeat() {
-    // SPA navigation — Twitch navigates client-side; reset detection on URL change.
+    // SPA navigation — Twitch/YouTube navigate client-side; reset detection on URL change.
     if (location.href !== lastUrl) {
       lastUrl = location.href;
       detectedGame = null;
-      enableTwitchExtensions();
-      extensionInterferenceState = "unknown";
-      lastExtCount = 0;
-      if (extensionToggleUI) { extensionToggleUI.remove(); extensionToggleUI = null; }
+      if (PLATFORM === "twitch") {
+        enableTwitchExtensions();
+        extensionInterferenceState = "unknown";
+        lastExtCount = 0;
+        if (extensionToggleUI) { extensionToggleUI.remove(); extensionToggleUI = null; }
+      }
     }
-    detectTwitchGame();
-    maybeShowExtensionWarning();
+    if (PLATFORM === "twitch") {
+      detectTwitchGame();
+      maybeShowExtensionWarning();
+    }
 
     const { video, total, visible } = findBestVideo();
     window.__streamOverlayStats = { total, visible, attached: !!currentVideo };

@@ -12,6 +12,9 @@ const EXT_PATH = path.resolve(__dirname, '../../extension');
 const FIXTURE_PAGE = fs.readFileSync(
   path.join(__dirname, 'fixtures/twitch-page.html'), 'utf8'
 );
+const YT_FIXTURE_PAGE = fs.readFileSync(
+  path.join(__dirname, 'fixtures/youtube-page.html'), 'utf8'
+);
 
 // The DEFAULT_PROFILE URL in content.js — intercepted in tests.
 const PROFILE_URL =
@@ -60,22 +63,11 @@ async function launchWithExtension(userDataDir) {
 }
 
 /**
- * Open a Twitch-like test page at https://www.twitch.tv/teststream.
- * The content script injects because the URL matches https://*.twitch.tv/*.
- *
- * profileResponse:
- *   object       → fulfilled with that JSON (valid or malformed profile)
- *   'fail'       → network abort (CDN completely unreachable, no cache)
- *   'stale-fail' → network abort (CDN unreachable; caller should seed localStorage cache first)
+ * Set up route interception for the profile CDN request.
+ * Shared helper used by both Twitch and YouTube page openers.
  */
-async function openTestPage(context, profileResponse) {
-  const page = await context.newPage();
-
-  await page.route('https://www.twitch.tv/teststream', route =>
-    route.fulfill({ contentType: 'text/html', body: FIXTURE_PAGE })
-  );
-
-  await page.route('https://raw.githubusercontent.com/**', route => {
+function setupProfileRoute(page, profileResponse) {
+  return page.route('https://raw.githubusercontent.com/**', route => {
     // Content script adds a ?_cb=timestamp cache-buster — strip it before comparing.
     const requestBase = route.request().url().split('?')[0];
     if (requestBase === PROFILE_URL) {
@@ -92,8 +84,56 @@ async function openTestPage(context, profileResponse) {
       route.fulfill({ status: 200, body: '' });
     }
   });
+}
+
+/**
+ * Open a Twitch-like test page at https://www.twitch.tv/teststream.
+ * The content script injects because the URL matches https://*.twitch.tv/*.
+ *
+ * profileResponse:
+ *   object       → fulfilled with that JSON (valid or malformed profile)
+ *   'fail'       → network abort (CDN completely unreachable, no cache)
+ *   'stale-fail' → network abort (CDN unreachable; caller should seed localStorage cache first)
+ */
+async function openTestPage(context, profileResponse) {
+  const page = await context.newPage();
+
+  await page.route('https://www.twitch.tv/teststream', route =>
+    route.fulfill({ contentType: 'text/html', body: FIXTURE_PAGE })
+  );
+
+  await setupProfileRoute(page, profileResponse);
 
   await page.goto('https://www.twitch.tv/teststream');
+  return page;
+}
+
+/**
+ * Open a YouTube test page at https://www.youtube.com/watch?v=test123.
+ * The content script injects because the manifest matches https://*.youtube.com/*.
+ *
+ * profileResponse: same semantics as openTestPage.
+ *
+ * Use this when you don't need pre-navigation console listeners.
+ * For console-sensitive tests, create the page externally:
+ *
+ *   const page = await context.newPage();
+ *   const logs = [];
+ *   page.on('console', msg => logs.push(msg));
+ *   await page.route('https://www.youtube.com/watch?v=test123', ...);
+ *   await setupProfileRoute(page, profileResponse);
+ *   await page.goto('https://www.youtube.com/watch?v=test123');
+ */
+async function openYouTubeTestPage(context, profileResponse) {
+  const page = await context.newPage();
+
+  await page.route('https://www.youtube.com/watch?v=test123', route =>
+    route.fulfill({ contentType: 'text/html', body: YT_FIXTURE_PAGE })
+  );
+
+  await setupProfileRoute(page, profileResponse);
+
+  await page.goto('https://www.youtube.com/watch?v=test123');
   return page;
 }
 
@@ -157,7 +197,9 @@ module.exports = {
   PROFILE_WITH_BAD_TRIGGER,
   PROFILE_WITH_MISSING_TRIGGERS,
   launchWithExtension,
+  setupProfileRoute,
   openTestPage,
+  openYouTubeTestPage,
   getServiceWorker,
   showDebugPanel,
   seedProfileCache,

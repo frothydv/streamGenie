@@ -4,8 +4,8 @@
   },
   "scripts": {
     "test:grid-match": "node test-matching-node.js",
-    "test:e2e": "playwright test tests/e2e/error-states.spec.js",
-    "test:e2e:headed": "playwright test tests/e2e/error-states.spec.js --headed"
+    "test:e2e": "playwright test tests/e2e/",
+    "test:e2e:headed": "playwright test tests/e2e/ --headed"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0"
