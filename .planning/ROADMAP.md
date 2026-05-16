@@ -53,10 +53,10 @@ Plans:
   1. First-run banner includes a privacy statement: pixels processed locally, no data leaves device
   2. README / store-listing text documents all permissions used and why
 **Notes**: Privacy statement exists as a GitHub page (PRIV-02 partially addressed), but is not yet surfaced in the extension's first-run experience (PRIV-01 pending).
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 13-01: Privacy statement in first-run banner and README
+- [ ] 13-01-PLAN.md — Privacy link in first-run banner + README permissions table + STORE-LISTING.md
 
 ## Progress
 
@@ -65,4 +65,4 @@ Plans:
 | 10. Profile Curation UX | v1.0 Beta | — | ✅ Shipped | 2026-05-13 |
 | 11. Viewer Onboarding | v1.0 Beta | — | ✅ Shipped | 2026-05-13 |
 | 12. Error States | v1.0 Beta | 2/2 | Complete   | 2026-05-16 |
-| 13. Privacy & Disclosure | v1.0 Beta | 0/1 | Partial (GitHub page exists; not in extension) | - |
+| 13. Privacy & Disclosure | v1.0 Beta | 0/1 | In planning | - |
