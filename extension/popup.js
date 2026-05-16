@@ -125,6 +125,8 @@ function ensureRawUrl(urlStr) {
   // --- Detect game from content script ---
   let detectedSlug = null;
   let detectedName = null;
+  let contentProfileLoadError = null;
+  let contentProfileStaleWarning = null;
   if (currentTab && (currentTab.url || "").includes("twitch.tv")) {
     try {
       const resp = await new Promise((resolve) => {
@@ -134,6 +136,8 @@ function ensureRawUrl(urlStr) {
         });
       });
       if (resp?.game?.slug) { detectedSlug = resp.game.slug; detectedName = resp.game.name; }
+      contentProfileLoadError = resp?.profileLoadError || null;
+      contentProfileStaleWarning = resp?.profileStaleWarning || null;
     } catch (_) {}
   }
 
@@ -170,6 +174,16 @@ function ensureRawUrl(urlStr) {
   const newProfileCancel   = document.getElementById("new-profile-cancel");
   const newProfileNote     = document.getElementById("new-profile-note");
 
+  // --- Reflect content.js profile load errors in the popup near profile selector ---
+  if (contentProfileLoadError && applyNote) {
+    applyNote.textContent = `Profile failed to load: ${contentProfileLoadError}`;
+    applyNote.style.color = "#ff5c5c";
+    applyNote.style.display = "block";
+  } else if (contentProfileStaleWarning && applyNote) {
+    applyNote.textContent = "CDN unreachable — using cached profile";
+    applyNote.style.color = "#f5b000";
+    applyNote.style.display = "block";
+  }
 
   // Match detectedSlug against gameId OR twitchSlug (Twitch slugs often differ from our IDs).
   const catalogMatch = detectedSlug
