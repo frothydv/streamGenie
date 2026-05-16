@@ -32,3 +32,6 @@ workers/**/.wrangler/
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Extension secret config (contains SUBMIT_SECRET — do not commit)
+extension/config.js
