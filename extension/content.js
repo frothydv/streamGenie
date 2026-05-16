@@ -91,6 +91,7 @@
   let lastUrl = location.href;
   let firstRunHintDone = false;
   let profileLoadError = null; // null | string — set when profile fetch fails with no stale cache
+  let profileStaleWarning = null; // null | string — CDN unreachable but stale cache used
 
   // --- Extension Interference State ---
   let extensionToggleUI = null;
@@ -557,6 +558,7 @@
       localStorage.setItem(cKey, JSON.stringify({ ts: Date.now(), profile }));
       console.log("[overlay/content] profile: fetched from CDN (cache-busted)");
       profileLoadError = null;
+      profileStaleWarning = null;
       await applyProfile(profile, ap.url);
     } catch (err) {
       console.warn("[overlay/content] profile fetch failed:", err.message);
@@ -566,6 +568,7 @@
         if (cached) {
           console.warn("[overlay/content] profile: using stale cache");
           applyProfile(cached.profile, ap.url);
+          profileStaleWarning = err.message;
           usedStale = true;
         }
       } catch (_) {}
