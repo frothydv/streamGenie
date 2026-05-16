@@ -1,45 +1,42 @@
 {
   "version": "1.0",
-  "timestamp": "2026-05-16T14:20:19Z",
-  "phase": "12",
-  "phase_name": "error-states",
-  "phase_dir": ".planning/phases/12-error-states",
-  "plan": 2,
-  "task": "post-execution",
-  "total_tasks": 2,
-  "status": "paused",
+  "timestamp": "2026-05-16T14:40:01.885Z",
+  "phase": 1,
+  "phase_name": "Platform Setup",
+  "phase_dir": ".planning/phases/01-platform-setup",
+  "plan": 1,
+  "task": "complete",
+  "total_tasks": 1,
+  "status": "paused_between_phases",
   "completed_tasks": [
-    {"id": "12-01", "name": "CDN warning + get-game extension", "status": "done", "commit": "ea24287"},
-    {"id": "12-02", "name": "Schema validation + popup error note", "status": "done", "commit": "829537e"},
-    {"id": "review-fixes", "name": "Fix 4 code review warnings (WR-01 to WR-04)", "status": "done", "commit": "e8d19af"},
-    {"id": "e2e-tests", "name": "Playwright e2e test suite (6 tests)", "status": "done", "commit": "4de17ff"},
-    {"id": "test-debug", "name": "Fix 3 test failures (URL comparison, TTL, popup tab-query)", "status": "in_progress", "progress": "Fixes in uncommitted working tree — need one confirming test run"}
+    {"id": 1, "name": "Manifest changes — YouTube permissions", "status": "done", "commit": "bddad28"},
+    {"id": 2, "name": "Background.js — hotkey forwarding", "status": "done", "commit": "bddad28"},
+    {"id": 3, "name": "YouTube fixture page for Playwright", "status": "done", "commit": "bddad28"},
+    {"id": 4, "name": "Phase 1 e2e Playwright tests", "status": "done", "commit": "bddad28"}
   ],
   "remaining_tasks": [
-    {"id": "confirm-tests", "name": "Run npm run test:e2e and confirm 6/6 pass", "status": "not_started"},
-    {"id": "commit-test-fixes", "name": "Commit test fixes in working tree", "status": "not_started"},
-    {"id": "phase-complete", "name": "Mark phase 12 complete (user approval + gsd-sdk query phase.complete 12)", "status": "not_started"},
-    {"id": "claude-md-update", "name": "Update CLAUDE.md — remove error states from must-haves, note Playwright setup", "status": "not_started"}
+    {"id": "phase-2", "name": "Phase 2: YouTube-Aware Content Script", "status": "not_started"},
+    {"id": "phase-3", "name": "Phase 3: Game Detection", "status": "not_started"},
+    {"id": "phase-4", "name": "Phase 4: Popup & Testing", "status": "not_started"}
   ],
   "blockers": [
-    {"description": "Test 3 flaky (passes on retry) — uncommitted fix uses waitForFunction + old cache timestamp", "type": "technical", "workaround": "Fixes are in working tree; run test:e2e to confirm"},
-    {"description": "Phase 12 not marked complete — verification is human_needed, user must approve", "type": "human_action", "workaround": "Say 'approved' after tests pass"}
+    {"description": "Playwright tests cannot run: missing libnspr4.so (no sudo in WSL)", "type": "technical", "workaround": "Manual testing: load extension in Chrome, test on YouTube VOD"}
   ],
   "human_actions_pending": [
-    {"action": "Run npm run test:e2e and confirm 6/6 pass", "context": "Tests have uncommitted fixes that should resolve flakiness", "blocking": true},
-    {"action": "Say 'approved' to trigger phase.complete 12", "context": "Verification returned human_needed; Playwright tests are the proxy for human sign-off", "blocking": true}
+    {"action": "Run Phase 1 e2e tests in environment with system deps", "context": "Tests exist at tests/e2e/phase1-youtube.spec.js but need libnspr4.so to launch Chromium", "blocking": false}
   ],
   "decisions": [
-    {"decision": "profileStaleWarning and profileLoadError are mutually exclusive per fetch attempt", "rationale": "Stale path sets warning only; no-cache path sets error only — avoids double indicators", "phase": "12"},
-    {"decision": "profileTriggersStructureError bool introduced for not-an-array case", "rationale": "Separate from per-trigger schema warnings to give accurate panel message", "phase": "12"},
-    {"decision": "Playwright test 4 sends get-game directly via service worker", "rationale": "chrome.tabs.query({ active:true }) returns popup itself after popup opens — bypass needed", "phase": "12"}
+    {"decision": "Branch: m10-youtube-support", "rationale": "Isolated work, don't disrupt main", "phase": "0"},
+    {"decision": "Game detection: title scan + manual fallback", "rationale": "YouTube has no game category; simplest approach that works", "phase": "0"},
+    {"decision": "Rename twitchSlug to legacyTwitchSlug in catalog", "rationale": "Cleaner model when games span platforms", "phase": "0"},
+    {"decision": "Skip Twitch extension interference code on YouTube", "rationale": "YouTube doesn't have equivalent extension iframes", "phase": "0"},
+    {"decision": "Use PLATFORM constant derived from location.hostname", "rationale": "Simple branching for platform-specific code", "phase": "2"},
+    {"decision": "No channel-based creator config for YouTube v1", "rationale": "Deferred; title matching + manual covers our use case", "phase": "0"}
   ],
   "uncommitted_files": [
-    "tests/e2e/error-states.spec.js",
-    "tests/e2e/helpers.js",
-    ".planning/STATE.md",
-    ".claude/settings.local.json"
+    ".planning/config.json",
+    "test-results/"
   ],
-  "next_action": "Run npm run test:e2e — should show 6/6 passing with uncommitted fixes. If clean, commit and say approved.",
-  "context_notes": "Phase 12 is functionally complete. The only open item is confirming the Playwright tests pass 6/6 and then doing the administrative phase completion. CLAUDE.md still lists error states as a must-have — needs one-paragraph update."
+  "next_action": "Plan Phase 2: Read content.js, identify all Twitch-specific code paths, add platform guards, ensure YouTube video/coordinate support",
+  "context_notes": "Pixel pipeline (capture → dHash → match → popup) already platform-agnostic. Twitch-specific code is limited to detectTwitchGame(), detectTwitchExtensions()/disableTwitchExtensions(), and popup URL checks. All can be platform-guarded with PLATFORM constant. Key risk: clientToVideoCoords() letterbox math uses object-fit: contain which YouTube doesn't use."
 }
