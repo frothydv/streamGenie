@@ -16,13 +16,13 @@ chrome.commands.onCommand.addListener(async (command) => {
   if (command === "capture-trigger") {
     // Forward to the active Twitch tab, if any.
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tab && tab.url && tab.url.includes("twitch.tv")) {
+    if (tab && tab.url && (tab.url.includes("twitch.tv") || tab.url.includes("youtube.com"))) {
       chrome.tabs.sendMessage(tab.id, { type: "capture-trigger" }).catch((err) => {
         // Content script may not be loaded on this page; that's fine for now.
         console.log("[overlay/bg] no listener in tab:", err.message);
       });
     } else {
-      console.log("[overlay/bg] active tab is not Twitch; ignoring hotkey");
+      console.log("[overlay/bg] active tab is not Twitch or YouTube; ignoring hotkey");
     }
   }
 });

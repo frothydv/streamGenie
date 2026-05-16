@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Test Video - YouTube</title>
+</head>
+<body>
+  <!--
+    Minimal YouTube-like page served at https://www.youtube.com/watch?v=test123 by Playwright.
+    The extension's content script injects on https://*.youtube.com/* so it fires here.
+    Elements below satisfy content.js video discovery and provide a video title for game detection.
+  -->
+
+  <!-- Video title: content.js reads this for game detection -->
+  <div id="title">
+    <h1>
+      <yt-formatted-string class="ytd-video-primary-info-renderer">
+        Slay the Spire 2 — First Impressions Gameplay
+      </yt-formatted-string>
+    </h1>
+  </div>
+
+  <!-- Video element: content.js calls findBestVideo() to locate this -->
+  <video id="test-video"
+         class="html5-main-video"
+         style="display:block;width:960px;height:540px;background:#111"
+         width="960" height="540"
+         muted autoplay playsinline>
+  </video>
+
+  <script>
+    // Give the video non-zero dimensions so findBestVideo() picks it up.
+    // YouTube replaces the video element on SPA navigation so we emulate that.
+    const vid = document.getElementById('test-video');
+    Object.defineProperty(vid, 'videoWidth',  { get: () => 960, configurable: true });
+    Object.defineProperty(vid, 'videoHeight', { get: () => 540, configurable: true });
+  </script>
+</body>
+</html>

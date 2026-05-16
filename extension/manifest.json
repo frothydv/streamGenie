@@ -9,6 +9,7 @@
   ],
   "host_permissions": [
     "https://*.twitch.tv/*",
+    "https://*.youtube.com/*",
     "https://cdn.jsdelivr.net/*",
     "https://raw.githubusercontent.com/*",
     "https://*.workers.dev/*"
@@ -18,7 +19,7 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://*.twitch.tv/*"],
+      "matches": ["https://*.twitch.tv/*", "https://*.youtube.com/*"],
       "js": ["config.js", "matcher-core.js", "content.js"],
       "run_at": "document_idle"
     }
@@ -39,7 +40,7 @@
   "web_accessible_resources": [
     {
       "resources": ["references/*.png"],
-      "matches": ["https://*.twitch.tv/*"]
+      "matches": ["https://*.twitch.tv/*", "https://*.youtube.com/*"]
     }
   ],
   "icons": {
