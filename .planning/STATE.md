@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: Beta
-status: Ready to execute
-stopped_at: Phase 13 planned — 1 plan ready
+status: Complete
+stopped_at: Phase 13 complete — all v1.0 Beta phases shipped
 last_updated: "2026-05-16T15:00:00.000Z"
 last_activity: 2026-05-16
 progress:
   total_phases: 2
   completed_phases: 1
   total_plans: 3
-  completed_plans: 2
-  percent: 67
+  completed_plans: 3
+  percent: 100
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: CLAUDE.md (last updated 2026-05-13)
 
 **Core value:** Any viewer can hover over anything on a Twitch stream and see an explanation — no streamer setup required.
-**Current focus:** Phase 13 — Privacy & Permissions Disclosure
+**Current focus:** v1.0 Beta complete — all phases shipped
 
 ## Current Position
 
-Phase: 13 of 13 (Privacy & Permissions Disclosure)
-Status: Ready to execute — 1 plan in 1 wave
+Phase: 13 of 13 (Privacy & Permissions Disclosure) — COMPLETE
+Status: All v1.0 Beta phases shipped
 Last activity: 2026-05-16
 
 Phase 12 (Error States) complete — 6/6 Playwright e2e tests passing, all error indicators shipped.
-Phase 13 planning complete — 1 plan (13-01): privacy link in banner + README permissions table + STORE-LISTING.md.
+Phase 13 (Privacy & Disclosure) complete — privacy link in banner, README permissions table, STORE-LISTING.md all verified.
 
 Progress: [██████████] 100%
 

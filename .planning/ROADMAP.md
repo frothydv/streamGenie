@@ -8,7 +8,7 @@ Stream Genie is a browser extension at v0.9.2, all core milestones shipped (M1�
 
 - ✅ **v0.9 Core** — Phases 1–9 (shipped, all matching/contribution/rotation features complete)
 - ✅ **v1.0 Beta (partial)** — Phases 10–11 (shipped — curation UX and viewer onboarding complete)
-- 🚧 **v1.0 Beta (remaining)** — Phases 12–13 (in progress — error states and privacy disclosure)
+- ✅ **v1.0 Beta (remaining)** — Phases 12–13 (complete — error states and privacy disclosure)
 
 ## Phases
 
@@ -45,7 +45,7 @@ Plans:
 - [x] 12-01-PLAN.md — CDN unreachable warning (stale-cache amber) + get-game response extension
 - [x] 12-02-PLAN.md — Schema validation in applyProfile + popup error-state note
 
-#### Phase 13: Privacy & Permissions Disclosure
+#### ✅ Phase 13: Privacy & Permissions Disclosure — COMPLETE
 **Goal**: The extension's store listing and first-run experience clearly state that pixels are read locally and nothing leaves the device, satisfying Chrome Web Store review requirements and user trust expectations.
 **Depends on**: Phase 11 (first-run banner is the delivery vehicle for disclosure)
 **Requirements**: PRIV-01, PRIV-02
@@ -56,7 +56,7 @@ Plans:
 **Plans**: 1 plan
 
 Plans:
-- [ ] 13-01-PLAN.md — Privacy link in first-run banner + README permissions table + STORE-LISTING.md
+- [x] 13-01-PLAN.md — Privacy link in first-run banner + README permissions table + STORE-LISTING.md
 
 ## Progress
 
@@ -65,4 +65,4 @@ Plans:
 | 10. Profile Curation UX | v1.0 Beta | — | ✅ Shipped | 2026-05-13 |
 | 11. Viewer Onboarding | v1.0 Beta | — | ✅ Shipped | 2026-05-13 |
 | 12. Error States | v1.0 Beta | 2/2 | Complete   | 2026-05-16 |
-| 13. Privacy & Disclosure | v1.0 Beta | 0/1 | In planning | - |
+| 13. Privacy & Disclosure | v1.0 Beta | 1/1 | ✅ Complete | 2026-05-16 |
