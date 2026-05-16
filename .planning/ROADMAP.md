@@ -42,8 +42,8 @@ Milestones 1–9 are complete: hello-world, hover detection, capture mode, perce
 **Plans**: 2 plans
 
 Plans:
-- [ ] 12-01-PLAN.md — CDN unreachable warning (stale-cache amber) + get-game response extension
-- [ ] 12-02-PLAN.md — Schema validation in applyProfile + popup error-state note
+- [x] 12-01-PLAN.md — CDN unreachable warning (stale-cache amber) + get-game response extension
+- [x] 12-02-PLAN.md — Schema validation in applyProfile + popup error-state note
 
 #### Phase 13: Privacy & Permissions Disclosure
 **Goal**: The extension's store listing and first-run experience clearly state that pixels are read locally and nothing leaves the device, satisfying Chrome Web Store review requirements and user trust expectations.
@@ -64,5 +64,5 @@ Plans:
 |-------|-----------|----------------|--------|-----------|
 | 10. Profile Curation UX | v1.0 Beta | — | ✅ Shipped | 2026-05-13 |
 | 11. Viewer Onboarding | v1.0 Beta | — | ✅ Shipped | 2026-05-13 |
-| 12. Error States | v1.0 Beta | 0/2 | Not started | - |
+| 12. Error States | v1.0 Beta | 2/2 | Complete   | 2026-05-16 |
 | 13. Privacy & Disclosure | v1.0 Beta | 0/1 | Partial (GitHub page exists; not in extension) | - |
