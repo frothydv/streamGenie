@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Test Stream - Twitch</title>
+</head>
+<body>
+  <!--
+    Minimal Twitch-like page served at https://www.twitch.tv/teststream by Playwright.
+    The extension's content script injects on https://*.twitch.tv/* so it fires here.
+    Elements below satisfy content.js game detection and video discovery.
+  -->
+
+  <!-- Game detection: content.js reads the href slug from this element -->
+  <a data-a-target="stream-game-link" href="/directory/game/slay-the-spire-ii">Slay the Spire II</a>
+
+  <!-- Video element: content.js calls findBestVideo() to locate this -->
+  <video id="test-video"
+         style="display:block;width:640px;height:360px;background:#111"
+         width="640" height="360"
+         muted autoplay playsinline>
+  </video>
+
+  <script>
+    // Give the video non-zero dimensions so findBestVideo() picks it up.
+    // Real Twitch streams from HLS; we just need the element to have clientWidth/clientHeight.
+    const vid = document.getElementById('test-video');
+    Object.defineProperty(vid, 'videoWidth',  { get: () => 640, configurable: true });
+    Object.defineProperty(vid, 'videoHeight', { get: () => 360, configurable: true });
+  </script>
+</body>
+</html>
