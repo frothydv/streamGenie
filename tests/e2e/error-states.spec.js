@@ -43,7 +43,12 @@ test('CDN unreachable with stale cache shows amber debug panel warning', async (
     await page.reload();
 
     await showDebugPanel(context, page);
-    await waitForProfileCycle(page);
+    // Stale-cache path applies the cached profile (sets refs:) then fires CDN fetch which fails.
+    // waitForProfileCycle exits on 'refs:' before profileStaleWarning is set — use explicit waiter.
+    await page.waitForFunction(
+      () => document.getElementById('stream-overlay-debug')?.innerText.includes('CDN unreachable'),
+      { timeout: 8000 }
+    );
 
     const debugText = await page.locator('#stream-overlay-debug').innerText();
 
@@ -62,7 +67,11 @@ test('CDN unreachable with no cache shows red profile error in debug panel', asy
   try {
     const page = await openTestPage(context, 'fail');
     await showDebugPanel(context, page);
-    await waitForProfileCycle(page);
+    // 'refs: 0/0' renders before the async CDN fail sets profileLoadError — use explicit waiter.
+    await page.waitForFunction(
+      () => document.getElementById('stream-overlay-debug')?.innerText.includes('profile error'),
+      { timeout: 8000 }
+    );
 
     const debugText = await page.locator('#stream-overlay-debug').innerText();
 
