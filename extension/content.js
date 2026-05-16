@@ -92,6 +92,7 @@
   let firstRunHintDone = false;
   let profileLoadError = null; // null | string — set when profile fetch fails with no stale cache
   let profileStaleWarning = null; // null | string — CDN unreachable but stale cache used
+  let profileSchemaWarnings = []; // string[] — IDs of triggers skipped due to invalid schema
 
   // --- Extension Interference State ---
   let extensionToggleUI = null;
@@ -501,6 +502,28 @@
 
   async function applyProfile(profile, sourceUrl) {
     const ap = activeProfile || DEFAULT_PROFILE;
+
+    // --- Schema validation (ERR-03) ---
+    profileSchemaWarnings = [];
+    if (!Array.isArray(profile.triggers)) {
+      profileSchemaWarnings.push("triggers is not an array");
+      profile.triggers = [];
+    } else {
+      profile.triggers = profile.triggers.filter(t => {
+        const idOk = typeof t.id === "string" && t.id.length > 0;
+        const refsOk = Array.isArray(t.references) && t.references.length > 0 &&
+          t.references.every(r => typeof r.file === "string" && typeof r.w === "number" && typeof r.h === "number");
+        if (!idOk || !refsOk) {
+          profileSchemaWarnings.push(idOk ? t.id : "(unknown)");
+          return false;
+        }
+        return true;
+      });
+    }
+    if (profileSchemaWarnings.length > 0) {
+      console.warn(`[overlay/content] schema: ${profileSchemaWarnings.length} trigger(s) skipped — invalid schema: ${profileSchemaWarnings.join(", ")}`);
+    }
+
     const profileIdSet = new Set(profile.triggers.map(t => t.id));
     TRIGGERS = profile.triggers.map(t => ({ ...t, source: "profile" }));
 
@@ -2640,6 +2663,9 @@
     }
     if (profileStaleWarning) {
       lines.push(`<span style="color:#f5b000">WARNING CDN unreachable — using cached profile (${profileStaleWarning})</span>`);
+    }
+    if (profileSchemaWarnings && profileSchemaWarnings.length > 0) {
+      lines.push(`<span style="color:#f5b000">${profileSchemaWarnings.length} trigger(s) skipped — invalid schema: ${profileSchemaWarnings.join(", ")}</span>`);
     }
     if (!currentVideo) {
       lines.unshift(`<span style="color:#f5b000">no video</span>`);
