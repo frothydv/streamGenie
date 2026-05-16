@@ -78,4 +78,37 @@ assert(popupJs.includes('url.searchParams.set("_cb", Date.now())'), 'popup.js mu
 assert(popupJs.includes('cache: "no-store"'), 'popup.js must use cache: "no-store"');
 console.log('✓ Cache-busting implemented in popup.js');
 
+// 6. Phase 4: YouTube popup polish — non-video message
+console.log('\nCheck 6: Phase 4 — Non-video status message');
+assert(popupJs.includes('Not a video/stream page.'), 'popup.js must show "Not a video/stream page." on non-video pages');
+assert(!popupJs.includes('Not on Twitch or YouTube'), 'popup.js must NOT contain old "Not on Twitch or YouTube" string');
+console.log('✓ Non-video message updated');
+
+// 7. Phase 4: Game name in detected badge with [change] link
+console.log('\nCheck 7: Phase 4 — Detected badge shows game name + [change]');
+const badgePattern = /🔍 Detected: \$\{catalogMatch\.gameName\}.*\[change\]/;
+assert(badgePattern.test(popupJs), 'popup.js must show game name with [change] link in detected badge');
+console.log('✓ Detected badge includes game name and change link');
+
+// 8. Phase 4: No-detection toast
+console.log('\nCheck 8: Phase 4 — No-detection toast');
+const popupHtml = fs.readFileSync(path.join(__dirname, '../extension/popup.html'), 'utf8');
+assert(popupJs.includes('function showNoDetectionToast'), 'popup.js must define showNoDetectionToast()');
+assert(popupHtml.includes('No profile detected'), 'popup.html toast must reference "No profile detected"');
+assert(popupJs.includes('gameSelect.focus()'), 'popup.js toast "select one" link must focus game select');
+console.log('✓ No-detection toast implemented');
+
+// 9. Phase 4: Placeholder dropdown option
+console.log('\nCheck 9: Phase 4 — Placeholder option in game select');
+assert(popupJs.includes('-- Select a game --'), 'popup.js must have a "-- Select a game --" placeholder option');
+assert(popupJs.includes('catalogMatch ? catalogMatch.gameId : null'), 'popup.js must default selectedGameId to null on no match');
+console.log('✓ Placeholder option present, no pre-selection on no match');
+
+// 10. Phase 4: Toast element in HTML
+console.log('\nCheck 10: Phase 4 — Toast HTML element');
+assert(popupHtml.includes('no-detection-toast'), 'popup.html must have a no-detection-toast element');
+assert(popupHtml.includes('select one'), 'popup.html toast must have "select one" link');
+assert(popupHtml.includes('build your own'), 'popup.html toast must have "build your own" link');
+console.log('✓ Toast element present in popup.html');
+
 console.log('\n🎉 ALL STATIC ANALYSIS CHECKS PASSED!');

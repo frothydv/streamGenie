@@ -3,12 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: Executing Phase 02
-last_updated: "2026-05-16T18:04:04.630Z"
+stopped_at: Phase 4 complete — all implementation done
+last_updated: "2026-05-16T23:24:59.427Z"
 progress:
   total_phases: 4
-  completed_phases: 0
-  total_plans: 2
-  completed_plans: 0
+  completed_phases: 2
+  total_plans: 4
+  completed_plans: 2
 ---
 
 # STATE.md
@@ -18,7 +19,7 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-16)
 
 **Core value:** The extension loads and annotations work on any YouTube video page, with sensible fallback game detection that the viewer can override.
-**Current focus:** Phase 3 — Game Detection
+**Current focus:** All phases complete — ready for manual testing
 
 ## Current Phase
 
@@ -27,30 +28,40 @@ See: .planning/PROJECT.md (updated 2026-05-16)
 | 1 | Platform Setup | ✓ | 1/1 | 100% |
 | 2 | YouTube-Aware Content Script | ✓ | 1/1 | 100% |
 | 3 | Game Detection | ✓ | 1/1 | 100% |
-| 4 | Popup & Testing | ⬜ | 0/1 | 0% |
+| 4 | Popup & Testing | ✓ | 1/1 | 100% |
 
-## Current Phase Work
+## Phase 4 (04-SUMMARY.md) ✓
 
-**Phase 3: Game Detection** — Title-based game detection from YouTube video pages. Fuzzy match video title against catalog game names; auto-select matched profile or fall back to manual catalog selection.
+**5 tasks complete:**
 
-## Phase 3 (03-PLAN.md) ✓
+1. Status message: "Not on Twitch or YouTube." → "Not a video/stream page." ✓
+2. Detected badge shows game name + [change] link ✓
+3. No-detection toast modal (auto-dismisses 3s) ✓
+4. No pre-selected game dropdown on no-detection ✓
+5. Toast links wired (select one → focus dropdown, build your own → open profile form) ✓
 
-**All 5 tasks complete:**
+**Key decisions from Phase 4:**
 
-1. Add `detectYouTubeGame()` to content.js + update `"get-game"` message handler ✓
-2. Update popup tab detection for YouTube + send `"get-game"` on YouTube ✓
-3. Add `fuzzyMatchTitle()` + YouTube fuzzy matching in popup ✓
-4. Rename `twitchSlug` → `legacyTwitchSlug` with backward compat ✓
-5. Manual test: user confirmed YouTube game detection works ✓
+- Toast is transient (3s auto-dismiss) but interactive while visible
+- Change link uses `requestAnimationFrame` guard for dynamically-inserted DOM element
+- No pre-selected game on no-detection applies to both Twitch and YouTube
+- `selectedGameId` defaults to `null` instead of `active.gameId` when no match
 
-**Key decisions:**
+## All Phases Complete
 
-- Fuzzy matching is client-side only (no cloud calls) — scores title vs gameName by substring match + word overlap, threshold 0.4
-- `legacyTwitchSlug` renamed from `twitchSlug` with CDN backward compat (reads new field first, falls back to old)
-- Catalog match checks `gameId`, `legacyTwitchSlug`, AND `twitchSlug` for full transition period
+This milestone (YouTube Support v1) is fully implemented:
 
-**Blockers:** Playwright e2e tests can't run in WSL (missing libnspr4.so, no sudo)
+| | Phase | Key deliverables |
+|---|-------|-----------------|
+| 1 | Platform Setup | manifest.json permissions, background.js hotkey, e2e fixture |
+| 2 | YouTube-Aware Content Script | PLATFORM constant, guarded heartbeat, video discovery |
+| 3 | Game Detection | `detectYouTubeGame()`, `fuzzyMatchTitle()`, `legacyTwitchSlug` rename |
+| 4 | Popup & Testing | YouTube status, detected badge, no-detection toast, non-video message |
 
-## Next
+**Remaining:** Manual testing in Chrome (see test instructions in .continue-here.md)
 
-Phase 4: Popup & Testing — polish popup YouTube integration, ensure fallback works, e2e test updates.
+## Session Continuity
+
+Last session: 2026-05-16
+Stopped at: Phase 4 complete — all implementation done
+Resume action: Manual testing in Chrome

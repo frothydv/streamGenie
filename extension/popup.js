@@ -58,7 +58,7 @@ function ensureRawUrl(urlStr) {
       statusEl.textContent = "Active on YouTube: " + (v ? "/watch?v=" + v : ytUrl.pathname);
     } else {
       statusEl.className = "status off";
-      statusEl.textContent = "Not on Twitch or YouTube.";
+      statusEl.textContent = "Not a video/stream page.";
     }
   } catch (err) {
     statusEl.className = "status off";
@@ -232,7 +232,14 @@ function ensureRawUrl(urlStr) {
   const catalogMatch = detectedSlug
     ? CATALOG.find(g => g.gameId === detectedSlug || g.legacyTwitchSlug === detectedSlug || g.twitchSlug === detectedSlug)
     : null;
-  const selectedGameId = catalogMatch ? catalogMatch.gameId : active.gameId;
+  const selectedGameId = catalogMatch ? catalogMatch.gameId : null;
+
+  // Add placeholder option when no game detected
+  const placeholderOpt = document.createElement("option");
+  placeholderOpt.value = "";
+  placeholderOpt.textContent = "-- Select a game --";
+  placeholderOpt.disabled = true;
+  gameSelect.appendChild(placeholderOpt);
 
   for (const game of CATALOG) {
     const opt = document.createElement("option");
@@ -244,12 +251,26 @@ function ensureRawUrl(urlStr) {
 
   // Show detected game badge, no-profile banner, or waiting hint.
   if (detectedSlug && catalogMatch) {
-    detectedEl.textContent = "✓ Auto-detected from stream";
+    detectedEl.innerHTML = `🔍 Detected: ${catalogMatch.gameName} ✓ <a href="#" id="detected-change-link" style="color:#9146ff;text-decoration:none;margin-left:4px;">[change]</a>`;
+    detectedEl.style.color = "#00f593";
     detectedEl.style.display = "block";
+
+    // Wire change link — clears auto-detection, lets user select manually
+    requestAnimationFrame(() => {
+      const changeLink = document.getElementById("detected-change-link");
+      if (changeLink) {
+        changeLink.addEventListener("click", (e) => {
+          e.preventDefault();
+          detectedEl.style.display = "none";
+          gameSelect.value = "";
+          rebuildProfileSelect();
+          showNoDetectionToast();
+        });
+      }
+    });
   } else if (!detectedSlug && currentTab && ((currentTab.url || "").includes("twitch.tv") || isYouTube)) {
-    detectedEl.textContent = "No game detected — browse to a live stream";
-    detectedEl.style.color = "#777";
-    detectedEl.style.display = "block";
+    showNoDetectionToast();
+    detectedEl.style.display = "none";
   } else if (detectedSlug && !catalogMatch) {
     const label = detectedName || detectedSlug;
     noProfileText.textContent = `"${label}" has no profile yet.`;
@@ -668,6 +689,44 @@ function ensureRawUrl(urlStr) {
   }
 
   // ---------------------------------------------------------------------------
+
+  // --- No-detection toast ---
+  function showNoDetectionToast() {
+    const toast = document.getElementById("no-detection-toast");
+    if (!toast) return;
+    toast.style.display = "block";
+
+    // Wire toast links (only once)
+    const selectLink = document.getElementById("toast-catalog-link");
+    if (selectLink && !selectLink.dataset.wired) {
+      selectLink.dataset.wired = "true";
+      selectLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        hideToast();
+        gameSelect.focus();
+      });
+    }
+    const createLink = document.getElementById("toast-create-link");
+    if (createLink && !createLink.dataset.wired) {
+      createLink.dataset.wired = "true";
+      createLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        hideToast();
+        const form = document.getElementById("new-profile-form");
+        if (form) form.style.display = "block";
+      });
+    }
+
+    function hideToast() {
+      toast.style.opacity = "0";
+      setTimeout(() => {
+        toast.style.display = "none";
+        toast.style.opacity = "1";
+      }, 500);
+    }
+
+    setTimeout(hideToast, 3000);
+  }
 
   // --- Contributor status ---
   async function renderContributorStatus() {

@@ -69,9 +69,9 @@
 ## STATE.md
 
 **Last updated:** 2026-05-16
-**Current phase:** 2
-**Completed phases:** 1 ✓
-**Completed requirements:** MAN-01, MAN-02, MAN-03, BG-01, TEST-03
+**Current phase:** 4 (complete)
+**Completed phases:** 4 ✓
+**Completed requirements:** MAN-01, MAN-02, MAN-03, BG-01, TEST-03, CONT-01-06, CONT-07, GAME-01-04, POP-01-05
 
 ### Phase 1: Platform Setup (✓)
 **Status:** Complete — committed bddad28
@@ -83,10 +83,12 @@
 **Deliverables:** PLATFORM constant, guarded heartbeat, e2e test spec
 **Blockers:** e2e tests can't run in WSL (libnspr4.so); manual Chrome test passed
 
-### Phase 3: Game Detection (○)
-**Status:** Not started
-**Blockers:** Phase 2
+### Phase 3: Game Detection (✓)
+**Status:** Complete — user-confirmed manual YouTube game detection
+**Deliverables:** `detectYouTubeGame()`, `fuzzyMatchTitle()`, `legacyTwitchSlug` rename
+**Decisions:** Client-side fuzzy matching (threshold 0.4), backward-compat with twitchSlug
 
-### Phase 4: Popup & Testing (○)
-**Status:** Not started
-**Blockers:** Phase 3
+### Phase 4: Popup & Testing (✓)
+**Status:** Complete — all code changes implemented
+**Deliverables:** Non-video message, detected badge with [change] link, no-detection toast, placeholder dropdown
+**Blockers:** Manual testing in Chrome pending (can't run in WSL)
