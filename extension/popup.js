@@ -4,7 +4,7 @@ const CATALOG_URL        = "https://raw.githubusercontent.com/frothydv/streamGen
 const PROFILES_REPO_BASE = "https://raw.githubusercontent.com/frothydv/streamGenieProfiles";
 const ACTIVE_PROFILE_KEY = "streamGenie_active_profile";
 const WORKER_URL         = "https://streamgenie-submit.vbjosh.workers.dev";
-const SUBMIT_SECRET      = "YorkshireTractorFactor";
+const SUBMIT_SECRET      = StreamGenieConfig.SUBMIT_SECRET;
 const LOCAL_CATALOG_KEY  = "streamGenie_local_catalog";
 const DEFAULT_PROFILE = {
   gameId:    "slay-the-spire-2",
@@ -125,6 +125,8 @@ function ensureRawUrl(urlStr) {
   // --- Detect game from content script ---
   let detectedSlug = null;
   let detectedName = null;
+  let contentProfileLoadError = null;
+  let contentProfileStaleWarning = null;
   if (currentTab && (currentTab.url || "").includes("twitch.tv")) {
     try {
       const resp = await new Promise((resolve) => {
@@ -134,6 +136,8 @@ function ensureRawUrl(urlStr) {
         });
       });
       if (resp?.game?.slug) { detectedSlug = resp.game.slug; detectedName = resp.game.name; }
+      contentProfileLoadError = resp?.profileLoadError || null;
+      contentProfileStaleWarning = resp?.profileStaleWarning || null;
     } catch (_) {}
   }
 
@@ -170,6 +174,16 @@ function ensureRawUrl(urlStr) {
   const newProfileCancel   = document.getElementById("new-profile-cancel");
   const newProfileNote     = document.getElementById("new-profile-note");
 
+  // --- Reflect content.js profile load errors in the popup near profile selector ---
+  if (contentProfileLoadError && applyNote) {
+    applyNote.textContent = `Profile failed to load: ${contentProfileLoadError}`;
+    applyNote.style.color = "#ff5c5c";
+    applyNote.style.display = "block";
+  } else if (contentProfileStaleWarning && applyNote) {
+    applyNote.textContent = "CDN unreachable — using cached profile";
+    applyNote.style.color = "#f5b000";
+    applyNote.style.display = "block";
+  }
 
   // Match detectedSlug against gameId OR twitchSlug (Twitch slugs often differ from our IDs).
   const catalogMatch = detectedSlug
@@ -364,8 +378,11 @@ function ensureRawUrl(urlStr) {
     active = { gameId: game.gameId, profileId: prof.id, name: prof.name, url: prof.url };
     await chrome.storage.local.set({ [ACTIVE_PROFILE_KEY]: active });
     if (unchanged) {
-      applyNote.textContent = "Already active.";
-      applyNote.style.color = "#adadb8";
+      // Don't clobber error/stale notes — "already active" isn't a state change
+      if (!contentProfileLoadError && !contentProfileStaleWarning) {
+        applyNote.textContent = "Already active.";
+        applyNote.style.color = "#adadb8";
+      }
     } else {
       applyNote.textContent = "Reload the Twitch page to activate.";
       applyNote.style.color = "#00f593";

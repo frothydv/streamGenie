@@ -3,6 +3,11 @@
     "pngjs": "^7.0.0"
   },
   "scripts": {
-    "test:grid-match": "node test-matching-node.js"
+    "test:grid-match": "node test-matching-node.js",
+    "test:e2e": "playwright test tests/e2e/error-states.spec.js",
+    "test:e2e:headed": "playwright test tests/e2e/error-states.spec.js --headed"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0"
   }
 }

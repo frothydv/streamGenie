@@ -19,7 +19,7 @@
   "content_scripts": [
     {
       "matches": ["https://*.twitch.tv/*"],
-      "js": ["matcher-core.js", "content.js"],
+      "js": ["config.js", "matcher-core.js", "content.js"],
       "run_at": "document_idle"
     }
   ],

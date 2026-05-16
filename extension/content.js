@@ -64,11 +64,10 @@
 
   // --- Worker config --------------------------------------------------------
   // Set WORKER_URL after deploying the Cloudflare Worker (`wrangler deploy`).
-  // SUBMIT_SECRET must match the SUBMIT_SECRET secret set on the Worker.
-  // NOTE: this secret is readable by anyone who unpacks the extension — acceptable
-  // for a dev build; use proper OAuth for a production release.
-  const WORKER_URL      = "https://streamgenie-submit.vbjosh.workers.dev";
-  const SUBMIT_SECRET   = "YorkshireTractorFactor";
+  // SUBMIT_SECRET is loaded from extension/config.js (gitignored) so it doesn't
+  // appear in the public repo. Rate limiting in the Worker is the real control.
+  const WORKER_URL    = "https://streamgenie-submit.vbjosh.workers.dev";
+  const SUBMIT_SECRET = StreamGenieConfig.SUBMIT_SECRET;
   const DEBUG_PANEL_KEY = "streamGenie_debugPanel";
 
   // Triggers populated from the loaded profile. Each entry mirrors the profile
@@ -91,6 +90,10 @@
   let detectedGame = null;  // { name, slug } scraped from Twitch category link
   let lastUrl = location.href;
   let firstRunHintDone = false;
+  let profileLoadError = null; // null | string — set when profile fetch fails with no stale cache
+  let profileStaleWarning = null; // null | string — CDN unreachable but stale cache used
+  let profileSchemaWarnings = []; // string[] — IDs of triggers skipped due to invalid schema
+  let profileTriggersStructureError = false; // true when profile.triggers is not an array at all
 
   // --- Extension Interference State ---
   let extensionToggleUI = null;
@@ -500,6 +503,30 @@
 
   async function applyProfile(profile, sourceUrl) {
     const ap = activeProfile || DEFAULT_PROFILE;
+
+    // --- Schema validation (ERR-03) ---
+    profileSchemaWarnings = [];
+    profileTriggersStructureError = false;
+    if (!Array.isArray(profile.triggers)) {
+      profileTriggersStructureError = true;
+      profile.triggers = [];
+      console.warn("[overlay/content] schema: profile.triggers is not an array — all triggers skipped");
+    } else {
+      profile.triggers = profile.triggers.filter(t => {
+        const idOk = typeof t.id === "string" && t.id.length > 0;
+        const refsOk = Array.isArray(t.references) && t.references.length > 0 &&
+          t.references.every(r => typeof r.file === "string" && typeof r.w === "number" && typeof r.h === "number");
+        if (!idOk || !refsOk) {
+          profileSchemaWarnings.push(idOk ? t.id : "(unknown)");
+          return false;
+        }
+        return true;
+      });
+    }
+    if (profileSchemaWarnings.length > 0) {
+      console.warn(`[overlay/content] schema: ${profileSchemaWarnings.length} trigger(s) skipped — invalid schema: ${profileSchemaWarnings.join(", ")}`);
+    }
+
     const profileIdSet = new Set(profile.triggers.map(t => t.id));
     TRIGGERS = profile.triggers.map(t => ({ ...t, source: "profile" }));
 
@@ -556,16 +583,26 @@
       const profile = await res.json();
       localStorage.setItem(cKey, JSON.stringify({ ts: Date.now(), profile }));
       console.log("[overlay/content] profile: fetched from CDN (cache-busted)");
+      profileLoadError = null;
+      profileStaleWarning = null;
       await applyProfile(profile, ap.url);
     } catch (err) {
       console.warn("[overlay/content] profile fetch failed:", err.message);
+      let usedStale = false;
       try {
         const cached = JSON.parse(localStorage.getItem(cKey) || "null");
         if (cached) {
           console.warn("[overlay/content] profile: using stale cache");
-          applyProfile(cached.profile, ap.url);
+          profileLoadError = null;
+          await applyProfile(cached.profile, ap.url);
+          profileStaleWarning = err.message;
+          usedStale = true;
         }
       } catch (_) {}
+      if (!usedStale) {
+        profileLoadError = err.message;
+        showToast(`Profile failed to load: ${err.message}`, "error");
+      }
     }
   }
 
@@ -2625,6 +2662,17 @@
     const lines = [
       `<span style="color:#adadb8">videos: ${stats.total}t ${stats.visible}v | refs: ${refsLoaded}/${refsTotal}</span>`,
     ];
+    if (profileLoadError) {
+      lines.push(`<span style="color:#ff5c5c">profile error: ${profileLoadError}</span>`);
+    }
+    if (profileStaleWarning) {
+      lines.push(`<span style="color:#f5b000">WARNING CDN unreachable — using cached profile (${profileStaleWarning})</span>`);
+    }
+    if (profileTriggersStructureError) {
+      lines.push(`<span style="color:#f5b000">profile structure invalid — triggers is not an array</span>`);
+    } else if (profileSchemaWarnings && profileSchemaWarnings.length > 0) {
+      lines.push(`<span style="color:#f5b000">${profileSchemaWarnings.length} trigger(s) skipped — invalid schema: ${profileSchemaWarnings.join(", ")}</span>`);
+    }
     if (!currentVideo) {
       lines.unshift(`<span style="color:#f5b000">no video</span>`);
     } else if (!currentVideo.videoWidth) {
@@ -3498,7 +3546,7 @@
         sendResponse({ ok: false, error: "No video or editor open" });
       }
     }
-    if (msg && msg.type === "get-game") { sendResponse({ game: detectedGame }); }
+    if (msg && msg.type === "get-game") { sendResponse({ game: detectedGame, profileLoadError: profileLoadError, profileStaleWarning: profileStaleWarning }); }
     if (msg && msg.type === "review-proposal") {
       if (!editorModalOpen) {
         const { proposal, gameId, profileId, contributorCode } = msg;
