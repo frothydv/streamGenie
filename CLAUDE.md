@@ -184,6 +184,7 @@ Reference PNGs live at `{profileBaseUrl}/references/{file}`.
 3. Reload the Twitch page.
 4. F12 → Console, filter by `[overlay` for extension logs.
 5. Run `node tests/rotation-matching.js` for the matcher test suite.
+6. Run `npm run test:e2e` for the Playwright e2e suite (6 tests — error states, CDN failure, schema validation). Requires Chromium: `npx playwright install chromium`.
 
 ## Known limitations
 
@@ -210,7 +211,6 @@ The user is comfortable clicking reload and pasting console errors. Keep instruc
 ### Must-haves
 - **Profile curation UX** — delete a trigger, overwrite a trigger (new image + import existing metadata), profile grid/review mode so a contributor can scan all triggers quickly. Near-duplicate detection (surface triggers whose hashes are close).
 - **Viewer onboarding** — "no profile found for this stream" state that explains the extension is working. First-run banner.
-- **Error states** — CDN down, malformed profile JSON, schema mismatch. Currently silent. Needs at minimum a debug panel indicator.
 - **Privacy/permissions disclosure** — store listing and first-run must state that pixels are read locally, nothing leaves the device.
 
 ### Nice-to-haves (post-beta)
