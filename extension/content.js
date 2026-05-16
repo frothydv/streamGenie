@@ -2638,6 +2638,9 @@
     if (profileLoadError) {
       lines.push(`<span style="color:#ff5c5c">profile error: ${profileLoadError}</span>`);
     }
+    if (profileStaleWarning) {
+      lines.push(`<span style="color:#f5b000">WARNING CDN unreachable — using cached profile (${profileStaleWarning})</span>`);
+    }
     if (!currentVideo) {
       lines.unshift(`<span style="color:#f5b000">no video</span>`);
     } else if (!currentVideo.videoWidth) {
@@ -3511,7 +3514,7 @@
         sendResponse({ ok: false, error: "No video or editor open" });
       }
     }
-    if (msg && msg.type === "get-game") { sendResponse({ game: detectedGame }); }
+    if (msg && msg.type === "get-game") { sendResponse({ game: detectedGame, profileLoadError: profileLoadError, profileStaleWarning: profileStaleWarning }); }
     if (msg && msg.type === "review-proposal") {
       if (!editorModalOpen) {
         const { proposal, gameId, profileId, contributorCode } = msg;
