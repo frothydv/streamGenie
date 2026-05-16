@@ -76,7 +76,9 @@ async function openTestPage(context, profileResponse) {
   );
 
   await page.route('https://raw.githubusercontent.com/**', route => {
-    if (route.request().url() === PROFILE_URL) {
+    // Content script adds a ?_cb=timestamp cache-buster — strip it before comparing.
+    const requestBase = route.request().url().split('?')[0];
+    if (requestBase === PROFILE_URL) {
       if (profileResponse === 'fail' || profileResponse === 'stale-fail') {
         route.abort('failed');
       } else {
@@ -120,7 +122,9 @@ async function seedProfileCache(page, profile) {
   profile = profile || VALID_PROFILE;
   const cacheKey = 'streamGenie_profile_slay-the-spire-2_community';
   await page.evaluate(function(args) {
-    localStorage.setItem(args[0], JSON.stringify({ ts: Date.now() - 1000, profile: args[1] }));
+    // Use a timestamp older than the 2-minute TTL so loadProfile() goes through
+    // fetchAndCacheProfile() synchronously instead of as a background refresh.
+    localStorage.setItem(args[0], JSON.stringify({ ts: Date.now() - 200000, profile: args[1] }));
   }, [cacheKey, profile]);
 }
 

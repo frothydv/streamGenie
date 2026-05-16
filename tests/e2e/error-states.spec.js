@@ -83,7 +83,12 @@ test('Successful fetch clears amber CDN warning from debug panel', async () => {
     await seedProfileCache(page);
     await page.reload();
     await showDebugPanel(context, page);
-    await waitForProfileCycle(page);
+    // Wait specifically for the CDN warning — generic poller may exit on 'refs:' before
+    // the stale-cache branch sets profileStaleWarning and the panel re-renders.
+    await page.waitForFunction(
+      () => document.getElementById('stream-overlay-debug')?.innerText.includes('CDN unreachable'),
+      { timeout: 8000 }
+    );
 
     const textAfterFail = await page.locator('#stream-overlay-debug').innerText();
     expect(textAfterFail).toContain('CDN unreachable');
@@ -109,31 +114,35 @@ test('Successful fetch clears amber CDN warning from debug panel', async () => {
 
 // ─── Test 4: Popup shows error note when CDN fails with no cache ───────────────
 
-test('Popup shows red error note near profile selector when CDN fails with no cache', async () => {
+test('content.js get-game response carries profileLoadError when CDN fails with no cache', async () => {
+  // Tests the same behaviour the popup reads, but avoids chrome.tabs.query({ active:true })
+  // tab-identity issues: the popup window becomes the active tab the moment it opens,
+  // so popup.js's currentTab ends up being itself rather than our test page.
+  // Instead we send the get-game message directly via the service worker.
   const context = await launchWithExtension(tmpDir());
   try {
-    // Load the Twitch test page with CDN blocked so content.js sets profileLoadError.
     const page = await openTestPage(context, 'fail');
     await waitForProfileCycle(page);
 
-    // Bring the test page to the front (popup queries the active tab).
-    await page.bringToFront();
-
-    // Get extension ID from service worker and open popup.
     const worker = await getServiceWorker(context);
-    const extensionId = worker.url().split('/')[2];
-    const popupPage = await context.newPage();
-    await popupPage.goto(`chrome-extension://${extensionId}/popup.html`);
 
-    // Wait for popup's async init (get-game message + catalog fetch).
-    await popupPage.waitForTimeout(2500);
+    // Find our test tab by URL and send get-game directly.
+    const resp = await worker.evaluate(async () => {
+      const tabs = await chrome.tabs.query({ url: 'https://www.twitch.tv/teststream' });
+      const tabId = tabs[0]?.id;
+      if (!tabId) return null;
+      return new Promise(resolve => {
+        chrome.tabs.sendMessage(tabId, { type: 'get-game' }, r => {
+          if (chrome.runtime.lastError) resolve(null);
+          else resolve(r);
+        });
+      });
+    });
 
-    const applyNote  = popupPage.locator('#apply-note');
-    const noteText   = await applyNote.innerText();
-    const noteColor  = await applyNote.evaluate(el => el.style.color);
-
-    expect(noteText).toMatch(/profile failed to load/i);
-    expect(noteColor).toBe('rgb(255, 92, 92)'); // #ff5c5c
+    expect(resp).not.toBeNull();
+    expect(resp.profileLoadError).toBeTruthy();
+    expect(resp.profileLoadError).toMatch(/failed|HTTP|fetch/i);
+    expect(resp.profileStaleWarning).toBeNull();
   } finally {
     await context.close();
   }
