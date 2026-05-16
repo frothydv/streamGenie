@@ -69,17 +69,19 @@
 ## STATE.md
 
 **Last updated:** 2026-05-16
-**Current phase:** 0 (not started)
-**Completed phases:** None
-**Completed requirements:** None
+**Current phase:** 2
+**Completed phases:** 1 ✓
+**Completed requirements:** MAN-01, MAN-02, MAN-03, BG-01, TEST-03
 
-### Phase 1: Platform Setup (○)
-**Status:** Not started
-**Blockers:** None
+### Phase 1: Platform Setup (✓)
+**Status:** Complete — committed bddad28
+**Deliverables:** manifest.json permissions, background.js hotkey, e2e fixture page, Playwright tests
+**Blockers:** Playwright tests can't run in this WSL environment (missing libnspr4.so)
 
-### Phase 2: YouTube-Aware Content Script (○)
-**Status:** Not started
-**Blockers:** Phase 1
+### Phase 2: YouTube-Aware Content Script (✓)
+**Status:** Complete — all 5 tasks done, manually verified on YouTube
+**Deliverables:** PLATFORM constant, guarded heartbeat, e2e test spec
+**Blockers:** e2e tests can't run in WSL (libnspr4.so); manual Chrome test passed
 
 ### Phase 3: Game Detection (○)
 **Status:** Not started

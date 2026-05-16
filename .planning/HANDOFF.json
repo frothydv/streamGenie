@@ -1,42 +1,43 @@
 {
   "version": "1.0",
-  "timestamp": "2026-05-16T14:40:01.885Z",
-  "phase": 1,
-  "phase_name": "Platform Setup",
-  "phase_dir": ".planning/phases/01-platform-setup",
+  "timestamp": "2026-05-16T15:06:58.246Z",
+  "phase": "02",
+  "phase_name": "youtube-aware-content-script",
+  "phase_dir": "02-youtube-aware-content-script",
   "plan": 1,
-  "task": "complete",
-  "total_tasks": 1,
-  "status": "paused_between_phases",
+  "task": 5,
+  "total_tasks": 5,
+  "status": "paused",
   "completed_tasks": [
-    {"id": 1, "name": "Manifest changes — YouTube permissions", "status": "done", "commit": "bddad28"},
-    {"id": 2, "name": "Background.js — hotkey forwarding", "status": "done", "commit": "bddad28"},
-    {"id": 3, "name": "YouTube fixture page for Playwright", "status": "done", "commit": "bddad28"},
-    {"id": 4, "name": "Phase 1 e2e Playwright tests", "status": "done", "commit": "bddad28"}
+    {"id": 1, "name": "Add PLATFORM constant + top-level comment", "status": "done", "commit": null},
+    {"id": 2, "name": "Guard Twitch-specific calls in heartbeat", "status": "done", "commit": null},
+    {"id": 3, "name": "Confirm YouTube video discovery works", "status": "done", "commit": null},
+    {"id": 4, "name": "Confirm coordinate math works on YouTube", "status": "done", "commit": null},
+    {"id": 5, "name": "Create e2e test spec for Phase 2 behaviors", "status": "done", "commit": null}
   ],
-  "remaining_tasks": [
-    {"id": "phase-2", "name": "Phase 2: YouTube-Aware Content Script", "status": "not_started"},
-    {"id": "phase-3", "name": "Phase 3: Game Detection", "status": "not_started"},
-    {"id": "phase-4", "name": "Phase 4: Popup & Testing", "status": "not_started"}
-  ],
+  "remaining_tasks": [],
   "blockers": [
-    {"description": "Playwright tests cannot run: missing libnspr4.so (no sudo in WSL)", "type": "technical", "workaround": "Manual testing: load extension in Chrome, test on YouTube VOD"}
+    {"description": "Playwright tests require libnspr4.so which is not installed in WSL (no sudo)", "type": "technical", "workaround": "Manual testing in Chrome on user's Windows machine"}
   ],
   "human_actions_pending": [
-    {"action": "Run Phase 1 e2e tests in environment with system deps", "context": "Tests exist at tests/e2e/phase1-youtube.spec.js but need libnspr4.so to launch Chromium", "blocking": false}
+    {"action": "Run e2e tests on Windows machine (npx playwright test tests/e2e/)", "context": "Verify all test specs pass in proper environment", "blocking": false},
+    {"action": "Commit Phase 2 changes and advance to Phase 3", "context": "Phase 2 code changes are done and manually verified on YouTube", "blocking": false}
   ],
   "decisions": [
-    {"decision": "Branch: m10-youtube-support", "rationale": "Isolated work, don't disrupt main", "phase": "0"},
-    {"decision": "Game detection: title scan + manual fallback", "rationale": "YouTube has no game category; simplest approach that works", "phase": "0"},
-    {"decision": "Rename twitchSlug to legacyTwitchSlug in catalog", "rationale": "Cleaner model when games span platforms", "phase": "0"},
-    {"decision": "Skip Twitch extension interference code on YouTube", "rationale": "YouTube doesn't have equivalent extension iframes", "phase": "0"},
-    {"decision": "Use PLATFORM constant derived from location.hostname", "rationale": "Simple branching for platform-specific code", "phase": "2"},
-    {"decision": "No channel-based creator config for YouTube v1", "rationale": "Deferred; title matching + manual covers our use case", "phase": "0"}
+    {"decision": "Only guard call sites in heartbeat(), not function definitions", "rationale": "Function definitions are self-contained; guarding the 3 call sites is sufficient and minimizes diff", "phase": "02"},
+    {"decision": "Derive PLATFORM from location.hostname at top of IIFE", "rationale": "Simple, synchronous, no async dependencies", "phase": "02"},
+    {"decision": "YouTube uses object-fit:initial (fill) → clientToVideoCoords uses else branch naturally", "rationale": "No code changes needed for coordinate math; already handles both platforms", "phase": "02"}
   ],
   "uncommitted_files": [
-    ".planning/config.json",
-    "test-results/"
+    "extension/content.js",
+    "tests/e2e/helpers.js",
+    "tests/e2e/phase2-youtube-content-script.spec.js",
+    "package.json",
+    "package-lock.json",
+    ".planning/STATE.md",
+    ".planning/ROADMAP.md",
+    ".planning/phases/02-youtube-aware-content-script/.continue-here.md"
   ],
-  "next_action": "Plan Phase 2: Read content.js, identify all Twitch-specific code paths, add platform guards, ensure YouTube video/coordinate support",
-  "context_notes": "Pixel pipeline (capture → dHash → match → popup) already platform-agnostic. Twitch-specific code is limited to detectTwitchGame(), detectTwitchExtensions()/disableTwitchExtensions(), and popup URL checks. All can be platform-guarded with PLATFORM constant. Key risk: clientToVideoCoords() letterbox math uses object-fit: contain which YouTube doesn't use."
+  "next_action": "Commit Phase 2 changes and begin Phase 3 (Game Detection) — title-based game detection from YouTube video pages",
+  "context_notes": "Phase 2 is fully implemented. Code changes were minimal (3 guard conditions in heartbeat). Playwright test spec covers 5 scenarios but can't execute in WSL (libnspr4.so missing). User confirmed extension works on real YouTube VOD via manual Chrome test."
 }
