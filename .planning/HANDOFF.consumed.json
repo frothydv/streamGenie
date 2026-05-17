@@ -1,43 +1,36 @@
 {
   "version": "1.0",
-  "timestamp": "2026-05-16T15:06:58.246Z",
-  "phase": "02",
-  "phase_name": "youtube-aware-content-script",
-  "phase_dir": "02-youtube-aware-content-script",
+  "timestamp": "2026-05-16T19:35:00.000Z",
+  "phase": "03",
+  "phase_name": "game-detection",
+  "phase_dir": "03-game-detection",
   "plan": 1,
   "task": 5,
   "total_tasks": 5,
-  "status": "paused",
+  "status": "paused_between_phases",
   "completed_tasks": [
-    {"id": 1, "name": "Add PLATFORM constant + top-level comment", "status": "done", "commit": null},
-    {"id": 2, "name": "Guard Twitch-specific calls in heartbeat", "status": "done", "commit": null},
-    {"id": 3, "name": "Confirm YouTube video discovery works", "status": "done", "commit": null},
-    {"id": 4, "name": "Confirm coordinate math works on YouTube", "status": "done", "commit": null},
-    {"id": 5, "name": "Create e2e test spec for Phase 2 behaviors", "status": "done", "commit": null}
+    {"id": 1, "name": "Add detectYouTubeGame() + update get-game handler", "status": "done", "commit": "6c52f11"},
+    {"id": 2, "name": "Update popup tab detection for YouTube + send get-game on YouTube", "status": "done", "commit": "6c52f11"},
+    {"id": 3, "name": "Add fuzzyMatchTitle() + YouTube fuzzy matching in popup", "status": "done", "commit": "6c52f11"},
+    {"id": 4, "name": "Rename twitchSlug -> legacyTwitchSlug with backward compat", "status": "done", "commit": "6c52f11"},
+    {"id": 5, "name": "Manual test: verify game detection on YouTube VOD", "status": "done", "commit": "manual"}
   ],
   "remaining_tasks": [],
   "blockers": [
     {"description": "Playwright tests require libnspr4.so which is not installed in WSL (no sudo)", "type": "technical", "workaround": "Manual testing in Chrome on user's Windows machine"}
   ],
   "human_actions_pending": [
-    {"action": "Run e2e tests on Windows machine (npx playwright test tests/e2e/)", "context": "Verify all test specs pass in proper environment", "blocking": false},
-    {"action": "Commit Phase 2 changes and advance to Phase 3", "context": "Phase 2 code changes are done and manually verified on YouTube", "blocking": false}
+    {"action": "Run e2e tests on Windows machine (npx playwright test tests/e2e/)", "context": "Verify all test specs for Phases 1-3 pass in proper environment", "blocking": false}
   ],
   "decisions": [
-    {"decision": "Only guard call sites in heartbeat(), not function definitions", "rationale": "Function definitions are self-contained; guarding the 3 call sites is sufficient and minimizes diff", "phase": "02"},
-    {"decision": "Derive PLATFORM from location.hostname at top of IIFE", "rationale": "Simple, synchronous, no async dependencies", "phase": "02"},
-    {"decision": "YouTube uses object-fit:initial (fill) → clientToVideoCoords uses else branch naturally", "rationale": "No code changes needed for coordinate math; already handles both platforms", "phase": "02"}
+    {"decision": "Fuzzy matching is client-side only (no cloud calls)", "rationale": "No API keys, no latency, works offline", "phase": "3"},
+    {"decision": "Threshold of 0.4 for fuzzy title matching", "rationale": "Lenient enough to catch partial matches (e.g., 'Slay the Spire 2 - Ironclad run'), strict enough to avoid obvious mismatches", "phase": "3"},
+    {"decision": "legacyTwitchSlug renamed from twitchSlug with backward compat", "rationale": "Cleaner model when games span platforms; CDN old field still accepted as fallback", "phase": "3"},
+    {"decision": "Catalog match checks gameId, legacyTwitchSlug, AND twitchSlug", "rationale": "Full transition period — old CDN entries still have twitchSlug", "phase": "3"}
   ],
   "uncommitted_files": [
-    "extension/content.js",
-    "tests/e2e/helpers.js",
-    "tests/e2e/phase2-youtube-content-script.spec.js",
-    "package.json",
-    "package-lock.json",
-    ".planning/STATE.md",
-    ".planning/ROADMAP.md",
-    ".planning/phases/02-youtube-aware-content-script/.continue-here.md"
+    ".planning/STATE.md"
   ],
-  "next_action": "Commit Phase 2 changes and begin Phase 3 (Game Detection) — title-based game detection from YouTube video pages",
-  "context_notes": "Phase 2 is fully implemented. Code changes were minimal (3 guard conditions in heartbeat). Playwright test spec covers 5 scenarios but can't execute in WSL (libnspr4.so missing). User confirmed extension works on real YouTube VOD via manual Chrome test."
+  "next_action": "Advance to Phase 4: Popup & Testing — polish popup YouTube integration, ensure fallback works on YouTube when no game match, update e2e test spec for Phase 3 behaviors.",
+  "context_notes": "Phase 3 is fully implemented and user-confirmed. Popup auto-detects game from YouTube video title, shows 'Active on YouTube: /watch?v=XXX', and auto-selects matched catalog game. The existing twitchSlug->legacyTwitchSlug rename is backward compatible with old CDN fields. Next phase is to polish the popup YouTube UI (ensure fallback catalog shows on no-match, add any missing YouTube state indicators) and update e2e tests."
 }
