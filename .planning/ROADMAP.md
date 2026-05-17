@@ -2,6 +2,11 @@
 
 **4 phases** | **24 requirements** | All v1 requirements covered ✓
 
+- ✅ **v0.9 Core** — Phases 1–9 (shipped, all matching/contribution/rotation features complete)
+- ✅ **v1.0 Beta (partial)** — Phases 10–11 (shipped — curation UX and viewer onboarding complete)
+- ✅ **v1.0 Beta (remaining)** — Phases 12–13 (complete — error states and privacy disclosure)
+- ✅ **M10 YouTube Support** — Phases 1–4 (shipped — complete YouTube platform support)
+
 | # | Phase | Goal | Requirements | Criteria |
 |---|-------|------|-------------|----------|
 | 1 | Platform Setup | Extension loads on YouTube pages | MAN-01, MAN-02, MAN-03, BG-01, TEST-03 | 3 success criteria |
@@ -68,8 +73,9 @@
 
 ## STATE.md
 
-**Last updated:** 2026-05-16
-**Current phase:** 4 (complete)
+**Last updated:** 2026-05-17
+**Milestone:** YouTube Support v1.0
+**Status:** Complete — all 4 phases shipped
 **Completed phases:** 4 ✓
 **Completed requirements:** MAN-01, MAN-02, MAN-03, BG-01, TEST-03, CONT-01-06, CONT-07, GAME-01-04, POP-01-05
 
@@ -92,3 +98,9 @@
 **Status:** Complete — all code changes implemented
 **Deliverables:** Non-video message, detected badge with [change] link, no-detection toast, placeholder dropdown
 **Blockers:** Manual testing in Chrome pending (can't run in WSL)
+
+## Session Continuity
+
+Last session: 2026-05-17
+Stopped at: Phase 4 complete — all implementation done
+Resume action: Manual testing in Chrome
