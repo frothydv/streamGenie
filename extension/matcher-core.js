@@ -262,28 +262,92 @@
     // Pre-compute mean-centred ref gray values and variance for NCC.
     // refPixels: RGBA Uint8Array at native ref dimensions (refW×refH).
     // Returns { gray: Float32Array (mean-centred luma), varG: number }.
-    function buildRefNCC(refPixels, refW, refH) {
+    // Pre-compute mean-centred ref gray values and variance for NCC.
+    // refPixels: RGBA Uint8Array at native ref dimensions (refW×refH).
+    // maskPx: optional RGBA Uint8Array at same dimensions; only pixels with
+    //         alpha > 0 contribute to stats. Pass null for no mask.
+    // Returns { gray, varG, activeIndices } where activeIndices is non-null
+    // when a mask was provided.
+    function buildRefNCC(refPixels, refW, refH, maskPx) {
       const n = refW * refH;
       const gray = new Float32Array(n);
+      const masked = maskPx ? new Uint8Array(n) : null;
+      let activeCount = 0;
       let sumG = 0;
       for (let i = 0; i < n; i++) {
-        const v = 0.299 * refPixels[i*4] + 0.587 * refPixels[i*4+1] + 0.114 * refPixels[i*4+2];
-        gray[i] = v;
-        sumG += v;
+        const active = !maskPx || maskPx[i*4+3] > 0;
+        if (masked) masked[i] = active ? 1 : 0;
+        if (active) {
+          const v = 0.299 * refPixels[i*4] + 0.587 * refPixels[i*4+1] + 0.114 * refPixels[i*4+2];
+          gray[i] = v;
+          sumG += v;
+          activeCount++;
+        } else {
+          gray[i] = 0;
+        }
       }
-      const meanG = sumG / n;
+      if (masked && activeCount === 0) {
+        // Degenerate mask: nothing active. Return unmasked stats as fallback.
+        return buildRefNCC(refPixels, refW, refH, null);
+      }
+      const denom = masked ? activeCount : n;
+      const meanG = denom > 0 ? sumG / denom : 0;
       let varG = 0;
-      for (let i = 0; i < n; i++) {
-        gray[i] -= meanG;
-        varG += gray[i] * gray[i];
+      if (masked) {
+        for (let i = 0; i < n; i++) {
+          if (masked[i]) {
+            gray[i] -= meanG;
+            varG += gray[i] * gray[i];
+          } else {
+            gray[i] = 0;
+          }
+        }
+      } else {
+        for (let i = 0; i < n; i++) {
+          gray[i] -= meanG;
+          varG += gray[i] * gray[i];
+        }
       }
-      return { gray, varG };
+      // Build compact activeIndex list for fast iteration in nccScoreAt.
+      let activeIdx = null;
+      if (masked && activeCount > 0 && activeCount < n) {
+        activeIdx = new Uint32Array(activeCount);
+        let j = 0;
+        for (let i = 0; i < n; i++) {
+          if (masked[i]) activeIdx[j++] = i;
+        }
+      }
+      return { gray, varG, activeIndices: activeIdx };
     }
 
     // NCC score at scene position (sx, sy). Returns value in [-1, 1].
     // Flat regions (low variance) return 0 to avoid false positives.
     function nccScoreAt(sceneGray, sceneW, sat, sat2, sx, sy, refNCC, refW, refH) {
-      const { gray, varG } = refNCC;
+      const { gray, varG, activeIndices } = refNCC;
+      if (activeIndices) {
+        // Masked NCC: compute scene mean/variance over ONLY the masked
+        // positions at this offset. Can't use SAT shortcut — need per-pixel.
+        const n = activeIndices.length;
+        let sceneSum = 0, sceneSum2 = 0;
+        for (let k = 0; k < n; k++) {
+          const ai = activeIndices[k];
+          const sceneIdx = (sy + Math.floor(ai / refW)) * sceneW + (sx + (ai % refW));
+          const v = sceneGray[sceneIdx];
+          sceneSum += v;
+          sceneSum2 += v * v;
+        }
+        const sceneMean = sceneSum / n;
+        const sceneVar  = sceneSum2 - sceneSum * sceneSum / n;
+        if (varG < 1e-6 || sceneVar < 1e-6) return 0;
+        let dot = 0;
+        for (let k = 0; k < n; k++) {
+          const ai = activeIndices[k];
+          const sceneIdx = (sy + Math.floor(ai / refW)) * sceneW + (sx + (ai % refW));
+          dot += gray[ai] * (sceneGray[sceneIdx] - sceneMean);
+        }
+        return dot / Math.sqrt(varG * sceneVar);
+      }
+      const { gray: g } = refNCC;
       const n = refW * refH;
       const sceneSum  = satRectSum(sat,  sceneW, sx, sy, refW, refH);
       const sceneSum2 = satRectSum(sat2, sceneW, sx, sy, refW, refH);
@@ -293,7 +357,7 @@
       let dot = 0;
       for (let y = 0; y < refH; y++) {
         for (let x = 0; x < refW; x++) {
-          dot += gray[y * refW + x] * (sceneGray[(sy + y) * sceneW + (sx + x)] - sceneMean);
+          dot += g[y * refW + x] * (sceneGray[(sy + y) * sceneW + (sx + x)] - sceneMean);
         }
       }
       return dot / Math.sqrt(varG * sceneVar);
