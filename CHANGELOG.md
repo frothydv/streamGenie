@@ -6,7 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
-## [0.10.0] — 2026-06
+## [0.10.1] — 2026-06-01
+
+### Fixed
+- **Masked NCC** — `buildRefNCC` now respects its `maskPx` parameter. Previously it
+  computed mean/variance over all pixels regardless of mask, so background noise
+  could drown out the icon signal. Now only alpha > 0 pixels contribute to NCC
+  stats, and `nccScoreAt` iterates over compact `activeIndices` for masked refs.
+- **E2E test cross-world visibility** — Chrome MV3 content scripts run in an
+  isolated world where `window.__streamOverlayLoaded` is invisible to
+  `page.evaluate()`. Content script now exposes state via
+  `document.documentElement.dataset.streamGenieLoaded` and
+  `.streamGenieAttached` (DOM is shared between worlds). All 19 Playwright tests
+  green.
+- **verify-complete-fix test** — rewritten to verify behavioural invariants
+  against current codebase (the old version checked for refactored-away
+  function names). 17/17 checks pass.
+
+### Infrastructure
+- All 19 E2E tests, all integration tests, all unit tests, and rotation
+  matching suite pass — 0 failures across ~290 tests.
+
+## [0.10.0] — 2026-06-01
 
 ### Added
 - **YouTube support v1.0** — full platform setup, content script awareness, game detection from video titles, fixture pages, e2e tests. Merged into master.
