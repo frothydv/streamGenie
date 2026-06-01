@@ -24,17 +24,12 @@ test('content script is injected on YouTube pages', async () => {
   try {
     const page = await openYouTubeTestPage(context, VALID_PROFILE);
 
-    // Verify the content script's guard marker is set
-    const loaded = await page.evaluate(() => window.__streamOverlayLoaded === true);
+    // Verify the content script's guard marker is set (from the isolated world)
+    // and the dataset attribute is exposed to the main world
+    const loaded = await page.evaluate(() =>
+      document.documentElement.dataset.streamGenieLoaded === "true"
+    );
     expect(loaded).toBe(true);
-
-    // Verify console log confirms load
-    const logLine = await page.evaluate(() => {
-      // The content script logs "[overlay/content] loaded on" at startup
-      // We can check __streamOverlayLoaded as a reliable proxy
-      return window.__streamOverlayLoaded;
-    });
-    expect(logLine).toBe(true);
   } finally {
     await context.close();
   }
@@ -47,14 +42,20 @@ test('video element is discovered by findBestVideo on YouTube', async () => {
   try {
     const page = await openYouTubeTestPage(context, VALID_PROFILE);
 
-    // FindBestVideo stores results on window.__streamOverlayStats
-    // It runs in the heartbeat (500ms interval), so wait for it
-    await page.waitForFunction(() => window.__streamOverlayStats?.attached === true, { timeout: 5000 });
+    // findBestVideo runs in the heartbeat (500ms interval) and exposes attach status via dataset
+    await page.waitForFunction(
+      () => document.documentElement.dataset.streamGenieAttached === "true",
+      { timeout: 5000 }
+    );
 
-    const stats = await page.evaluate(() => window.__streamOverlayStats);
-    expect(stats.attached).toBe(true);
-    expect(stats.total).toBeGreaterThanOrEqual(1);
-    expect(stats.visible).toBeGreaterThanOrEqual(1);
+    const total = await page.evaluate(
+      () => parseInt(document.documentElement.dataset.streamGenieVideoTotal || "0")
+    );
+    const visible = await page.evaluate(
+      () => parseInt(document.documentElement.dataset.streamGenieVideoVisible || "0")
+    );
+    expect(total).toBeGreaterThanOrEqual(1);
+    expect(visible).toBeGreaterThanOrEqual(1);
   } finally {
     await context.close();
   }
@@ -86,7 +87,9 @@ test('Twitch pages still load the extension (regression)', async () => {
   try {
     const page = await openTestPage(context, VALID_PROFILE);
 
-    const loaded = await page.evaluate(() => window.__streamOverlayLoaded === true);
+    const loaded = await page.evaluate(() =>
+      document.documentElement.dataset.streamGenieLoaded === "true"
+    );
     expect(loaded).toBe(true);
   } finally {
     await context.close();

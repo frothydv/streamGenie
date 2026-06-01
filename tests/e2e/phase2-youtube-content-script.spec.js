@@ -51,8 +51,11 @@ test('content script loads on YouTube pages with correct platform', async () => 
     await setupProfileRoute(page, VALID_PROFILE);
     await page.goto('https://www.youtube.com/watch?v=test123');
 
-    // Verify content script initialized
-    await page.waitForFunction(() => window.__streamOverlayLoaded === true, { timeout: 5000 });
+    // Verify content script initialized (dataset exposed to main world)
+    await page.waitForFunction(() =>
+      document.documentElement.dataset.streamGenieLoaded === "true",
+      { timeout: 5000 }
+    );
 
     // Verify loaded log mentions YouTube
     const loadLog = logs.find(l => l.text.includes('[overlay/content] loaded on'));
@@ -83,12 +86,19 @@ test('findBestVideo discovers YouTube video element', async () => {
     const page = await openYouTubeTestPage(context, VALID_PROFILE);
 
     // findBestVideo stores results on window.__streamOverlayStats
-    await page.waitForFunction(() => window.__streamOverlayStats?.attached === true, { timeout: 5000 });
+    await page.waitForFunction(
+      () => document.documentElement.dataset.streamGenieAttached === "true",
+      { timeout: 5000 }
+    );
 
-    const stats = await page.evaluate(() => window.__streamOverlayStats);
-    expect(stats.attached).toBe(true);
-    expect(stats.total).toBeGreaterThanOrEqual(1);
-    expect(stats.visible).toBeGreaterThanOrEqual(1);
+    const total = await page.evaluate(
+      () => parseInt(document.documentElement.dataset.streamGenieVideoTotal || "0")
+    );
+    const visible = await page.evaluate(
+      () => parseInt(document.documentElement.dataset.streamGenieVideoVisible || "0")
+    );
+    expect(total).toBeGreaterThanOrEqual(1);
+    expect(visible).toBeGreaterThanOrEqual(1);
   } finally {
     await context.close();
   }
@@ -109,7 +119,10 @@ test('Twitch extension interference code never executes on YouTube', async () =>
     await setupProfileRoute(page, VALID_PROFILE);
     await page.goto('https://www.youtube.com/watch?v=test123');
 
-    await page.waitForFunction(() => window.__streamOverlayLoaded === true, { timeout: 5000 });
+    await page.waitForFunction(() =>
+      document.documentElement.dataset.streamGenieLoaded === "true",
+      { timeout: 5000 }
+    );
     // Wait several heartbeats to ensure any periodic Twitch code would have fired
     await page.waitForTimeout(3000);
 
@@ -139,7 +152,10 @@ test('debug panel shows capture coordinates when hovering over YouTube video', a
     const page = await openYouTubeTestPage(context, VALID_PROFILE);
 
     // Wait for video to be attached
-    await page.waitForFunction(() => window.__streamOverlayStats?.attached === true, { timeout: 5000 });
+    await page.waitForFunction(
+      () => document.documentElement.dataset.streamGenieAttached === "true",
+      { timeout: 5000 }
+    );
 
     // Enable debug panel
     await showDebugPanel(context, page);
@@ -168,13 +184,16 @@ test('Twitch pages still load and work normally (regression)', async () => {
     const page = await openTestPage(context, VALID_PROFILE);
 
     // Wait for content script to load
-    await page.waitForFunction(() => window.__streamOverlayLoaded === true, { timeout: 5000 });
+    await page.waitForFunction(() =>
+      document.documentElement.dataset.streamGenieLoaded === "true",
+      { timeout: 5000 }
+    );
 
     // Wait for video attachment
-    await page.waitForFunction(() => window.__streamOverlayStats?.attached === true, { timeout: 5000 });
-
-    const stats = await page.evaluate(() => window.__streamOverlayStats);
-    expect(stats.attached).toBe(true);
+    await page.waitForFunction(
+      () => document.documentElement.dataset.streamGenieAttached === "true",
+      { timeout: 5000 }
+    );
 
     // Enable debug panel and verify it works
     await showDebugPanel(context, page);

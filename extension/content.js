@@ -7,6 +7,9 @@
   }
   window.__streamOverlayLoaded = true;
 
+  // Expose to the page's main world so tests (and potential page scripts) can detect us.
+  document.documentElement.dataset.streamGenieLoaded = "true";
+
   console.log("[overlay/content] loaded on", location.href);
 
   const PLATFORM = location.hostname.includes("youtube.com") ? "youtube" : "twitch";
@@ -341,7 +344,11 @@
     }
 
     const { video, total, visible } = findBestVideo();
-    window.__streamOverlayStats = { total, visible, attached: !!currentVideo };
+    const attached = !!currentVideo;
+    window.__streamOverlayStats = { total, visible, attached };
+    document.documentElement.dataset.streamGenieAttached = String(attached);
+    document.documentElement.dataset.streamGenieVideoTotal = String(total);
+    document.documentElement.dataset.streamGenieVideoVisible = String(visible);
     if (currentVideo) {
       if (!document.body.contains(currentVideo)) {
         detachFromVideo();
