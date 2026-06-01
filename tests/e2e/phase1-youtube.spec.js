@@ -11,7 +11,7 @@ const { test, expect } = require('@playwright/test');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
-const { launchWithExtension, openTestPage, getServiceWorker } = require('./helpers');
+const { launchWithExtension, openTestPage, openYouTubeTestPage, getServiceWorker, VALID_PROFILE } = require('./helpers');
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'sg-e2e-'));
@@ -22,7 +22,7 @@ function tmpDir() {
 test('content script is injected on YouTube pages', async () => {
   const context = await launchWithExtension(tmpDir());
   try {
-    const page = await openTestPage(context, 'https://www.youtube.com/watch?v=test123', 'youtube-page.html');
+    const page = await openYouTubeTestPage(context, VALID_PROFILE);
 
     // Verify the content script's guard marker is set
     const loaded = await page.evaluate(() => window.__streamOverlayLoaded === true);
@@ -45,7 +45,7 @@ test('content script is injected on YouTube pages', async () => {
 test('video element is discovered by findBestVideo on YouTube', async () => {
   const context = await launchWithExtension(tmpDir());
   try {
-    const page = await openTestPage(context, 'https://www.youtube.com/watch?v=test123', 'youtube-page.html');
+    const page = await openYouTubeTestPage(context, VALID_PROFILE);
 
     // FindBestVideo stores results on window.__streamOverlayStats
     // It runs in the heartbeat (500ms interval), so wait for it
@@ -65,7 +65,7 @@ test('video element is discovered by findBestVideo on YouTube', async () => {
 test('YouTube video title is extractable from page DOM', async () => {
   const context = await launchWithExtension(tmpDir());
   try {
-    const page = await openTestPage(context, 'https://www.youtube.com/watch?v=test123', 'youtube-page.html');
+    const page = await openYouTubeTestPage(context, VALID_PROFILE);
 
     // Manually extract the title from the DOM (as Phase 3 game detection will do)
     const title = await page.evaluate(() => {
@@ -84,7 +84,7 @@ test('YouTube video title is extractable from page DOM', async () => {
 test('Twitch pages still load the extension (regression)', async () => {
   const context = await launchWithExtension(tmpDir());
   try {
-    const page = await openTestPage(context, 'https://www.twitch.tv/teststream', 'twitch-page.html');
+    const page = await openTestPage(context, VALID_PROFILE);
 
     const loaded = await page.evaluate(() => window.__streamOverlayLoaded === true);
     expect(loaded).toBe(true);
