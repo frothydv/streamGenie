@@ -52,6 +52,11 @@ const PROFILE_WITH_MISSING_TRIGGERS = { triggers: null };
 async function launchWithExtension(userDataDir) {
   return chromium.launchPersistentContext(userDataDir, {
     headless: false,
+    // Default to Edge: branded Chrome ≥137 removed --load-extension, and
+    // Playwright's bundled Chromium can fail to spawn on some Windows machines
+    // (side-by-side config errors). Edge ships with Windows and still loads
+    // unpacked extensions. Override with SG_E2E_CHANNEL (e.g. "chromium").
+    channel: process.env.SG_E2E_CHANNEL || 'msedge',
     args: [
       `--disable-extensions-except=${EXT_PATH}`,
       `--load-extension=${EXT_PATH}`,
