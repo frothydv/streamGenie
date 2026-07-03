@@ -1870,9 +1870,15 @@
     function updatePreview() {
       const t = state.title || "(title)";
       const b = state.text  || "(body text)";
-      popupEl.innerHTML =
-        `<div style="font-weight:bold;color:#bf94ff;margin-bottom:2px">${t}</div>` +
-        `<div style="color:#ccc;">${b.length > 60 ? b.slice(0, 60) + "…" : b}</div>`;
+      // title/text may come from a community proposal under review — never innerHTML them.
+      popupEl.textContent = "";
+      const titleDiv = document.createElement("div");
+      titleDiv.style.cssText = "font-weight:bold;color:#bf94ff;margin-bottom:2px";
+      titleDiv.textContent = t;
+      const bodyDiv = document.createElement("div");
+      bodyDiv.style.cssText = "color:#ccc;";
+      bodyDiv.textContent = b.length > 60 ? b.slice(0, 60) + "…" : b;
+      popupEl.append(titleDiv, bodyDiv);
       readout.textContent = `x: ${state.ox}  y: ${state.oy}`;
       popupEl.style.left = (CX + state.ox) + "px";
       popupEl.style.top  = (CY + state.oy) + "px";
@@ -2735,16 +2741,19 @@
     const lines = [
       `<span style="color:#adadb8">videos: ${stats.total}t ${stats.visible}v | refs: ${refsLoaded}/${refsTotal}</span>`,
     ];
+    // Error strings and trigger IDs originate from remote profile data — escape
+    // before joining into innerHTML.
+    const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     if (profileLoadError) {
-      lines.push(`<span style="color:#ff5c5c">profile error: ${profileLoadError}</span>`);
+      lines.push(`<span style="color:#ff5c5c">profile error: ${esc(profileLoadError)}</span>`);
     }
     if (profileStaleWarning) {
-      lines.push(`<span style="color:#f5b000">WARNING CDN unreachable — using cached profile (${profileStaleWarning})</span>`);
+      lines.push(`<span style="color:#f5b000">WARNING CDN unreachable — using cached profile (${esc(profileStaleWarning)})</span>`);
     }
     if (profileTriggersStructureError) {
       lines.push(`<span style="color:#f5b000">profile structure invalid — triggers is not an array</span>`);
     } else if (profileSchemaWarnings && profileSchemaWarnings.length > 0) {
-      lines.push(`<span style="color:#f5b000">${profileSchemaWarnings.length} trigger(s) skipped — invalid schema: ${profileSchemaWarnings.join(", ")}</span>`);
+      lines.push(`<span style="color:#f5b000">${profileSchemaWarnings.length} trigger(s) skipped — invalid schema: ${esc(profileSchemaWarnings.join(", "))}</span>`);
     }
     if (!currentVideo) {
       lines.unshift(`<span style="color:#f5b000">no video</span>`);

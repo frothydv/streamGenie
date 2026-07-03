@@ -251,23 +251,23 @@ function ensureRawUrl(urlStr) {
 
   // Show detected game badge, no-profile banner, or waiting hint.
   if (detectedSlug && catalogMatch) {
-    detectedEl.innerHTML = `🔍 Detected: ${catalogMatch.gameName} ✓ <a href="#" id="detected-change-link" style="color:#9146ff;text-decoration:none;margin-left:4px;">[change]</a>`;
+    // gameName is community-supplied catalog data — never innerHTML it.
+    detectedEl.textContent = `🔍 Detected: ${catalogMatch.gameName} ✓ `;
+    const changeLink = document.createElement("a");
+    changeLink.href = "#";
+    changeLink.id = "detected-change-link";
+    changeLink.style.cssText = "color:#9146ff;text-decoration:none;margin-left:4px;";
+    changeLink.textContent = "[change]";
+    changeLink.addEventListener("click", (e) => {
+      e.preventDefault();
+      detectedEl.style.display = "none";
+      gameSelect.value = "";
+      rebuildProfileSelect();
+      showNoDetectionToast();
+    });
+    detectedEl.appendChild(changeLink);
     detectedEl.style.color = "#00f593";
     detectedEl.style.display = "block";
-
-    // Wire change link — clears auto-detection, lets user select manually
-    requestAnimationFrame(() => {
-      const changeLink = document.getElementById("detected-change-link");
-      if (changeLink) {
-        changeLink.addEventListener("click", (e) => {
-          e.preventDefault();
-          detectedEl.style.display = "none";
-          gameSelect.value = "";
-          rebuildProfileSelect();
-          showNoDetectionToast();
-        });
-      }
-    });
   } else if (!detectedSlug && currentTab && ((currentTab.url || "").includes("twitch.tv") || isYouTube)) {
     showNoDetectionToast();
     detectedEl.style.display = "none";

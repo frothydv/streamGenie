@@ -155,9 +155,12 @@
     // baseAngle is "preview only" — it does not shift the search range.
     // Phase 1 covers 0° (the ref as-captured at baseAngle). Phase 2 adds the range
     // as *additional* rotations applied to the already-at-baseAngle ref.
-    const minAngle = rotation.minAngle !== undefined ? rotation.minAngle : -30;
-    const maxAngle = rotation.maxAngle !== undefined ? rotation.maxAngle : 30;
-    const step     = rotation.step     !== undefined ? rotation.step     : 5;
+    // Clamp remote-profile values: a step ≤ 0 would make this loop never
+    // terminate, and an absurd range would grind matching to a halt.
+    const num = (v, def) => (Number.isFinite(Number(v)) ? Number(v) : def);
+    const minAngle = Math.max(-180, Math.min(180, num(rotation.minAngle, -30)));
+    const maxAngle = Math.max(-180, Math.min(180, num(rotation.maxAngle,  30)));
+    const step     = Math.max(0.5, Math.min(90, num(rotation.step, 5)));
     const fineStepNearZero = rotation.fineStepNearZero !== false; // default true
 
     const angleSet = new Set();
