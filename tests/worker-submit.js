@@ -29,319 +29,18 @@ function assertEqual(a, b) {
 }
 
 // ---------------------------------------------------------------------------
-// Functions copied verbatim from workers/submit-trigger/index.js
+// Implementations are imported from the worker itself — the real code under
+// test, exercised against a mock GitHub client (no network calls).
 // ---------------------------------------------------------------------------
 
-const OWNER = "frothydv";
-const REPO  = "streamGenieProfiles";
-const BASE  = "main";
-
-function b64decode(str) {
-  const binary = atob(str.replace(/\n/g, ""));
-  const bytes  = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return new TextDecoder().decode(bytes);
-}
-
-function b64encode(str) {
-  const bytes = new TextEncoder().encode(str);
-  let binary  = "";
-  for (const b of bytes) binary += String.fromCharCode(b);
-  return btoa(binary);
-}
-
-function normalisedPayloads(payloads) {
-  return payloads.map(p => ({
-    title:       p.title       ?? "",
-    text:        p.text        ?? "",
-    image:       null,
-    popupOffset: p.popupOffset ?? { x: 14, y: 22 },
-  }));
-}
-
-function prBody(intro, gameId, profileId, extras = []) {
-  return [intro, "", `**Game:** ${gameId}`, `**Profile:** ${profileId}`, ...extras].join("\n");
-}
-
-function contributorHint(key) {
-  if (!key) return "anonymous";
-  return key.replace(/-/g, "").slice(0, 8);
-}
-
-async function isTrustedContributor(env, key, gameId, profileId) {
-  if (!key || !env.CONTRIBUTOR_KEYS) return false;
-  try {
-    const value = await env.CONTRIBUTOR_KEYS.get(key);
-    if (!value) return false;
-    const data = JSON.parse(value);
-    return data.gameId === gameId && data.profileId === profileId;
-  } catch { return false; }
-}
-
-async function getMainSha(gh) {
-  const { object: { sha } } = await gh(`repos/${OWNER}/${REPO}/git/refs/heads/${BASE}`, "GET");
-  return sha;
-}
-
-async function readProfile(gh, profilePath, ref) {
-  const file = await gh(
-    `repos/${OWNER}/${REPO}/contents/${profilePath}/profile.json?ref=${ref}`, "GET"
-  );
-  const profile = JSON.parse(b64decode(file.content));
-  return { file, profile };
-}
-
-async function writeProfile(gh, profilePath, profile, sha, branch, message) {
-  const body = { message, content: b64encode(JSON.stringify(profile, null, 2)), sha };
-  if (branch) body.branch = branch;
-  await gh(`repos/${OWNER}/${REPO}/contents/${profilePath}/profile.json`, "PUT", body);
-}
-
-async function addTrigger(gh, gameId, profileId, trigger, direct, hint) {
-  const profilePath = `games/${gameId}/profiles/${profileId}`;
-  const rawId = (trigger.payloads[0]?.title || trigger.id || Date.now().toString())
-    .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-  // Append a small random hex suffix to prevent same-millisecond collisions
-  const ts = Date.now();
-  const rand = Math.floor(Math.random() * 65536).toString(16).padStart(4, "0");
-  const triggerId = `${rawId}-${ts}-${rand}`;
-  const branch = direct ? null : `trigger/${triggerId}`;
-
-  if (!direct) {
-    const baseSha = await getMainSha(gh);
-    await gh(`repos/${OWNER}/${REPO}/git/refs`, "POST", {
-      ref: `refs/heads/${branch}`, sha: baseSha,
-    });
-  }
-
-  const profileRefs = [];
-  for (let i = 0; i < trigger.references.length; i++) {
-    const ref      = trigger.references[i];
-    const imageB64 = ref.dataUrl.replace(/^data:image\/\w+;base64,/, "");
-    const suffix   = trigger.references.length > 1 ? `-${i}` : "";
-    const filename = `${triggerId}${suffix}.png`;
-    const filePath = `${profilePath}/references/${filename}`;
-    const fileBody = { message: `feat: add reference image ${filename}`, content: imageB64 };
-    if (branch) fileBody.branch = branch;
-    await gh(`repos/${OWNER}/${REPO}/contents/${filePath}`, "PUT", fileBody);
-    profileRefs.push({
-      file: filename,
-      w: ref.w ?? null,
-      h: ref.h ?? null,
-      srcW: ref.srcW ?? null,
-      srcH: ref.srcH ?? null,
-      maskDataUrl: ref.maskDataUrl ?? null,
-    });
-  }
-
-  const { file: profileFile, profile } = await readProfile(gh, profilePath, branch || BASE);
-  const newTrigger = {
-    id:         triggerId,
-    payloads:   normalisedPayloads(trigger.payloads),
-    references: profileRefs,
-  };
-  profile.triggers.push(newTrigger);
-
-  const title = newTrigger.payloads[0]?.title || rawId;
-  await writeProfile(gh, profilePath, profile, profileFile.sha, branch,
-    `feat: add trigger "${title}" [contributor: ${hint}]`);
-
-  if (direct) return { direct: true };
-
-  const pr = await gh(`repos/${OWNER}/${REPO}/pulls`, "POST", {
-    title: `Add trigger: ${title}`,
-    body:  prBody("New trigger submitted via Stream Genie.", gameId, profileId, [`**Payloads:** ${trigger.payloads.length}`]),
-    head:  branch, base: BASE,
-  });
-  return { prUrl: pr.html_url };
-}
-
-async function updateTrigger(gh, gameId, profileId, trigger, direct, hint) {
-  const profilePath = `games/${gameId}/profiles/${profileId}`;
-  const triggerId   = trigger.id;
-  const branch      = direct ? null : `update/${triggerId}-${Date.now()}`;
-
-  if (!direct) {
-    const baseSha = await getMainSha(gh);
-    await gh(`repos/${OWNER}/${REPO}/git/refs`, "POST", {
-      ref: `refs/heads/${branch}`, sha: baseSha,
-    });
-  }
-
-  const { file: profileFile, profile } = await readProfile(gh, profilePath, branch || BASE);
-  const idx = profile.triggers.findIndex(t => t.id === triggerId);
-  if (idx === -1) throw new Error(`Trigger "${triggerId}" not found in profile`);
-
-  const nextTrigger = { ...profile.triggers[idx], payloads: normalisedPayloads(trigger.payloads) };
-  if (trigger.references?.length) {
-    nextTrigger.references = trigger.references.map((ref, idx2) => ({
-      ...(profile.triggers[idx].references?.[idx2] || {}),
-      file: ref.file ?? profile.triggers[idx].references?.[idx2]?.file ?? null,
-      w: ref.w ?? profile.triggers[idx].references?.[idx2]?.w ?? null,
-      h: ref.h ?? profile.triggers[idx].references?.[idx2]?.h ?? null,
-      srcW: ref.srcW ?? profile.triggers[idx].references?.[idx2]?.srcW ?? null,
-      srcH: ref.srcH ?? profile.triggers[idx].references?.[idx2]?.srcH ?? null,
-      maskDataUrl: ref.maskDataUrl ?? null,
-    }));
-  }
-  profile.triggers[idx] = nextTrigger;
-  const title = trigger.payloads[0]?.title || triggerId;
-
-  await writeProfile(gh, profilePath, profile, profileFile.sha, branch,
-    `fix: update trigger "${title}" [contributor: ${hint}]`);
-
-  if (direct) return { direct: true };
-
-  const pr = await gh(`repos/${OWNER}/${REPO}/pulls`, "POST", {
-    title: `Update trigger: ${title}`,
-    body:  prBody("Proposed update via Stream Genie.", gameId, profileId, [`**Trigger ID:** ${triggerId}`]),
-    head:  branch, base: BASE,
-  });
-  return { prUrl: pr.html_url };
-}
-
-async function removeTrigger(gh, gameId, profileId, trigger, direct, hint) {
-  const profilePath = `games/${gameId}/profiles/${profileId}`;
-  const triggerId   = trigger.id;
-  const branch      = direct ? null : `remove/${triggerId}-${Date.now()}`;
-
-  if (!direct) {
-    const baseSha = await getMainSha(gh);
-    await gh(`repos/${OWNER}/${REPO}/git/refs`, "POST", {
-      ref: `refs/heads/${branch}`, sha: baseSha,
-    });
-  }
-
-  const { file: profileFile, profile } = await readProfile(gh, profilePath, branch || BASE);
-  const idx = profile.triggers.findIndex(t => t.id === triggerId);
-  if (idx === -1) throw new Error(`Trigger "${triggerId}" not found in profile`);
-
-  const removed = profile.triggers.splice(idx, 1)[0];
-  const title   = removed.payloads?.[0]?.title || triggerId;
-
-  await writeProfile(gh, profilePath, profile, profileFile.sha, branch,
-    `fix: remove trigger "${title}" [contributor: ${hint}]`);
-
-  if (direct) return { direct: true };
-
-  const pr = await gh(`repos/${OWNER}/${REPO}/pulls`, "POST", {
-    title: `Remove trigger: ${title}`,
-    body:  prBody("Requested removal via Stream Genie.", gameId, profileId, [`**Trigger ID:** ${triggerId}`]),
-    head:  branch, base: BASE,
-  });
-  return { prUrl: pr.html_url };
-}
-
-// ---------------------------------------------------------------------------
-// New functions: listProposals / acceptProposal / rejectProposal
-// ---------------------------------------------------------------------------
-
-async function listProposals(gh, gameId, profileId) {
-  const profilePath = `games/${gameId}/profiles/${profileId}`;
-  const prs = await gh(`repos/${OWNER}/${REPO}/pulls?state=open&base=${BASE}&per_page=100`, "GET");
-  const relevant = prs.filter(pr =>
-    pr.body &&
-    pr.body.includes(`**Game:** ${gameId}`) &&
-    pr.body.includes(`**Profile:** ${profileId}`)
-  );
-  if (relevant.length === 0) return [];
-  let mainTriggers = [];
-  try {
-    const { profile } = await readProfile(gh, profilePath, BASE);
-    mainTriggers = profile.triggers;
-  } catch {}
-  const mainById = new Map(mainTriggers.map(t => [t.id, t]));
-  const proposals = [];
-  for (const pr of relevant) {
-    try {
-      const branch = pr.head.ref;
-      const { profile: branchProfile } = await readProfile(gh, profilePath, branch);
-      const branchIds = new Set(branchProfile.triggers.map(t => t.id));
-      for (const t of branchProfile.triggers) {
-        const mainT = mainById.get(t.id);
-        if (!mainT) {
-          proposals.push({ prNumber: pr.number, prUrl: pr.html_url, branch, prTitle: pr.title, action: "add", trigger: t });
-        } else if (JSON.stringify(t.payloads) !== JSON.stringify(mainT.payloads)) {
-          proposals.push({ prNumber: pr.number, prUrl: pr.html_url, branch, prTitle: pr.title, action: "update", trigger: t, triggerBefore: mainT });
-        }
-      }
-      for (const mainT of mainTriggers) {
-        if (!branchIds.has(mainT.id)) {
-          proposals.push({ prNumber: pr.number, prUrl: pr.html_url, branch, prTitle: pr.title, action: "remove", trigger: mainT });
-        }
-      }
-    } catch (err) {}
-  }
-  return proposals;
-}
-
-async function acceptProposal(gh, gameId, profileId, prNumber, branch, editedTrigger, hint) {
-  const profilePath = `games/${gameId}/profiles/${profileId}`;
-
-  let trigger = editedTrigger;
-  if (!trigger) {
-    const { profile: branchProfile } = await readProfile(gh, profilePath, branch);
-    const { profile: mainProfile }   = await readProfile(gh, profilePath, BASE);
-    const mainIds = new Set(mainProfile.triggers.map(t => t.id));
-    trigger = branchProfile.triggers.find(t => !mainIds.has(t.id))
-           || branchProfile.triggers.find(t => {
-                const m = mainProfile.triggers.find(m => m.id === t.id);
-                return m && JSON.stringify(t.payloads) !== JSON.stringify(m.payloads);
-              });
-    if (!trigger) throw new Error("Could not identify the proposed trigger in the PR branch");
-  }
-
-  for (const ref of (trigger.references || [])) {
-    if (!ref.file) continue;
-    const filePath = `${profilePath}/references/${ref.file}`;
-    try {
-      const branchFile = await gh(`repos/${OWNER}/${REPO}/contents/${filePath}?ref=${branch}`, "GET");
-      let existingSha;
-      try {
-        const mainFile = await gh(`repos/${OWNER}/${REPO}/contents/${filePath}?ref=${BASE}`, "GET");
-        existingSha = mainFile.sha;
-      } catch { /* file doesn't exist on main yet */ }
-      const body = {
-        message: `feat: add reference image ${ref.file} [reviewer: ${hint}]`,
-        content:  branchFile.content.replace(/\n/g, ""),
-        branch:   BASE,
-      };
-      if (existingSha) body.sha = existingSha;
-      await gh(`repos/${OWNER}/${REPO}/contents/${filePath}`, "PUT", body);
-    } catch (err) {
-      console.warn(`Failed to copy reference ${ref.file}: ${err.message}`);
-    }
-  }
-
-  const { file: mainFile, profile: mainProfile } = await readProfile(gh, profilePath, BASE);
-  const existingIdx = mainProfile.triggers.findIndex(t => t.id === trigger.id);
-  const finalTrigger = {
-    id:         trigger.id,
-    payloads:   normalisedPayloads(trigger.payloads),
-    references: (trigger.references || []).map(({ file, w, h, srcW, srcH, maskDataUrl }) =>
-                  ({ file: file || null, w: w || null, h: h || null,
-                     srcW: srcW || null, srcH: srcH || null, maskDataUrl: maskDataUrl || null })),
-  };
-  if (existingIdx !== -1) {
-    mainProfile.triggers[existingIdx] = finalTrigger;
-  } else {
-    mainProfile.triggers.push(finalTrigger);
-  }
-  const title = trigger.payloads?.[0]?.title || trigger.id;
-  await writeProfile(gh, profilePath, mainProfile, mainFile.sha, null,
-    `feat: accept "${title}" from PR #${prNumber} [reviewer: ${hint}]`);
-
-  await gh(`repos/${OWNER}/${REPO}/issues/${prNumber}/comments`, "POST",
-    { body: `✅ Accepted by reviewer \`${hint}\`. Applied directly to \`main\`.` });
-  await gh(`repos/${OWNER}/${REPO}/pulls/${prNumber}`, "PATCH", { state: "closed" });
-}
-
-async function rejectProposal(gh, prNumber, comment) {
-  if (comment) {
-    await gh(`repos/${OWNER}/${REPO}/issues/${prNumber}/comments`, "POST", { body: comment });
-  }
-  await gh(`repos/${OWNER}/${REPO}/pulls/${prNumber}`, "PATCH", { state: "closed" });
-}
+import {
+  BASE, LIMITS,
+  validateTriggerInput, normalisedPayloads, normalisedRotation,
+  isTrustedContributor, contributorHint,
+  addTrigger, updateTrigger, removeTrigger,
+  listProposals, acceptProposal, rejectProposal,
+  b64decode, b64encode,
+} from "../workers/submit-trigger/index.js";
 
 // ---------------------------------------------------------------------------
 // Mock GitHub client builder
@@ -358,6 +57,9 @@ function makeGh(profileContent = { triggers: [] }, mainSha = "deadbeef") {
     }
     if (method === "GET" && path.includes("/contents/") && path.includes("profile.json")) {
       return { sha: "profile-sha-123", content: b64encode(JSON.stringify(profileContent)) };
+    }
+    if (method === "GET" && path.includes("catalog.json")) {
+      return { sha: "catalog-sha", content: b64encode(JSON.stringify({ games: [] })) };
     }
     if (method === "PUT" && path.includes("/contents/")) {
       return { commit: { sha: "new-sha-456" } };
@@ -399,6 +101,9 @@ function makeGhWithPRs(openPRs, mainProfileContent, branchProfileContent, mainSh
       const isBranch = path.includes("?ref=") && !path.includes("?ref=main");
       const content = isBranch ? branchProfileContent : mainProfileContent;
       return { sha: "profile-sha-123", content: b64encode(JSON.stringify(content)) };
+    }
+    if (method === "GET" && path.includes("catalog.json")) {
+      return { sha: "catalog-sha", content: b64encode(JSON.stringify({ games: [] })) };
     }
     // Reference PNG files on branch or main
     if (method === "GET" && path.includes("/contents/") && path.includes("references/")) {
@@ -1148,6 +853,126 @@ await test("listProposals for game B ignores PRs tagged for game A", async () =>
   const { gh } = makeGhWithPRs([bbPR], MAIN_PROFILE, MAIN_PROFILE);
   const proposals = await listProposals(gh, "slay-the-spire-2", "community");
   assertEqual(proposals.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Input validation — validateTriggerInput / normalisedRotation
+// ---------------------------------------------------------------------------
+
+console.log("\n— input validation ---");
+
+const VALID_ADD = () => ({
+  payloads: [{ title: "Ok", text: "Fine." }],
+  references: [{ dataUrl: "data:image/png;base64,iVBORw0KGgo=" }],
+});
+
+await test("valid add trigger passes validation", () => {
+  assertEqual(validateTriggerInput(VALID_ADD(), "add"), null);
+});
+
+await test("rejects payload title over limit", () => {
+  const t = VALID_ADD();
+  t.payloads[0].title = "x".repeat(LIMITS.title + 1);
+  assert(validateTriggerInput(t, "add") !== null, "should reject oversized title");
+});
+
+await test("rejects payload text over limit", () => {
+  const t = VALID_ADD();
+  t.payloads[0].text = "x".repeat(LIMITS.text + 1);
+  assert(validateTriggerInput(t, "add") !== null, "should reject oversized text");
+});
+
+await test("rejects too many payloads", () => {
+  const t = VALID_ADD();
+  t.payloads = Array.from({ length: LIMITS.payloads + 1 }, () => ({ title: "a", text: "b" }));
+  assert(validateTriggerInput(t, "add") !== null, "should reject payload count over limit");
+});
+
+await test("rejects too many references", () => {
+  const t = VALID_ADD();
+  t.references = Array.from({ length: LIMITS.references + 1 }, () => ({ dataUrl: "data:image/png;base64,iVBORw0KGgo=" }));
+  assert(validateTriggerInput(t, "add") !== null, "should reject reference count over limit");
+});
+
+await test("rejects non-image dataUrl", () => {
+  const t = VALID_ADD();
+  t.references[0].dataUrl = "data:text/html;base64,PHNjcmlwdD4=";
+  assert(validateTriggerInput(t, "add") !== null, "should reject non-image data URL");
+});
+
+await test("rejects oversized reference image", () => {
+  const t = VALID_ADD();
+  t.references[0].dataUrl = "data:image/png;base64," + "A".repeat(LIMITS.imageB64);
+  assert(validateTriggerInput(t, "add") !== null, "should reject oversized image");
+});
+
+await test("rejects non-image maskDataUrl", () => {
+  const t = VALID_ADD();
+  t.references[0].maskDataUrl = "data:application/javascript;base64,YWxlcnQoMSk=";
+  assert(validateTriggerInput(t, "add") !== null, "should reject non-image mask");
+});
+
+await test("update requires a slug-shaped trigger id", () => {
+  const t = { id: "../evil", payloads: [{ title: "a", text: "b" }], references: [] };
+  assert(validateTriggerInput(t, "update") !== null, "should reject path-traversal id");
+  t.id = "map-button";
+  assertEqual(validateTriggerInput(t, "update"), null);
+});
+
+await test("remove validates id and nothing else", () => {
+  assert(validateTriggerInput({ id: "..%2f..%2fevil" }, "remove") !== null, "should reject bad id");
+  assertEqual(validateTriggerInput({ id: "ice-cream-1748-ab12" }, "remove"), null);
+});
+
+console.log("\n— normalisedRotation ---");
+
+await test("passes through a sane free rotation", () => {
+  const r = normalisedRotation({ mode: "free", minAngle: -30, maxAngle: 30, step: 5, fineStepNearZero: true, baseAngle: 0 });
+  assertEqual(r, { mode: "free", minAngle: -30, maxAngle: 30, step: 5, fineStepNearZero: true, baseAngle: 0 });
+});
+
+await test("clamps step ≤ 0 (would hang viewer angle loop)", () => {
+  const r = normalisedRotation({ mode: "free", step: 0 });
+  assert(r.step >= 0.5, `step must be clamped positive, got ${r.step}`);
+  const r2 = normalisedRotation({ mode: "free", step: -5 });
+  assert(r2.step >= 0.5, `negative step must be clamped, got ${r2.step}`);
+});
+
+await test("clamps non-numeric and out-of-range angles", () => {
+  const r = normalisedRotation({ mode: "free", minAngle: "<script>", maxAngle: 9999, step: "abc" });
+  assertEqual(r.minAngle, -30);
+  assertEqual(r.maxAngle, 180);
+  assertEqual(r.step, 5);
+});
+
+await test("orthogonal mode keeps no extra fields", () => {
+  assertEqual(normalisedRotation({ mode: "orthogonal", junk: "x".repeat(1000) }), { mode: "orthogonal" });
+});
+
+await test("null / junk rotation returns null", () => {
+  assertEqual(normalisedRotation(null), null);
+  assertEqual(normalisedRotation("free"), null);
+  assertEqual(normalisedRotation({ mode: "spin-forever" }), null);
+});
+
+await test("addTrigger persists validated rotation into profile.json", async () => {
+  const { gh, calls } = makeGh();
+  const t = { ...SAMPLE_TRIGGER, rotation: { mode: "free", minAngle: -15, maxAngle: 15, step: 0 } };
+  await addTrigger(gh, "slay-the-spire-2", "community", t, true, "hint");
+  const write = calls.find(c => c.method === "PUT" && c.path.includes("profile.json"));
+  const written = JSON.parse(b64decode(write.body.content));
+  const added = written.triggers.find(x => x.id.startsWith("ice-cream-"));
+  assert(added.rotation, "rotation should be persisted");
+  assert(added.rotation.step >= 0.5, "persisted step must be clamped positive");
+});
+
+await test("addTrigger refuses when profile is at trigger cap", async () => {
+  const full = { triggers: Array.from({ length: LIMITS.triggersPerProfile }, (_, i) => ({ id: `t-${i}` })) };
+  const { gh } = makeGh(full);
+  let threw = false;
+  try { await addTrigger(gh, "slay-the-spire-2", "community", SAMPLE_TRIGGER, true, "hint"); }
+  catch (err) { threw = true; assert(err.message.includes("full"), err.message); }
+  assert(threw, "should throw when profile is full");
 });
 
 // ---------------------------------------------------------------------------

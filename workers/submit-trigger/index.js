@@ -32,6 +32,71 @@ const CORS = {
   "Access-Control-Allow-Headers": "Content-Type, X-Submit-Secret, X-Contributor-Key",
 };
 
+// ---------------------------------------------------------------------------
+// Input validation
+//
+// The submit secret ships inside the extension, so anyone can extract it and
+// craft raw requests. Every ID below is interpolated into GitHub API paths —
+// an unvalidated gameId like "../.github/workflows" would let an attacker
+// write arbitrary files anywhere in the repo. Reject anything that isn't a
+// plain slug, and cap sizes so a hostile client can't bloat profile.json
+// (which every viewer downloads) or the references folder.
+// ---------------------------------------------------------------------------
+
+const ID_RE       = /^[a-z0-9][a-z0-9-]{0,63}$/;           // gameId, profileId, twitchSlug
+const TRIG_ID_RE  = /^[a-z0-9][a-z0-9-]{0,99}$/;           // trigger IDs (slug-ts-rand)
+const BRANCH_RE   = /^[a-zA-Z0-9][a-zA-Z0-9/_-]{0,120}$/;  // branches this worker created
+const REF_FILE_RE = /^[a-z0-9][a-z0-9-]{0,99}\.png$/;      // reference filenames on disk
+const IMG_URL_RE  = /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/;
+
+const LIMITS = {
+  title: 120,                 // payload title chars
+  text: 2000,                 // payload body chars
+  name: 80,                   // gameName / profileName chars
+  payloads: 5,
+  references: 3,
+  imageB64: 1_500_000,        // ~1.1 MB decoded reference image
+  maskB64: 600_000,           // masks are stored inline in profile.json
+  triggersPerProfile: 500,
+};
+
+// Returns an error string, or null if the trigger is acceptable.
+function validateTriggerInput(trigger, mode) {
+  if (mode !== "add" && !TRIG_ID_RE.test(trigger.id || "")) return "Invalid trigger id";
+  if (mode === "remove") return null;
+
+  const payloads = trigger.payloads;
+  if (!Array.isArray(payloads) || payloads.length < 1 || payloads.length > LIMITS.payloads)
+    return `payloads must be an array of 1–${LIMITS.payloads} entries`;
+  for (const p of payloads) {
+    if (p == null || typeof p !== "object")   return "each payload must be an object";
+    if (p.title != null && (typeof p.title !== "string" || p.title.length > LIMITS.title))
+      return `payload title must be a string of ≤${LIMITS.title} chars`;
+    if (p.text != null && (typeof p.text !== "string" || p.text.length > LIMITS.text))
+      return `payload text must be a string of ≤${LIMITS.text} chars`;
+  }
+
+  const refs = trigger.references || [];
+  if (!Array.isArray(refs) || refs.length > LIMITS.references)
+    return `references must be an array of ≤${LIMITS.references} entries`;
+  for (const r of refs) {
+    if (r == null || typeof r !== "object") return "each reference must be an object";
+    if (r.dataUrl != null) {
+      if (typeof r.dataUrl !== "string" || r.dataUrl.length > LIMITS.imageB64)
+        return "reference image too large";
+      if (!IMG_URL_RE.test(r.dataUrl))
+        return "reference image must be a png/jpeg/webp data URL";
+    }
+    if (r.maskDataUrl != null) {
+      if (typeof r.maskDataUrl !== "string" || r.maskDataUrl.length > LIMITS.maskB64)
+        return "mask image too large";
+      if (!IMG_URL_RE.test(r.maskDataUrl))
+        return "mask must be a png/jpeg/webp data URL";
+    }
+  }
+  return null;
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") return new Response(null, { headers: CORS });
@@ -51,6 +116,17 @@ export default {
     } = body;
 
     const contributorKey = request.headers.get("X-Contributor-Key") || null;
+
+    // Slug validation up front — these values feed GitHub API paths in every
+    // mode. Presence is checked per-mode below; here we only reject bad shapes.
+    if (gameId       != null && !ID_RE.test(gameId))       return json({ ok: false, error: "Invalid gameId" }, 400);
+    if (profileId    != null && !ID_RE.test(profileId))    return json({ ok: false, error: "Invalid profileId" }, 400);
+    if (newProfileId != null && !ID_RE.test(newProfileId)) return json({ ok: false, error: "Invalid newProfileId" }, 400);
+    if (twitchSlug   != null && !ID_RE.test(twitchSlug))   return json({ ok: false, error: "Invalid twitchSlug" }, 400);
+    if (gameName       != null && (typeof gameName !== "string" || gameName.length > LIMITS.name))
+      return json({ ok: false, error: `Invalid gameName (max ${LIMITS.name} chars)` }, 400);
+    if (newProfileName != null && (typeof newProfileName !== "string" || newProfileName.length > LIMITS.name))
+      return json({ ok: false, error: `Invalid newProfileName (max ${LIMITS.name} chars)` }, 400);
 
     // --- activate mode (anonymous usage ping) --------------------------------
     if (mode === "activate") {
@@ -101,6 +177,14 @@ export default {
       if (!trusted) return json({ ok: false, error: "Unauthorized" }, 403);
       const { prNumber, branch, trigger: editedTrigger } = body;
       if (!prNumber || !branch) return json({ ok: false, error: "Missing prNumber or branch" }, 400);
+      if (!Number.isInteger(Number(prNumber)) || Number(prNumber) < 1)
+        return json({ ok: false, error: "Invalid prNumber" }, 400);
+      if (!BRANCH_RE.test(branch) || branch.includes(".."))
+        return json({ ok: false, error: "Invalid branch" }, 400);
+      if (editedTrigger) {
+        const vErr = validateTriggerInput(editedTrigger, "update");
+        if (vErr) return json({ ok: false, error: vErr }, 400);
+      }
       try {
         const gh   = githubClient(env.GITHUB_TOKEN);
         const hint = contributorHint(contributorKey);
@@ -119,6 +203,10 @@ export default {
       if (!trusted) return json({ ok: false, error: "Unauthorized" }, 403);
       const { prNumber, comment } = body;
       if (!prNumber) return json({ ok: false, error: "Missing prNumber" }, 400);
+      if (!Number.isInteger(Number(prNumber)) || Number(prNumber) < 1)
+        return json({ ok: false, error: "Invalid prNumber" }, 400);
+      if (comment != null && (typeof comment !== "string" || comment.length > 2000))
+        return json({ ok: false, error: "Invalid comment (max 2000 chars)" }, 400);
       try {
         const gh = githubClient(env.GITHUB_TOKEN);
         await rejectProposal(gh, prNumber, comment || null);
@@ -160,6 +248,10 @@ export default {
     }
     if ((mode === "update" || mode === "remove") && !trigger.id) {
       return json({ ok: false, error: `Missing trigger id for ${mode}` }, 400);
+    }
+    {
+      const vErr = validateTriggerInput(trigger, mode);
+      if (vErr) return json({ ok: false, error: vErr }, 400);
     }
 
     const trusted = await isTrustedContributor(env, contributorKey, gameId, profileId);
@@ -260,9 +352,14 @@ async function addTrigger(gh, gameId, profileId, trigger, direct, hint) {
   }
 
   const { file: profileFile, profile } = await readProfile(gh, profilePath, branch || BASE);
+  if (profile.triggers.length >= LIMITS.triggersPerProfile) {
+    throw new Error(`Profile is full (${LIMITS.triggersPerProfile} triggers max)`);
+  }
+  const rotation = normalisedRotation(trigger.rotation);
   const newTrigger = {
     id:         rawId,
     ...(trigger.rotates ? { rotates: true } : {}),
+    ...(rotation ? { rotation } : {}),
     payloads:   normalisedPayloads(trigger.payloads),
     references: profileRefs,
   };
@@ -306,6 +403,8 @@ async function updateTrigger(gh, gameId, profileId, trigger, direct, hint) {
 
   const nextTrigger = { ...profile.triggers[idx], payloads: normalisedPayloads(trigger.payloads) };
   if (trigger.rotates) { nextTrigger.rotates = true; } else { delete nextTrigger.rotates; }
+  const rotation = normalisedRotation(trigger.rotation);
+  if (rotation) { nextTrigger.rotation = rotation; } else { delete nextTrigger.rotation; }
   if (trigger.references?.length) {
     console.log("[worker] Updating references for trigger:", trigger.id);
     console.log("[worker] Original reference:", JSON.stringify(profile.triggers[idx].references?.[0] || {}, null, 2));
@@ -532,6 +631,11 @@ async function acceptProposal(gh, gameId, profileId, prNumber, branch, editedTri
   // Copy reference PNG files from PR branch to main.
   for (const ref of (trigger.references || [])) {
     if (!ref.file) continue;
+    // Filenames become GitHub API path segments — only accept worker-generated shapes.
+    if (!REF_FILE_RE.test(ref.file)) {
+      console.warn(`[worker] Skipping reference with invalid filename: ${JSON.stringify(ref.file)}`);
+      continue;
+    }
     const filePath = `${profilePath}/references/${ref.file}`;
     try {
       const branchFile = await gh(`repos/${OWNER}/${REPO}/contents/${filePath}?ref=${branch}`, "GET");
@@ -555,9 +659,11 @@ async function acceptProposal(gh, gameId, profileId, prNumber, branch, editedTri
   // Apply trigger to main profile.json.
   const { file: mainFile, profile: mainProfile } = await readProfile(gh, profilePath, BASE);
   const existingIdx = mainProfile.triggers.findIndex(t => t.id === trigger.id);
+  const acceptedRotation = normalisedRotation(trigger.rotation);
   const finalTrigger = {
     id:         trigger.id,
     ...(trigger.rotates ? { rotates: true } : {}),
+    ...(acceptedRotation ? { rotation: acceptedRotation } : {}),
     payloads:   normalisedPayloads(trigger.payloads),
     references: (trigger.references || []).map(({ file, w, h, srcW, srcH, maskDataUrl }) =>
                   ({ file: file || null, w: w || null, h: h || null,
@@ -636,8 +742,38 @@ function normalisedPayloads(payloads) {
     title:       p.title       ?? "",
     text:        p.text        ?? "",
     image:       null,
-    popupOffset: p.popupOffset ?? { x: 14, y: 22 },
+    popupOffset: normalisedOffset(p.popupOffset),
   }));
+}
+
+// Rotation schema (M8). Clamping matters: the client's angle loop is
+// `for (a = minAngle; a <= maxAngle; a += step)` — a step ≤ 0 in profile.json
+// would hang every viewer's tab, so never let one through.
+function normalisedRotation(r) {
+  if (!r || typeof r !== "object") return null;
+  if (r.mode === "orthogonal") return { mode: "orthogonal" };
+  if (r.mode !== "free") return null;
+  const num = (v, def, min, max) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : def;
+  };
+  return {
+    mode: "free",
+    minAngle: num(r.minAngle, -30, -180, 0),
+    maxAngle: num(r.maxAngle,  30,    0, 180),
+    step:     num(r.step,       5,  0.5, 90),
+    fineStepNearZero: r.fineStepNearZero !== false,
+    baseAngle: num(r.baseAngle, 0, -180, 180),
+  };
+}
+
+// Only finite, clamped numbers reach profile.json — anything else gets defaults.
+function normalisedOffset(o) {
+  const x = Number(o?.x), y = Number(o?.y);
+  return {
+    x: Number.isFinite(x) ? Math.max(-2000, Math.min(2000, Math.round(x))) : 14,
+    y: Number.isFinite(y) ? Math.max(-2000, Math.min(2000, Math.round(y))) : 22,
+  };
 }
 
 function prBody(intro, gameId, profileId, extras = []) {
@@ -685,3 +821,16 @@ function json(data, status = 200) {
     headers: { ...CORS, "Content-Type": "application/json" },
   });
 }
+
+// Named exports exist solely so tests/worker-submit.js can exercise the real
+// implementations against a mock GitHub client. Wrangler only uses `default`.
+export {
+  OWNER, REPO, BASE, LIMITS,
+  ID_RE, TRIG_ID_RE, BRANCH_RE, REF_FILE_RE, IMG_URL_RE,
+  validateTriggerInput, normalisedPayloads, normalisedRotation, normalisedOffset,
+  isTrustedContributor, checkRateLimit, contributorHint,
+  addTrigger, updateTrigger, removeTrigger, createProfile,
+  listProposals, acceptProposal, rejectProposal,
+  getMainSha, readProfile, writeProfile, updateCatalogStats,
+  prBody, b64decode, b64encode,
+};
