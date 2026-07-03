@@ -32,6 +32,17 @@ workers/**/.wrangler/
 
 # Claude Code local settings
 .claude/settings.local.json
+.claude/hooks.disabled/
+.mcp.json
 
 # Extension secret config (contains SUBMIT_SECRET — do not commit)
 extension/config.js
+
+# Playwright output
+test-results/
+playwright-report/
+
+# Local media tooling and capture working data (not part of the product)
+bin/
+ffmpeg-*/
+games/
