@@ -101,7 +101,10 @@ async function addTrigger(gh, gameId, profileId, trigger, direct, hint) {
   const profilePath = `games/${gameId}/profiles/${profileId}`;
   const rawId = (trigger.payloads[0]?.title || trigger.id || Date.now().toString())
     .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-  const triggerId = `${rawId}-${Date.now()}`;
+  // Append a small random hex suffix to prevent same-millisecond collisions
+  const ts = Date.now();
+  const rand = Math.floor(Math.random() * 65536).toString(16).padStart(4, "0");
+  const triggerId = `${rawId}-${ts}-${rand}`;
   const branch = direct ? null : `trigger/${triggerId}`;
 
   if (!direct) {
@@ -133,7 +136,7 @@ async function addTrigger(gh, gameId, profileId, trigger, direct, hint) {
 
   const { file: profileFile, profile } = await readProfile(gh, profilePath, branch || BASE);
   const newTrigger = {
-    id:         rawId,
+    id:         triggerId,
     payloads:   normalisedPayloads(trigger.payloads),
     references: profileRefs,
   };
@@ -474,8 +477,8 @@ await test("new trigger appears in written profile", async () => {
   await addTrigger(gh, "slay-the-spire-2", "community", SAMPLE_TRIGGER, true, "f61d1f28");
   const write = calls.find(c => c.method === "PUT" && c.path.includes("profile.json"));
   const written = JSON.parse(b64decode(write.body.content));
-  const added = written.triggers.find(t => t.id === "ice-cream");
-  assert(added, "should contain the new trigger with id 'ice-cream'");
+  const added = written.triggers.find(t => t.id.startsWith("ice-cream-"));
+  assert(added, "should contain the new trigger with id starting with 'ice-cream-'");
   assertEqual(added.payloads[0].title, "Ice Cream");
 });
 
@@ -484,7 +487,8 @@ await test("trigger references list references uploaded image filename", async (
   await addTrigger(gh, "slay-the-spire-2", "community", SAMPLE_TRIGGER, true, "f61d1f28");
   const write = calls.find(c => c.method === "PUT" && c.path.includes("profile.json"));
   const written = JSON.parse(b64decode(write.body.content));
-  const added = written.triggers.find(t => t.id === "ice-cream");
+  const added = written.triggers.find(t => t.id.startsWith("ice-cream-"));
+  assert(added, "should find the new trigger");
   assert(added.references[0].file.startsWith("ice-cream-"), "reference filename should start with trigger id");
   assert(added.references[0].file.endsWith(".png"), "reference filename should end with .png");
 });
@@ -494,7 +498,8 @@ await test("new trigger preserves maskDataUrl in profile.json", async () => {
   await addTrigger(gh, "slay-the-spire-2", "community", SAMPLE_TRIGGER, true, "f61d1f28");
   const write = calls.find(c => c.method === "PUT" && c.path.includes("profile.json"));
   const written = JSON.parse(b64decode(write.body.content));
-  const added = written.triggers.find(t => t.id === "ice-cream");
+  const added = written.triggers.find(t => t.id.startsWith("ice-cream-"));
+  assert(added, "should find the new trigger");
   assertEqual(added.references[0].maskDataUrl, "data:image/png;base64,mask123");
 });
 
@@ -565,7 +570,53 @@ await test("returns prUrl from PR creation response", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. updateTrigger
+// 3. Duplicate prevention — addTrigger stores unique IDs
+// ---------------------------------------------------------------------------
+
+console.log("\n— addTrigger duplicate prevention ---");
+
+await test("addTrigger stores a unique ID with timestamp suffix", async () => {
+  const { gh, calls } = makeGh();
+  await addTrigger(gh, "slay-the-spire-2", "community", SAMPLE_TRIGGER, true, "hint");
+  const write = calls.find(c => c.method === "PUT" && c.path.includes("profile.json"));
+  const written = JSON.parse(b64decode(write.body.content));
+  const added = written.triggers.find(t => t.id.startsWith("ice-cream-"));
+  assert(added, "trigger should exist with id starting with 'ice-cream-'");
+  const suffix = added.id.replace("ice-cream-", "");
+  assert(/^\d+-[0-9a-f]{4}$/.test(suffix), 'id suffix "' + suffix + '" should match <timestamp>-<random>');
+});
+
+await test("addTrigger with same title produces different IDs (no collision)", async () => {
+  const sharedProfile = { triggers: [] };
+  const { gh: gh1, calls: calls1 } = makeGh(sharedProfile);
+  await addTrigger(gh1, "slay-the-spire-2", "community", SAMPLE_TRIGGER, true, "hint");
+  const write1 = calls1.find(c => c.method === "PUT" && c.path.includes("profile.json"));
+  const prof1 = JSON.parse(b64decode(write1.body.content));
+  const id1 = prof1.triggers.find(t => t.id.startsWith("ice-cream-")).id;
+
+  // Two calls can happen at the same ms; the random suffix prevents collision
+  const { gh: gh2, calls: calls2 } = makeGh(sharedProfile);
+  await addTrigger(gh2, "slay-the-spire-2", "community", SAMPLE_TRIGGER, true, "hint");
+  const write2 = calls2.find(c => c.method === "PUT" && c.path.includes("profile.json"));
+  const prof2 = JSON.parse(b64decode(write2.body.content));
+  const id2 = prof2.triggers.find(t => t.id.startsWith("ice-cream-")).id;
+
+  assert(id1 !== id2, 'two addTrigger calls with same title should produce different IDs, got "' + id1 + '" and "' + id2 + '"');
+});
+
+await test("stored trigger ID matches the reference filename prefix", async () => {
+  const { gh, calls } = makeGh();
+  await addTrigger(gh, "slay-the-spire-2", "community", SAMPLE_TRIGGER, true, "hint");
+  const write = calls.find(c => c.method === "PUT" && c.path.includes("profile.json"));
+  const written = JSON.parse(b64decode(write.body.content));
+  const added = written.triggers.find(t => t.id.startsWith("ice-cream-"));
+  assert(added, "should have ice-cream-* trigger");
+  const refFile = added.references[0].file.replace(".png", "");
+  assertEqual(refFile, added.id, "reference filename (without .png) should match trigger id");
+});
+
+// ---------------------------------------------------------------------------
+// 4. updateTrigger — edit in place
 // ---------------------------------------------------------------------------
 
 console.log("\n— updateTrigger ---");

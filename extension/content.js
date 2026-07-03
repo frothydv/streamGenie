@@ -556,8 +556,34 @@
       console.warn(`[overlay/content] schema: ${profileSchemaWarnings.length} trigger(s) skipped — invalid schema: ${profileSchemaWarnings.join(", ")}`);
     }
 
+    // Deduplicate triggers by ID — keep the LAST occurrence (most recently added/edited).
+    // Walk backwards: first occurrence seen = last in the array = newest.
+    const seenIds = new Set();
+    for (let i = profile.triggers.length - 1; i >= 0; i--) {
+      const t = profile.triggers[i];
+      if (seenIds.has(t.id)) {
+        console.warn(`[overlay/content] deduplicating trigger "${t.id}" — keeping newer entry`);
+        profile.triggers.splice(i, 1);
+      } else {
+        seenIds.add(t.id);
+      }
+    }
+
     const profileIdSet = new Set(profile.triggers.map(t => t.id));
     TRIGGERS = profile.triggers.map(t => ({ ...t, source: "profile" }));
+
+    // Build a content-signature set from profile triggers so we can match
+    // pending triggers by title+text (not just ID, which differs because
+    // pending triggers have "user-xxxx" IDs while profile triggers have
+    // server-generated IDs like "title-ts-rand").
+    const profileContentKeys = new Set(
+      TRIGGERS
+        .map(t => {
+          const p = (t.payloads || [])[0] || {};
+          return (p.title || "") + "|" + (p.text || "");
+        })
+        .filter(Boolean)
+    );
 
     // Clean up stale local data. The modified-triggers key is always dead code now.
     // For user-triggers: only delete once the CDN profile contains all of them —
@@ -566,12 +592,30 @@
     const uKey = userTriggersKey(ap.gameId, ap.profileId);
     const mKey = modifiedTriggersKey(ap.gameId, ap.profileId);
     const stored = await chrome.storage.local.get(uKey);
-    const pending = (stored[uKey] || []).filter(t => t.id && !profileIdSet.has(t.id));
+    const rawPending = stored[uKey] || [];
+    const pending = [];
+    for (const t of rawPending) {
+      // Match by ID first (fast path)
+      if (t.id && profileIdSet.has(t.id)) continue;
+      // Match by content (title+text) — handle "user-xxxx" vs server-ID mismatch
+      const sig = t.id && t.payloads
+        ? ((t.payloads[0] || {}).title || "") + "|" + ((t.payloads[0] || {}).text || "")
+        : null;
+      if (sig && profileContentKeys.has(sig)) {
+        console.log(`[overlay/content] pending trigger "${t.id}" content matches profile trigger — removing`);
+        continue;
+      }
+      pending.push(t);
+    }
     if (pending.length === 0) {
       await chrome.storage.local.remove([uKey, mKey]);
     } else {
       // Some locally-saved triggers haven't appeared in the CDN profile yet.
       // Keep them visible and don't delete the backup.
+      // If the count changed, write the trimmed list back to storage.
+      if (pending.length < rawPending.length) {
+        await chrome.storage.local.set({ [uKey]: pending });
+      }
       for (const t of pending) TRIGGERS.push({ ...t, source: "pending" });
       await chrome.storage.local.remove(mKey);
       console.log(`[overlay/content] ${pending.length} pending trigger(s) not yet in CDN profile — showing locally`);
@@ -3275,6 +3319,9 @@
         } else {
           await submitToProfile({ id: trigger.id, payloads: trigger.payloads, references: [] }, "remove");
         }
+        // Remove from in-memory TRIGGERS so the curator panel and next load stay consistent
+        const trigIdx = TRIGGERS.findIndex(t => t.id === trigger.id);
+        if (trigIdx >= 0) TRIGGERS.splice(trigIdx, 1);
         card.remove();
         cardMap.delete(trigger.id);
         const remaining = cardMap.size;
@@ -3623,6 +3670,10 @@
         const trigger = msg.trigger;
         console.log("[content] Full trigger object:", JSON.stringify(trigger, null, 2));
         console.log("[content] Processing trigger for edit:", trigger.id);
+        // Build profile hint from the message so submission targets the correct game/profile
+        const profileHint = (msg.gameId && msg.profileId)
+          ? { gameId: msg.gameId, profileId: msg.profileId, url: null, name: null }
+          : null;
         // Load the reference image
         const ref = trigger.references?.[0];
         if (ref) {
@@ -3633,8 +3684,14 @@
 
           // If no dataUrl but we have a filename, construct the URL
           if (!imageUrl && ref.file) {
-            // Get the profile URL to construct the base path
-            const profileUrl = activeProfile?.url || DEFAULT_PROFILE.url;
+            // Use the profile hint URL if available, otherwise fall back to activeProfile
+            let profileUrl = null;
+            if (profileHint) {
+              // Build profile URL from gameId/profileId
+              profileUrl = `https://raw.githubusercontent.com/frothydv/streamGenieProfiles/main/games/${profileHint.gameId}/profiles/${profileHint.profileId}/profile.json`;
+            } else {
+              profileUrl = activeProfile?.url || DEFAULT_PROFILE.url;
+            }
             const baseUrl = profileBaseUrl(profileUrl);
             imageUrl = baseUrl + "references/" + ref.file;
             console.log("[content] Constructed URL from filename:", imageUrl);
@@ -3657,13 +3714,13 @@
             const dataUrl = canvas.toDataURL("image/png");
             console.log("[content] Canvas converted to data URL");
 
-            // Open the editor with the trigger data
+            // Open the editor with the trigger data, passing profileHint
             openTriggerEditor(dataUrl, {
               videoW: ref.srcW || 1920,
               videoH: ref.srcH || 1080,
               cropW: ref.w || ref.origW || 160,
               cropH: ref.h || ref.origH || 160,
-            }, { mode: "edit", trigger });
+            }, { mode: "edit", trigger, profileHint });
             sendResponse({ success: true });
           };
           img.onerror = (err) => {

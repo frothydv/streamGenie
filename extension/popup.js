@@ -981,12 +981,16 @@ function ensureRawUrl(urlStr) {
       console.log("[popup] Content script check response:", checkResponse);
       console.log("[popup] Sending trigger object:", JSON.stringify(trigger, null, 2));
 
-      // Now try to send the edit trigger message
+      // Now try to send the edit trigger message with game/profile context
       const resp = await new Promise((resolve, reject) => {
         console.log("[popup] Sending edit-trigger message to tab", currentTab.id);
+        const gId = gameSelect.value || active.gameId;
+        const pId = profileSelect.value || active.profileId;
         chrome.tabs.sendMessage(currentTab.id, {
           type: "edit-trigger",
-          trigger: trigger
+          trigger: trigger,
+          gameId: gId,
+          profileId: pId,
         }, (r) => {
           console.log("[popup] Response received:", r, "Error:", chrome.runtime.lastError);
           if (chrome.runtime.lastError) {

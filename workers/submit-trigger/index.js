@@ -226,7 +226,10 @@ async function addTrigger(gh, gameId, profileId, trigger, direct, hint) {
   const profilePath = `games/${gameId}/profiles/${profileId}`;
   const rawId = (trigger.payloads[0]?.title || trigger.id || Date.now().toString())
     .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-  const triggerId = `${rawId}-${Date.now()}`;
+  // Append a small random hex suffix to prevent same-millisecond collisions
+  const ts = Date.now();
+  const rand = Math.floor(Math.random() * 65536).toString(16).padStart(4, "0");
+  const triggerId = `${rawId}-${ts}-${rand}`;
   const branch = direct ? null : `trigger/${triggerId}`;
 
   if (!direct) {
@@ -263,6 +266,9 @@ async function addTrigger(gh, gameId, profileId, trigger, direct, hint) {
     payloads:   normalisedPayloads(trigger.payloads),
     references: profileRefs,
   };
+  // Prevent duplicate IDs: use the unique triggerId (includes timestamp) instead of rawId
+  // so even if addTrigger is called again for the same title, IDs won't collide.
+  newTrigger.id = triggerId;
   profile.triggers.push(newTrigger);
 
   const title = newTrigger.payloads[0]?.title || rawId;
@@ -276,7 +282,7 @@ async function addTrigger(gh, gameId, profileId, trigger, direct, hint) {
 
   const pr = await gh(`repos/${OWNER}/${REPO}/pulls`, "POST", {
     title: `Add trigger: ${title}`,
-    body:  prBody("New trigger submitted via Stream Genie.", gameId, profileId, [`**Action:** add`, `**Trigger ID:** ${rawId}`]),
+    body:  prBody("New trigger submitted via Stream Genie.", gameId, profileId, [`**Action:** add`, `**Trigger ID:** ${triggerId}`]),
     head:  branch, base: BASE,
   });
   return { prUrl: pr.html_url };
