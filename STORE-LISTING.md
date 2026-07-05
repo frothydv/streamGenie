@@ -58,6 +58,14 @@ Stream Genie requests only the permissions needed to run the overlay and load co
 | `https://cdn.jsdelivr.net/*` | CDN fallback for community profiles |
 | `https://*.workers.dev/*` | Submit new trigger contributions |
 
+## Privacy Policy URL
+
+`https://frothydv.github.io/streamGenie/privacy.html`
+
+## Terms of Use URL
+
+`https://frothydv.github.io/streamGenie/terms.html`
+
 ## Version
 
-v0.9.2
+v0.11.1

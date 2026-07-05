@@ -7,6 +7,7 @@
     "test:matcher": "node tests/rotation-matching.js && node tests/masked-matching.js && node tests/detection-improvements.js && node tests/scale-matching.js",
     "test:e2e": "playwright test tests/e2e/",
     "test:e2e:headed": "playwright test tests/e2e/ --headed",
+    "package": "node scripts/build-alpha.js",
     "deploy": "wrangler deploy",
     "preview": "wrangler dev"
   },
