@@ -4,10 +4,14 @@
   },
   "scripts": {
     "test:grid-match": "node test-matching-node.js",
+    "test:matcher": "node tests/rotation-matching.js && node tests/masked-matching.js && node tests/detection-improvements.js && node tests/scale-matching.js",
     "test:e2e": "playwright test tests/e2e/",
-    "test:e2e:headed": "playwright test tests/e2e/ --headed"
+    "test:e2e:headed": "playwright test tests/e2e/ --headed",
+    "deploy": "wrangler deploy",
+    "preview": "wrangler dev"
   },
   "devDependencies": {
-    "@playwright/test": "^1.60.0"
+    "@playwright/test": "^1.60.0",
+    "wrangler": "^4.107.0"
   }
 }

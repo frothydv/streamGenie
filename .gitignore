@@ -46,3 +46,8 @@ playwright-report/
 bin/
 ffmpeg-*/
 games/
+
+.dev.vars*
+!.dev.vars.example
+.env*
+!.env.example
