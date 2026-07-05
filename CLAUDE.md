@@ -179,6 +179,14 @@ Reference PNGs live at `{profileBaseUrl}/references/{file}`.
 | `list-proposals` | lists open PRs for game/profile | — |
 | `accept-proposal` | merges PR | — |
 | `reject-proposal` | closes PR with comment | — |
+| `reissue-code` | — (admin only: `X-Admin-Key` = `ADMIN_KEY` secret) | — |
+
+`reissue-code` is the recovery path for lost contributor codes: it revokes all
+existing codes for a game/profile (pass `"revokeOld": false` to keep them) and
+returns a fresh one the contributor pastes into the popup. See HANDOFF.md
+"Contributor code recovery". Deploys must use
+`--config workers/submit-trigger/wrangler.toml` — the root `wrangler.jsonc`
+(docs site) shadows it otherwise.
 
 ## Gotchas discovered and handled
 

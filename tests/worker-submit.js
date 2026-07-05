@@ -33,7 +33,7 @@ function assertEqual(a, b) {
 // test, exercised against a mock GitHub client (no network calls).
 // ---------------------------------------------------------------------------
 
-import {
+import worker, {
   BASE, LIMITS,
   validateTriggerInput, normalisedPayloads, normalisedRotation,
   isTrustedContributor, contributorHint,
@@ -973,6 +973,93 @@ await test("addTrigger refuses when profile is at trigger cap", async () => {
   try { await addTrigger(gh, "slay-the-spire-2", "community", SAMPLE_TRIGGER, true, "hint"); }
   catch (err) { threw = true; assert(err.message.includes("full"), err.message); }
   assert(threw, "should throw when profile is full");
+});
+
+// ---------------------------------------------------------------------------
+// reissue-code (admin recovery for lost contributor codes)
+// ---------------------------------------------------------------------------
+
+console.log("\n— reissue-code ---");
+
+// Full KV mock with list/put/delete for the reissue flow.
+function makeFullKv(entries = {}) {
+  const store = { ...entries };
+  return {
+    store,
+    get: async (k) => store[k] ?? null,
+    put: async (k, v) => { store[k] = v; },
+    delete: async (k) => { delete store[k]; },
+    list: async () => ({ keys: Object.keys(store).map((name) => ({ name })) }),
+  };
+}
+
+function reissueRequest(headers = {}, bodyExtra = {}) {
+  return new Request("https://worker.test/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Submit-Secret": "test-secret", ...headers },
+    body: JSON.stringify({ mode: "reissue-code", gameId: "slay-the-spire-2", profileId: "community", ...bodyExtra }),
+  });
+}
+
+const OLD_A = "aaaaaaaa-0000-0000-0000-000000000001";
+const OLD_B = "bbbbbbbb-0000-0000-0000-000000000002";
+const OTHER = "cccccccc-0000-0000-0000-000000000003";
+function seededKv() {
+  return makeFullKv({
+    [OLD_A]: JSON.stringify({ gameId: "slay-the-spire-2", profileId: "community", label: "owner", createdAt: "2024-01-01" }),
+    [OLD_B]: JSON.stringify({ gameId: "slay-the-spire-2", profileId: "community", label: "helper", createdAt: "2024-02-01" }),
+    [OTHER]: JSON.stringify({ gameId: "balatro", profileId: "community", label: "owner", createdAt: "2024-03-01" }),
+  });
+}
+
+await test("reissue-code without admin key → 403", async () => {
+  const env = { SUBMIT_SECRET: "test-secret", ADMIN_KEY: "admin-1", CONTRIBUTOR_KEYS: seededKv() };
+  const res = await worker.fetch(reissueRequest(), env);
+  assertEqual(res.status, 403);
+});
+
+await test("reissue-code with wrong admin key → 403", async () => {
+  const env = { SUBMIT_SECRET: "test-secret", ADMIN_KEY: "admin-1", CONTRIBUTOR_KEYS: seededKv() };
+  const res = await worker.fetch(reissueRequest({ "X-Admin-Key": "nope" }), env);
+  assertEqual(res.status, 403);
+});
+
+await test("reissue-code when ADMIN_KEY secret is not configured → 403 (op disabled)", async () => {
+  const env = { SUBMIT_SECRET: "test-secret", CONTRIBUTOR_KEYS: seededKv() };
+  const res = await worker.fetch(reissueRequest({ "X-Admin-Key": "anything" }), env);
+  assertEqual(res.status, 403);
+});
+
+await test("reissue-code missing profileId → 400", async () => {
+  const env = { SUBMIT_SECRET: "test-secret", ADMIN_KEY: "admin-1", CONTRIBUTOR_KEYS: seededKv() };
+  const res = await worker.fetch(reissueRequest({ "X-Admin-Key": "admin-1" }, { profileId: undefined }), env);
+  assertEqual(res.status, 400);
+});
+
+await test("reissue-code revokes old codes for the profile, keeps others, issues a valid new one", async () => {
+  const kv = seededKv();
+  const env = { SUBMIT_SECRET: "test-secret", ADMIN_KEY: "admin-1", CONTRIBUTOR_KEYS: kv };
+  const res = await worker.fetch(reissueRequest({ "X-Admin-Key": "admin-1" }), env);
+  assertEqual(res.status, 200);
+  const data = await res.json();
+  assert(data.ok, "expected ok");
+  assertEqual(data.revoked, 2);
+  assert(kv.store[OLD_A] === undefined && kv.store[OLD_B] === undefined, "old codes must be revoked");
+  assert(kv.store[OTHER] !== undefined, "other profile's code must survive");
+  assert(/^[0-9a-f-]{36}$/.test(data.code), `expected UUID, got ${data.code}`);
+  // The reissued code must actually grant trust for the profile.
+  assertEqual(await isTrustedContributor(env, data.code, "slay-the-spire-2", "community"), true);
+  assertEqual(await isTrustedContributor(env, data.code, "balatro", "community"), false);
+});
+
+await test("reissue-code with revokeOld:false keeps existing codes", async () => {
+  const kv = seededKv();
+  const env = { SUBMIT_SECRET: "test-secret", ADMIN_KEY: "admin-1", CONTRIBUTOR_KEYS: kv };
+  const res = await worker.fetch(reissueRequest({ "X-Admin-Key": "admin-1" }, { revokeOld: false }), env);
+  const data = await res.json();
+  assertEqual(data.revoked, 0);
+  assert(kv.store[OLD_A] !== undefined, "old code must survive with revokeOld:false");
+  assertEqual(await isTrustedContributor(env, data.code, "slay-the-spire-2", "community"), true);
 });
 
 // ---------------------------------------------------------------------------

@@ -155,6 +155,49 @@ export default {
       return json({ ok: true, trusted });
     }
 
+    // --- reissue-code mode (admin only) ---------------------------------------
+    // Recovery path for lost contributor codes. Codes live only in KV and the
+    // contributor's browser storage; a dead PC loses the local copy. The
+    // maintainer verifies the requester out-of-band (e.g. they comment from the
+    // GitHub account whose PRs seeded the profile, or they're known in the
+    // community), then reissues. All existing codes for the profile are revoked
+    // by default so a stolen machine can't keep committing.
+    // Gated on env.ADMIN_KEY (wrangler secret) via X-Admin-Key — never ships in
+    // the extension. Absent secret = op disabled.
+    if (mode === "reissue-code") {
+      const adminKey = request.headers.get("X-Admin-Key");
+      if (!env.ADMIN_KEY || !adminKey || adminKey !== env.ADMIN_KEY) {
+        return json({ ok: false, error: "Unauthorized" }, 403);
+      }
+      if (!gameId || !profileId) return json({ ok: false, error: "Missing gameId/profileId" }, 400);
+      if (!env.CONTRIBUTOR_KEYS) return json({ ok: false, error: "KV not configured" }, 500);
+      try {
+        let revoked = 0;
+        if (body.revokeOld !== false) {
+          const list = await env.CONTRIBUTOR_KEYS.list({ limit: 1000 });
+          for (const k of list.keys) {
+            try {
+              const data = JSON.parse(await env.CONTRIBUTOR_KEYS.get(k.name));
+              if (data && data.gameId === gameId && data.profileId === profileId) {
+                await env.CONTRIBUTOR_KEYS.delete(k.name);
+                revoked++;
+              }
+            } catch { /* unparsable entry — leave it */ }
+          }
+        }
+        const code = crypto.randomUUID();
+        await env.CONTRIBUTOR_KEYS.put(code, JSON.stringify({
+          gameId, profileId,
+          label: typeof body.label === "string" ? body.label.slice(0, 80) : "reissued",
+          createdAt: new Date().toISOString(),
+        }));
+        return json({ ok: true, code, revoked });
+      } catch (err) {
+        console.error("reissue-code failed:", err.message);
+        return json({ ok: false, error: err.message }, 500);
+      }
+    }
+
     // --- list-proposals mode ------------------------------------------------
     if (mode === "list-proposals") {
       if (!gameId || !profileId) return json({ ok: false, error: "Missing gameId/profileId" }, 400);

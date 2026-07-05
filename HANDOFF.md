@@ -21,9 +21,53 @@ model (Haiku, local qwen) can do them one at a time.
   worker's secret. On a new machine, copy it from the old machine or create it
   and re-set the worker secret to match.
 - Worker secrets: `npx wrangler secret put GITHUB_TOKEN` (PAT with Contents +
-  Pull requests write on streamGenieProfiles) and `npx wrangler secret put SUBMIT_SECRET`.
+  Pull requests write on streamGenieProfiles), `npx wrangler secret put SUBMIT_SECRET`,
+  and `npx wrangler secret put ADMIN_KEY` (any strong random string, e.g. a
+  UUID; gates the `reissue-code` recovery op — keep it in your password
+  manager, it is never stored anywhere else).
 - KV namespaces (bound in `wrangler.toml`): `CONTRIBUTOR_KEYS` (uuid → {gameId,
   profileId, label}) and `PROFILE_STATS` (usage counters + rate-limit buckets).
+
+**Deploy gotcha (wrangler 4):** the repo root has a `wrangler.jsonc` for the
+docs site, and wrangler picks it up even when you `cd workers/submit-trigger`.
+Always deploy the submit worker with an explicit config path (same for
+`secret put` — the secret must land on `streamgenie-submit`, not the docs
+worker):
+
+```
+npx wrangler deploy --config workers/submit-trigger/wrangler.toml
+npx wrangler secret put ADMIN_KEY --config workers/submit-trigger/wrangler.toml
+```
+
+### Contributor code recovery (lost/stolen machines)
+
+Codes exist in exactly two places: the `CONTRIBUTOR_KEYS` KV namespace and the
+contributor's `chrome.storage.local`. A dead PC only loses the local copy —
+nothing is gone server-side.
+
+- **You (any code, read-only):** Cloudflare dashboard → Workers KV →
+  CONTRIBUTOR_KEYS, or CLI:
+  `npx wrangler kv key list --namespace-id 004b66d57d684ae5b0c969d5a825d30b --remote`
+  then `... kv key get <uuid> --namespace-id ... --remote` — each value names
+  its gameId/profileId/label. Paste the uuid into the popup's contributor-code
+  field on the new machine.
+- **A community contributor:** verify they own the profile out-of-band (e.g.
+  they comment from the GitHub account whose PRs seeded it, or they're known in
+  the community), then reissue:
+
+  ```
+  curl -X POST https://streamgenie-submit.vbjosh.workers.dev \
+    -H "Content-Type: application/json" \
+    -H "X-Submit-Secret: <SUBMIT_SECRET>" \
+    -H "X-Admin-Key: <ADMIN_KEY>" \
+    -d '{"mode":"reissue-code","gameId":"<game>","profileId":"<profile>","label":"reissued-for-<who>"}'
+  ```
+
+  Returns `{ ok, code, revoked }`. All prior codes for that profile are revoked
+  by default (a "lost" laptop might be a stolen one) — pass `"revokeOld":false`
+  to keep them. Send the new code to the contributor; they paste it into the
+  popup's "have a contributor code?" field, which verifies it against the
+  worker.
 
 ### Tests
 

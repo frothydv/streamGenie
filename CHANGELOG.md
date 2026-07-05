@@ -23,6 +23,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   active ref; refs up to 320px now match (previously silently disabled >160px).
 - **NCC local refinement** — ±2px hill-search rescues matches where compression
   noise landed dHash a pixel or two off the pixel-aligned position.
+- **`reissue-code` worker op (admin-gated)** — recovery path for lost
+  contributor codes: revokes a profile's existing codes and issues a fresh one.
+  Gated on the new `ADMIN_KEY` worker secret; disabled when the secret is
+  unset. Runbook in HANDOFF.md "Contributor code recovery".
 
 ### Performance
 - **Cursor-bounded search** — each ref now scans only window positions whose
