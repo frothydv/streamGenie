@@ -36,7 +36,7 @@ Creators will declare which profiles their viewers get via `creators/twitch/{str
 
 Manifest V3 Chrome extension. YouTube and Firefox are post-beta.
 
-## Current state — v0.9.0
+## Current state — v0.11.0
 
 All core milestones are complete. The extension can detect a game, load a community profile from GitHub, match triggers against live video pixels, show popups, and let contributors submit new triggers via a Cloudflare Worker that opens PRs.
 
@@ -52,6 +52,16 @@ All core milestones are complete. The extension can detect a game, load a commun
 - **M7:** Full contribution flow. Capture → reference editor (payload text, popup offset, mask paint, rotation schema) → submit to `streamgenie-submit.vbjosh.workers.dev`. Trusted contributors commit directly to main; untrusted contributors open PRs. Popup shows pending proposals; maintainer can accept or reject from within the extension.
 - **M8 (rotation schema):** Rotation-aware matching. Triggers declare a rotation schema (mode: `orthogonal` | `free`, with configurable range/step/fine-steps). Phase 1 always matches the as-captured orientation; Phase 2 searches additional angles. Authoring UI includes animated inline preview and a live heat-map validation test. 39-test suite.
 - **M9 (NCC verification):** NCC (Normalized Cross-Correlation) secondary match pass. After dHash locates the best candidate position, NCC verifies it using a summed-area table for O(1) mean/variance. NCC normalizes for local brightness and contrast, making it immune to H.264 level shifts that cause dHash near-misses on live streams. Score ≥ 0.65 fires a match independently of the dHash ratio. SAT built once per hover event and shared across all triggers (~0.24ms overhead). Debug panel surfaces ncc= score. Map-icon went from failing at ±3 noise to holding at ±20.
+- **M10 (detection precision):** Four related upgrades to the matching pipeline:
+  - *Occlusion-tolerant block matching.* The ref is split into a 4×4 grid and each block is NCC-scored independently (per-block mean/variance on both sides) at the dHash-best position. If full-ref dHash/NCC fail but ≥70% of scorable blocks hit ≥0.6 with mean ≥0.75, the match fires with `occluded: true` — a trigger partially covered by a tooltip or overlapping card still detects (~25% coverage tolerated). Gated on dHash ratio ≤ 0.45 only; global NCC is deliberately not consulted, because a high-contrast occluder shifts the window mean and can sink global NCC below zero at the exact match position. Debug panel shows `occ=passed/valid`.
+  - *NCC local refinement.* When NCC at the dHash-best position is a near-miss (0.3–0.65), a ±2px hill-search finds the pixel-aligned position before giving up (radius 1 for refs >16k px²). Rescues compression-noise cases where dHash lands a pixel or two off.
+  - *Better mask resampling.* Canonical and native mask draws use `imageSmoothingEnabled = true` (unlike the ref image, which needs floor-sampling for hash bit-exactness), so each downscaled mask pixel is an area average; the ≥128 alpha checks downstream become true majority-coverage tests. `buildRefNCC` mask threshold tightened from `alpha > 0` to `alpha ≥ 128`.
+  - *Dynamic capture window.* `CAPTURE_SIZE` is no longer fixed at 160: `updateCaptureSize()` grows it in 16px steps (up to `MAX_CAPTURE_SIZE` 320) to fit the largest active ref plus 32px slide room. Refs up to 320px now match (previously silently disabled above 160). The matcher is recreated on resize — cheap, since all per-ref data is capture-size independent.
+- **M11 (perf + scale):** Two changes that make large trigger sets and larger windows affordable, plus scale-aware matching:
+  - *Cursor-bounded search + early exit.* `findBestMatch` takes `{cursorX, cursorY}` (the live path always provides it); each ref scans only positions whose bbox contains the cursor ± 4px (`cursorBounds`), so per-ref cost tracks REF size, not window size. Evaluation checks the most recently matched trigger first and stops at the first confident match — hovering a matched trigger is ~0.3ms at any trigger count. Without a cursor (tests, heat-map) the search stays exhaustive.
+  - *Adaptive fallback.* The no-coarse-candidate fallback scans at stride 2 with ±1px refinement around the top 8 candidates instead of step-1 everywhere. Refs whose hash degrades >8 bits at a 1px offset (pixel art — measured once at rehash by `refPeakSharpness`) keep the step-1 scan.
+  - *Scale-aware matching (opt-in).* Trigger-level `scale: {min, max, step}` schema (worker-validated via `normalisedScale`, editor exposes a single checkbox defaulting to 0.75×–1.5×). The canonical-hash construction makes the 64-bit hash scale-invariant, so Phase 2 re-searches the SAME hash with per-scale sample geometry + per-scale NCC stats (`ref.scaledRefs`, built in `rehashRef` via `scalePixels`). Match requires the tighter 7/64 dHash ratio AND NCC ≥ 0.5, or NCC ≥ 0.65 alone. Phase 1's canonical hash naturally tolerates ~±15% scale drift already; the sweep covers the rest. Best practice: capture the LARGEST appearance (downscaling is well-posed, upscaling is guessing).
+  - *Latent bugs fixed along the way:* CDN-loaded profile triggers never inherited trigger-level `rotation` onto refs (rotation only worked for local triggers); `submitToProfile` dropped the structured `rotation` schema (only the legacy boolean survived).
 
 ### Profile selection gap
 
@@ -72,13 +82,17 @@ workers/
     index.js              # Cloudflare Worker — add/update/remove/create-profile/review ops
     wrangler.toml         # Worker config (account: vbjosh)
 tests/
-  rotation-matching.js    # 39 tests — angle generation, accuracy, heat-map invariants, speed
+  rotation-matching.js         # 55 tests — angle generation, accuracy, heat-map invariants, speed
+  masked-matching.js           # 7 tests — mask-aware dHash bits and verify grid
+  detection-improvements.js    # 14 tests — occlusion blocks, NCC refinement, masks, large windows
+  scale-matching.js            # 15 tests — scale schema/sweep, cursor bounds, sharp-peak fallback
 ```
+See RECOGNIZERS.md for the long-term recognition architecture (template matching today → learned embeddings later) and how the profile system stays recognition-method agnostic.
 
 `content.js` is an IIFE with `window.__streamOverlayLoaded` guard. Major sections:
 1. Config constants and profile loading
 2. Video discovery (`findBestVideo`, `attachToVideo`, 500ms heartbeat)
-3. Pixel capture (`clientToVideoCoords`, `captureRegion`, 160×160 + 480×480 wide)
+3. Pixel capture (`clientToVideoCoords`, `captureRegion`, dynamic 160–320 window + 480×480 wide)
 4. Matching pipeline (invokes `MatcherCore.findBestMatch`)
 5. Popup rendering (dark Twitch theme, auto-dismiss on cursor leave)
 6. Debug panel
@@ -142,7 +156,8 @@ tests/
         "fineStepNearZero": true,
         "baseAngle": 0
       },
-      "rotates": true
+      "rotates": true,
+      "scale": { "min": 0.75, "max": 1.5, "step": 1.12 }
     }
   ]
 }
@@ -183,7 +198,7 @@ Reference PNGs live at `{profileBaseUrl}/references/{file}`.
 2. `chrome://extensions/` → reload the "Stream Genie (pre-alpha)" card.
 3. Reload the Twitch page.
 4. F12 → Console, filter by `[overlay` for extension logs.
-5. Run `node tests/rotation-matching.js` for the matcher test suite.
+5. Run `npm run test:matcher` for the matcher test suites (rotation, masks, detection improvements).
 6. Run `npm run test:e2e` for the Playwright e2e suite (6 tests — error states, CDN failure, schema validation). Requires Chromium: `npx playwright install chromium`.
 
 ## Known limitations
@@ -195,6 +210,9 @@ References smaller than ~40px at the viewer's stream resolution are silently ski
 - **480p and below:** most small refs disabled.
 
 Acceptable while profiles are anchored to streamers who broadcast at source resolution. Future options: canonical-size hashing (resize both sides to 32×32), pHash (DCT-based), or color histogram confirmation pass.
+
+### Matching cost with very large trigger sets (mostly solved in M11)
+Post-M11 benchmarks (Node, synthetic mixed 40–130px refs, cursor provided): hovering a **matching trigger is ~0.3ms at any trigger count** (early exit + last-matched-first). Hovering **background** (the miss path, every ref evaluated): ~30ms at 50 triggers, ~115ms at 200, ~280ms at 500 — 160px window; a 320px window adds ~20–30%. Worst case is a profile of hundreds of *same-frame* cards (dHash ratios cluster low, so the occlusion block pass runs often): ~1.4s at 500 triggers + 320px. Realistic beta profiles (≤100 triggers) sit comfortably inside the 100ms hover budget. If a profile ever needs 500+ similar triggers, the next levers are: a per-hover budget cap on the occlusion block pass, and amortizing miss-path evaluation across hover events (round-robin). `scratchpad` benchmark lived out-of-repo; re-create from the numbers in CHANGELOG 0.11.0 if needed.
 
 ## Working style notes
 

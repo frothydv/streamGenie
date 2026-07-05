@@ -6,6 +6,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [0.11.0] — 2026-07-05
+
+### Added
+- **Occlusion-tolerant matching** — the ref is scored as a 4×4 grid of
+  independent NCC blocks at the dHash-best position; a trigger with ~25% of it
+  covered (tooltip, overlapping card) still fires, flagged `occluded` with
+  `occ=passed/valid` in the debug panel.
+- **Scale-aware matching (opt-in per trigger)** — new `scale: {min, max, step}`
+  schema. Phase 2 re-searches the same canonical hash at additional window
+  geometries with per-scale NCC stats, so art the game renders at a different
+  size than captured (hand card vs. inspect view) still matches. One-checkbox
+  editor toggle ("appears at different sizes"), default 0.75×–1.5×. Worker
+  validates and clamps the schema (`normalisedScale`).
+- **Dynamic capture window** — grows 160→320px in 16px steps to fit the largest
+  active ref; refs up to 320px now match (previously silently disabled >160px).
+- **NCC local refinement** — ±2px hill-search rescues matches where compression
+  noise landed dHash a pixel or two off the pixel-aligned position.
+
+### Performance
+- **Cursor-bounded search** — each ref now scans only window positions whose
+  bounding box contains the cursor (hover semantics), making per-ref cost track
+  ref size instead of capture-window size.
+- **Early exit + last-matched-first ordering** — hovering a matched trigger is
+  now ~0.3ms regardless of trigger count (was equal to the full-scan cost).
+- **Adaptive fallback scan** — stride-2 + top-8 ±1px refinement replaces the
+  full step-1 fallback; refs measured sharp-peaked at rehash (pixel art) keep
+  step-1 (`refPeakSharpness`).
+- Benchmarks (synthetic, mixed 40–130px refs): hovering background with 200
+  triggers: 1.2s → ~115ms; 500 triggers: 4.5s → ~280ms; hovering a trigger:
+  ~0.3ms flat at any count. Worst case (500 same-frame cards, 320px window):
+  22s → 1.4s.
+
+### Fixed
+- **Profile triggers now inherit `rotation`/`rotates`/`scale`** — CDN-loaded
+  profiles previously never passed the trigger-level rotation schema down to
+  refs, so rotation only worked for locally saved triggers.
+- **Submit payload now includes the structured `rotation` schema** (and
+  `scale`) — previously only the legacy boolean survived submission, so the
+  M8 authoring UI's schema never reached the profiles repo.
+- **Mask resampling** — canonical/native mask draws use area-averaging
+  (`imageSmoothingEnabled = true`) and `buildRefNCC` requires alpha ≥ 128, so
+  mask decisions are majority-coverage tests instead of nearest-neighbor
+  aliasing artifacts.
+- **Fractional cursor coordinates** are rounded before building search bounds
+  (fractional scan positions corrupted pixel indexing).
+
+### Infrastructure
+- New test suites: `tests/detection-improvements.js` (14),
+  `tests/scale-matching.js` (15); `npm run test:matcher` runs all four matcher
+  suites (91 tests). Worker suite extended for `normalisedScale` (85 tests).
+
 ## [0.10.1] — 2026-06-01
 
 ### Fixed

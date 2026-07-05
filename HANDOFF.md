@@ -88,30 +88,35 @@ server-side in `workers/submit-trigger/index.js`:
 
 ## Matching: better / faster (post-beta roadmap, in priority order)
 
-Current pipeline (good): hover-scoped capture → dHash sliding window at native
-crop size → NCC verification with shared summed-area table (M9). Rotated
-reference hashes are precomputed at profile load, not per hover.
+Current pipeline (good, as of v0.11.0): hover-scoped capture (dynamic 160–320px
+window) → cursor-bounded dHash sliding window at native crop size → NCC
+verification with shared summed-area table, ±2px refinement, occlusion block
+voting → Phase 2 rotation/scale sweeps for opted-in triggers. Early exit +
+last-matched-first makes repeated hovers ~0.3ms; see CHANGELOG 0.11.0 for
+benchmark numbers. Long-term recognition architecture (embeddings, tracking):
+see RECOGNIZERS.md.
 
 1. **Canonical-size hashing** for sub-720p streams: resize both the reference
    and the capture window to a fixed 32×32 before hashing, so a 35px ref at 480p
    stops being skipped. Biggest gap in viewer experience today; medium effort in
-   `matcher-core.js` (`buildRefHash` / `findBestMatch`).
-2. **Coarse-to-fine search:** before the full dHash slide, prefilter candidate
-   positions with a 4×-downsampled absolute-difference pass and only run dHash
-   on the top K positions. Cuts per-hover cost roughly 5–10×; helps most when a
-   profile has many triggers.
+   `matcher-core.js`.
+2. **Temporal tracking** (see RECOGNIZERS.md, "prototype first"): once matched,
+   track the patch across frames instead of re-matching. UX + perf win, and the
+   first step toward moving-object recognition.
 3. **pHash (DCT) as a secondary hash** for refs whose dHash is low-entropy
    (flat art, gradients). Compute at authoring time, store alongside; only
    consult when dHash is ambiguous.
 4. **Color-histogram confirmation:** cheap 8-bucket hue histogram comparison as
    a tiebreaker when NCC is borderline (0.55–0.65). Low effort, kills the
    remaining false positives on grayscale-similar shapes.
-5. **Bench first:** `tests/bench-ncc.js` exists — extend it before optimizing so
+5. **Occlusion-pass budget cap** if profiles grow past ~200 same-frame triggers:
+   the block-NCC pass is the remaining miss-path cost driver in that regime.
+6. **Bench first:** `tests/bench-ncc.js` exists — extend it before optimizing so
    wins are measured, not guessed.
 
 ## Before the Chrome Web Store listing
 
-- Manifest is v0.10.1, MV3, permissions are already minimal (`activeTab`,
+- Manifest is v0.11.0, MV3, permissions are already minimal (`activeTab`,
   `storage`, scoped host permissions) — good.
 - Privacy disclosure: first-run banner + privacy link exist and are e2e-tested
   (`tests/e2e/privacy-disclosure.spec.js`). The store listing text must repeat
