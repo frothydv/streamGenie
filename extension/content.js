@@ -2133,7 +2133,7 @@
     const overlayCtx = overlayCanvas.getContext("2d");
 
     const maskCanvas = document.createElement("canvas");
-    const maskCtx = maskCanvas.getContext("2d");
+    const maskCtx = maskCanvas.getContext("2d", { willReadFrequently: true });
     const sourceImg = new Image();
     const maskImg = initialMaskDataUrl ? new Image() : null;
     let tintDirty = false;
@@ -2679,6 +2679,8 @@
       hidePopups();
       return;
     }
+
+    if (captureMode) return;
 
     // Cursor is hovering over a popup — don't disturb it.
     if (overPopup) return;
