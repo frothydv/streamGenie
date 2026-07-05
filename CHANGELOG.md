@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [0.11.1] — 2026-07-05
+
+### Fixed
+- **Chunky capture-mode dragging** — `onDocumentMouseMove` had no guard for
+  capture mode, so dragging the trigger-selection box also re-ran the full
+  hover-matching pipeline (dHash, NCC, occlusion, scale sweep) on every
+  mousemove, since the frozen capture overlay sits on top of the still-live
+  video element. Now skipped entirely while capture mode is active — box
+  dragging is back to tracking the cursor directly.
+
 ## [0.11.0] — 2026-07-05
 
 ### Added

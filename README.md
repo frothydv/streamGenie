@@ -19,7 +19,7 @@ Think of it like Steam's controller profiles — Stream Genie is the framework. 
 
 > **Chrome Web Store listing coming soon.** For now, sideload it:
 
-1. Download **[stream-genie-v0.9.zip](https://github.com/frothydv/streamGenie/releases/latest)** and unzip it anywhere.
+1. Download the **[latest release zip](https://github.com/frothydv/streamGenie/releases/latest)** and unzip it anywhere.
 2. Open Chrome → `chrome://extensions/` → enable **Developer mode** (top-right toggle).
 3. Click **Load unpacked** → select the unzipped `extension/` folder.
 4. The Stream Genie lamp icon appears in your toolbar.
@@ -31,7 +31,7 @@ Think of it like Steam's controller profiles — Stream Genie is the framework. 
 3. Hover over items in the video — cards, relics, icons, anything the community has annotated.
 4. A popup appears near your cursor. Move away and it disappears.
 
-Matching is done locally in your browser using perceptual image hashing. Nothing is sent to a server during normal use.
+Matching is done locally in your browser using perceptual image hashing, verified with normalized cross-correlation. It tolerates partial occlusion (a tooltip or overlapping card covering part of the icon), rotation, and items that render at a different size than they were captured at. Nothing is sent to a server during normal use.
 
 ## Permissions
 
@@ -67,7 +67,7 @@ Your submission goes to [streamGenieProfiles](https://github.com/frothydv/stream
 Want your viewers to have instant context while watching?
 
 - **Profile owners** create and manage profiles for their game. Creating a profile gives you a contributor code to share with trusted contributors.
-- **Streamers** can declare a default profile for their channel — viewers who install Stream Genie get your preferred profile automatically (config in the profiles repo).
+- **Streamer-declared default profiles** (pick your preferred profile automatically for your channel) are planned but not yet built — profile selection is currently manual per viewer.
 - Community PRs appear at [streamGenieProfiles/pulls](https://github.com/frothydv/streamGenieProfiles/pulls) for you to review and merge.
 
 ## Supported games
