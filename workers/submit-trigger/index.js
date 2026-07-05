@@ -356,10 +356,12 @@ async function addTrigger(gh, gameId, profileId, trigger, direct, hint) {
     throw new Error(`Profile is full (${LIMITS.triggersPerProfile} triggers max)`);
   }
   const rotation = normalisedRotation(trigger.rotation);
+  const scale = normalisedScale(trigger.scale);
   const newTrigger = {
     id:         rawId,
     ...(trigger.rotates ? { rotates: true } : {}),
     ...(rotation ? { rotation } : {}),
+    ...(scale ? { scale } : {}),
     payloads:   normalisedPayloads(trigger.payloads),
     references: profileRefs,
   };
@@ -405,6 +407,8 @@ async function updateTrigger(gh, gameId, profileId, trigger, direct, hint) {
   if (trigger.rotates) { nextTrigger.rotates = true; } else { delete nextTrigger.rotates; }
   const rotation = normalisedRotation(trigger.rotation);
   if (rotation) { nextTrigger.rotation = rotation; } else { delete nextTrigger.rotation; }
+  const scale = normalisedScale(trigger.scale);
+  if (scale) { nextTrigger.scale = scale; } else { delete nextTrigger.scale; }
   if (trigger.references?.length) {
     console.log("[worker] Updating references for trigger:", trigger.id);
     console.log("[worker] Original reference:", JSON.stringify(profile.triggers[idx].references?.[0] || {}, null, 2));
@@ -664,6 +668,7 @@ async function acceptProposal(gh, gameId, profileId, prNumber, branch, editedTri
     id:         trigger.id,
     ...(trigger.rotates ? { rotates: true } : {}),
     ...(acceptedRotation ? { rotation: acceptedRotation } : {}),
+    ...(normalisedScale(trigger.scale) ? { scale: normalisedScale(trigger.scale) } : {}),
     payloads:   normalisedPayloads(trigger.payloads),
     references: (trigger.references || []).map(({ file, w, h, srcW, srcH, maskDataUrl }) =>
                   ({ file: file || null, w: w || null, h: h || null,
@@ -767,6 +772,23 @@ function normalisedRotation(r) {
   };
 }
 
+// Scale schema: {min, max, step} multiplicative sweep range. Clamped to the
+// same bounds the extension's scalesForSchema enforces, so a hostile client
+// can't ship a range that grinds viewers' matching to a halt.
+function normalisedScale(s) {
+  if (!s || typeof s !== "object") return null;
+  if (s.mode === "none") return null;
+  const num = (v, def, min, max) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : def;
+  };
+  return {
+    min:  num(s.min, 0.75, 0.25, 1),
+    max:  num(s.max, 1.5,  1,    4),
+    step: num(s.step, 1.12, 1.03, 2),
+  };
+}
+
 // Only finite, clamped numbers reach profile.json — anything else gets defaults.
 function normalisedOffset(o) {
   const x = Number(o?.x), y = Number(o?.y);
@@ -827,7 +849,7 @@ function json(data, status = 200) {
 export {
   OWNER, REPO, BASE, LIMITS,
   ID_RE, TRIG_ID_RE, BRANCH_RE, REF_FILE_RE, IMG_URL_RE,
-  validateTriggerInput, normalisedPayloads, normalisedRotation, normalisedOffset,
+  validateTriggerInput, normalisedPayloads, normalisedRotation, normalisedScale, normalisedOffset,
   isTrustedContributor, checkRateLimit, contributorHint,
   addTrigger, updateTrigger, removeTrigger, createProfile,
   listProposals, acceptProposal, rejectProposal,
