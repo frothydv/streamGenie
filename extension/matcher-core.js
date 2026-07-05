@@ -27,6 +27,58 @@
     // immune to H.264 brightness shifts that cause dHash near-misses on live streams.
     // A true match typically scores ≥ 0.85; unrelated content scores ≤ 0.3.
     nccMatchThreshold: 0.65,
+    // NCC local refinement: dHash occasionally lands a pixel or two off under
+    // compression noise, which tanks the NCC score at the reported position.
+    // When the base NCC is a near-miss (≥ nccRefineMin but below the match
+    // threshold), hill-search a ±nccRefineRadius neighborhood for a better
+    // position before giving up. Radius drops to 1 for very large refs to
+    // bound per-hover cost.
+    nccRefineMin: 0.3,
+    nccRefineRadius: 2,
+    nccRefineLargeRefArea: 16384, // above this (px²), refine at radius 1
+    // Occlusion-tolerant block matching. The ref is divided into a
+    // blockGrid×blockGrid grid and each block is NCC-scored independently at
+    // the dHash-best position. A partially covered trigger (tooltip, another
+    // card, a cursor sprite) fails full-ref dHash/NCC but still has a strong
+    // majority of cleanly matching blocks. Note the GLOBAL NCC score is not a
+    // useful gate here: a high-contrast occluder shifts the whole window's
+    // mean/variance and can drag global NCC to zero or negative even at the
+    // exact match position. Guards against false positives:
+    //  - only runs when dHash ratio ≤ occlusionMaxRatio (dHash degrades
+    //    roughly linearly with occluded area, so a plausible position still
+    //    scores moderately well), which also keeps the per-block cost off the
+    //    common miss path;
+    //  - needs ≥ occlusionMinValidBlocks scorable blocks (enough ref texture);
+    //  - needs ≥ occlusionPassFraction of them at ≥ blockNccThreshold, with
+    //    mean passing score ≥ occlusionMeanScore. Random content essentially
+    //    never sustains NCC ≥ 0.6 across a dozen independent blocks.
+    // With a 4×4 grid this tolerates roughly a quarter of the trigger being
+    // covered (e.g. one corner quadrant = 4 of 16 blocks).
+    blockGrid: 4,
+    blockMinPixels: 16,
+    blockNccThreshold: 0.6,
+    occlusionMinValidBlocks: 8,
+    occlusionPassFraction: 0.7,
+    occlusionMeanScore: 0.75,
+    occlusionMaxRatio: 0.45,
+    // Cursor-centered search: findBestMatch limits each ref's sliding-window
+    // scan to positions whose bounding box contains the cursor, ± searchPad px
+    // of slack for rescale rounding. Callers that don't pass a cursor (tests,
+    // heat-map validation) keep the full-window scan.
+    searchPad: 4,
+    // Refs whose hash degrades more than this many bits at a 1px offset are
+    // "sharp-peaked" (pixel art, dithered content) and get a step-1 fallback
+    // scan; everything else uses stride 2 + refinement (see slidingWindowMatch).
+    sharpPeakBits: 8,
+    // Scale sweep: when a trigger declares a scale schema, Phase 2 re-searches
+    // the SAME 64-bit hash at additional window geometries (the canonical-hash
+    // construction makes the hash itself scale-invariant; only sample-position
+    // tables and NCC stats change per scale). Threshold is tighter than base
+    // (like rotation) because the sweep multiplies comparison count, and NCC
+    // at the scaled dims must corroborate unless it's unavailable.
+    scaleMatchThresholdRatio: 7 / 64,
+    scaleNccConfirm: 0.5,
+    scaleMaxSteps: 16,
     // Rotation: angles (degrees) tried when trigger.rotates = true.
     // Fine (±1°–±5°) + coarse (±5°–±30° at 5° steps), skipping 0° (handled by base hash).
     rotationAngles: [-30, -25, -20, -15, -10, -5, -4, -3, -2, -1, 1, 2, 3, 4, 5, 10, 15, 20, 25, 30],
@@ -75,6 +127,56 @@
       }
     }
     return dst;
+  }
+
+  // Bilinear resample of an RGBA pixel buffer to new dimensions. Used to build
+  // per-scale NCC stats for the scale sweep (the dHash needs no resampling —
+  // only its sample-position tables change with scale).
+  function scalePixels(srcPixels, srcW, srcH, dstW, dstH) {
+    const dst = new Uint8Array(dstW * dstH * 4);
+    const xr = srcW / dstW, yr = srcH / dstH;
+    for (let y = 0; y < dstH; y++) {
+      const sy = Math.min(srcH - 1.001, Math.max(0, (y + 0.5) * yr - 0.5));
+      const y0 = Math.floor(sy), y1 = Math.min(srcH - 1, y0 + 1);
+      const fy = sy - y0;
+      for (let x = 0; x < dstW; x++) {
+        const sx = Math.min(srcW - 1.001, Math.max(0, (x + 0.5) * xr - 0.5));
+        const x0 = Math.floor(sx), x1 = Math.min(srcW - 1, x0 + 1);
+        const fx = sx - x0;
+        const i00 = (y0 * srcW + x0) * 4, i10 = (y0 * srcW + x1) * 4;
+        const i01 = (y1 * srcW + x0) * 4, i11 = (y1 * srcW + x1) * 4;
+        const di = (y * dstW + x) * 4;
+        for (let c = 0; c < 4; c++) {
+          dst[di + c] = Math.round(
+            srcPixels[i00 + c] * (1 - fx) * (1 - fy) + srcPixels[i10 + c] * fx * (1 - fy) +
+            srcPixels[i01 + c] * (1 - fx) * fy      + srcPixels[i11 + c] * fx * fy);
+        }
+      }
+    }
+    return dst;
+  }
+
+  // Convert a trigger's scale descriptor into the list of scale factors the
+  // Phase 2 sweep tries. Phase 1 covers 1.0× (as captured), so factors within
+  // 4% of 1 are excluded. Multiplicative steps; remote-profile values are
+  // clamped so a hostile profile can't grind matching to a halt.
+  //   scale: null / false / {mode:'none'}                → null (no sweep)
+  //   scale: true                                        → defaults 0.75–1.5×
+  //   scale: {min?, max?, step?}                          → custom range
+  function scalesForSchema(scale) {
+    if (!scale || scale === false) return null;
+    if (typeof scale === "object" && scale.mode === "none") return null;
+    const src = scale === true ? {} : scale;
+    const num = (v, def) => (Number.isFinite(Number(v)) ? Number(v) : def);
+    const min  = Math.max(0.25, Math.min(1, num(src.min, 0.75)));
+    const max  = Math.max(1, Math.min(4, num(src.max, 1.5)));
+    const step = Math.max(1.03, Math.min(2, num(src.step, 1.12)));
+    const out = [];
+    for (let s = min; s <= max * 1.0001 && out.length < DEFAULTS.scaleMaxSteps; s *= step) {
+      const r = Math.round(s * 1000) / 1000;
+      if (Math.abs(r - 1) >= 0.04) out.push(r);
+    }
+    return out.length ? out : null;
   }
 
   // Given RGBA pixels for a reference at native dimensions (refW×refH), pre-compute
@@ -180,6 +282,9 @@
     const config = { ...DEFAULTS, ...options };
     const grayScratch = new Float32Array(72);
     const allBitMask = new Uint8Array(64).fill(1);
+    // Most recently matched trigger — checked first on the next hover so
+    // repeated hovers over the same trigger short-circuit (see findBestMatch).
+    let lastMatchedTrigger = null;
 
     function createGrayBuffer() {
       return new Float32Array(config.captureSize * config.captureSize);
@@ -262,15 +367,54 @@
       return sat[(ry+rh)*W1+(rx+rw)] - sat[ry*W1+(rx+rw)] - sat[(ry+rh)*W1+rx] + sat[ry*W1+rx];
     }
 
-    // Pre-compute mean-centred ref gray values and variance for NCC.
-    // refPixels: RGBA Uint8Array at native ref dimensions (refW×refH).
-    // Returns { gray: Float32Array (mean-centred luma), varG: number }.
+    // Per-block ref stats for occlusion-tolerant matching. The ref is divided
+    // into a blockGrid×blockGrid grid; each block gets its own mean/variance so
+    // it can be NCC-scored independently of the others.
+    // gray holds globally mean-centred values (see buildRefNCC), so a block's
+    // mean over gray equals (blockMeanRaw - globalMean) — stored as `delta`.
+    function buildBlockStats(gray, masked, refW, refH) {
+      const g = config.blockGrid;
+      const blocks = [];
+      for (let by = 0; by < g; by++) {
+        for (let bx = 0; bx < g; bx++) {
+          const x0 = Math.floor((bx * refW) / g), x1 = Math.floor(((bx + 1) * refW) / g);
+          const y0 = Math.floor((by * refH) / g), y1 = Math.floor(((by + 1) * refH) / g);
+          let sum = 0, count = 0;
+          for (let y = y0; y < y1; y++) {
+            for (let x = x0; x < x1; x++) {
+              const i = y * refW + x;
+              if (masked && !masked[i]) continue;
+              sum += gray[i];
+              count++;
+            }
+          }
+          const delta = count ? sum / count : 0;
+          let varB = 0;
+          if (count) {
+            for (let y = y0; y < y1; y++) {
+              for (let x = x0; x < x1; x++) {
+                const i = y * refW + x;
+                if (masked && !masked[i]) continue;
+                const c = gray[i] - delta;
+                varB += c * c;
+              }
+            }
+          }
+          blocks.push({ x0, x1, y0, y1, count, delta, varG: varB });
+        }
+      }
+      return blocks;
+    }
+
     // Pre-compute mean-centred ref gray values and variance for NCC.
     // refPixels: RGBA Uint8Array at native ref dimensions (refW×refH).
     // maskPx: optional RGBA Uint8Array at same dimensions; only pixels with
-    //         alpha > 0 contribute to stats. Pass null for no mask.
-    // Returns { gray, varG, activeIndices } where activeIndices is non-null
-    // when a mask was provided.
+    //         alpha ≥ 128 (majority coverage, so smoothed mask edges don't
+    //         pull half-background pixels in) contribute to stats. Pass null
+    //         for no mask.
+    // Returns { gray, varG, activeIndices, masked, blocks } where activeIndices
+    // and masked are non-null when a mask was provided, and blocks holds the
+    // per-block stats used by the occlusion pass.
     function buildRefNCC(refPixels, refW, refH, maskPx) {
       const n = refW * refH;
       const gray = new Float32Array(n);
@@ -278,7 +422,7 @@
       let activeCount = 0;
       let sumG = 0;
       for (let i = 0; i < n; i++) {
-        const active = !maskPx || maskPx[i*4+3] > 0;
+        const active = !maskPx || maskPx[i*4+3] >= 128;
         if (masked) masked[i] = active ? 1 : 0;
         if (active) {
           const v = 0.299 * refPixels[i*4] + 0.587 * refPixels[i*4+1] + 0.114 * refPixels[i*4+2];
@@ -320,7 +464,12 @@
           if (masked[i]) activeIdx[j++] = i;
         }
       }
-      return { gray, varG, activeIndices: activeIdx };
+      const effMask = activeIdx ? masked : null;
+      return {
+        gray, varG, activeIndices: activeIdx,
+        masked: effMask,
+        blocks: buildBlockStats(gray, effMask, refW, refH),
+      };
     }
 
     // NCC score at scene position (sx, sy). Returns value in [-1, 1].
@@ -364,6 +513,71 @@
         }
       }
       return dot / Math.sqrt(varG * sceneVar);
+    }
+
+    // Score each ref block independently at scene position (sx, sy). Both
+    // sides are mean/variance-normalized PER BLOCK, so a block occluded in the
+    // scene fails on its own without dragging the other blocks down.
+    // Returns an array of { score, valid } in block-grid order, or null when
+    // the refNCC has no block stats.
+    //  - valid=false: the block can't be scored (too few unmasked pixels or a
+    //    flat ref block) — excluded from the occlusion vote entirely.
+    //  - valid=true, score=0: flat SCENE block. A solid occluder covering the
+    //    block looks exactly like this, so it must count as a failing vote.
+    function nccBlockScoresAt(sceneGray, sceneW, sat, sat2, sx, sy, refNCC, refW, refH) {
+      const { gray, masked, blocks } = refNCC;
+      if (!blocks) return null;
+      return blocks.map((b) => {
+        const { x0, x1, y0, y1, count, delta, varG } = b;
+        if (count < config.blockMinPixels || varG < 1e-6) return { score: 0, valid: false };
+        let sceneSum = 0, sceneSum2 = 0;
+        if (masked) {
+          for (let y = y0; y < y1; y++) {
+            for (let x = x0; x < x1; x++) {
+              if (!masked[y * refW + x]) continue;
+              const v = sceneGray[(sy + y) * sceneW + (sx + x)];
+              sceneSum += v;
+              sceneSum2 += v * v;
+            }
+          }
+        } else {
+          sceneSum  = satRectSum(sat,  sceneW, sx + x0, sy + y0, x1 - x0, y1 - y0);
+          sceneSum2 = satRectSum(sat2, sceneW, sx + x0, sy + y0, x1 - x0, y1 - y0);
+        }
+        const sceneMean = sceneSum / count;
+        const sceneVar  = sceneSum2 - sceneSum * sceneSum / count;
+        if (sceneVar < 1e-6) return { score: 0, valid: true };
+        let dot = 0;
+        for (let y = y0; y < y1; y++) {
+          for (let x = x0; x < x1; x++) {
+            const i = y * refW + x;
+            if (masked && !masked[i]) continue;
+            dot += (gray[i] - delta) * (sceneGray[(sy + y) * sceneW + (sx + x)] - sceneMean);
+          }
+        }
+        return { score: dot / Math.sqrt(varG * sceneVar), valid: true };
+      });
+    }
+
+    // Local NCC hill-search around (x, y): evaluate the neighborhood within
+    // `radius` px and return the best-scoring position. Rescues matches where
+    // dHash located the trigger but landed a pixel or two off, which tanks the
+    // pixel-aligned NCC score.
+    function refineNCC(sceneGray, sat, sat2, refNCC, refW, refH, x, y, baseScore, radius) {
+      const r = radius ?? config.nccRefineRadius;
+      const maxX = config.captureSize - refW;
+      const maxY = config.captureSize - refH;
+      let best = { x, y, score: baseScore };
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || ny < 0 || nx > maxX || ny > maxY) continue;
+          const s = nccScoreAt(sceneGray, config.captureSize, sat, sat2, nx, ny, refNCC, refW, refH);
+          if (s > best.score) best = { x: nx, y: ny, score: s };
+        }
+      }
+      return best;
     }
 
     function dHashFromPixels(pixels, srcW, sx, sy, sw, sh) {
@@ -509,7 +723,56 @@
       if (list.length > config.coarseCandidates) list.length = config.coarseCandidates;
     }
 
-    function slidingWindowMatch(ref, capturePixels, captureGray) {
+    // Peak sharpness of a ref's hash: the max Hamming distance of the hash
+    // re-sampled at ±1px offsets from the ref's own pixels. Art-like content
+    // stays within a few bits — a stride-2 fallback scan is guaranteed to land
+    // within 1px of a true match and still see it. Pixel-art or dithered
+    // content can exceed the match threshold at a 1px offset; those refs are
+    // flagged (ref.sharpPeak) and scanned at step 1.
+    function refPeakSharpness(refPixels, refW, refH, refHash, refBitMask) {
+      const gray = fillGrayBuffer(refPixels);
+      const { sampleX, sampleY } = buildHashSamples(refW, refH);
+      const mask = refBitMask || allBitMask;
+      let maxDist = 0;
+      for (const [dx, dy] of [[1, 0], [0, 1], [1, 1]]) {
+        for (let i = 0; i < 72; i++) {
+          const px = Math.min(refW - 1, sampleX[i] + dx);
+          const py = Math.min(refH - 1, sampleY[i] + dy);
+          grayScratch[i] = gray[py * refW + px];
+        }
+        let dist = 0;
+        for (let i = 0; i < 64; i++) {
+          if (!mask[i]) continue;
+          const y = Math.floor(i / 8);
+          const x = i % 8;
+          const bit = grayScratch[y * 9 + x + 1] > grayScratch[y * 9 + x] ? 1 : 0;
+          if (bit !== refHash[i]) dist++;
+        }
+        if (dist > maxDist) maxDist = dist;
+      }
+      return maxDist;
+    }
+
+    // Search bounds for a ref of dims w×h given the cursor position within the
+    // capture. Hover UX means the cursor is inside the trigger, so only window
+    // positions whose bounding box contains the cursor (± searchPad slack for
+    // rescale rounding) need to be scanned. This makes per-ref cost track the
+    // REF size instead of the capture-window size — the load-bearing perf fix
+    // for large trigger sets and the dynamic 320px window.
+    function cursorBounds(w, h, cursorX, cursorY) {
+      const pad = config.searchPad;
+      // Integerize: fractional bounds would make the scan loops walk
+      // fractional positions, corrupting every pixel index downstream.
+      const cx = Math.round(cursorX), cy = Math.round(cursorY);
+      return {
+        minX: cx - w + 1 - pad,
+        maxX: cx + pad,
+        minY: cy - h + 1 - pad,
+        maxY: cy + pad,
+      };
+    }
+
+    function slidingWindowMatch(ref, capturePixels, captureGray, boundsArg) {
       const { refHash, refBitMask, refValidBits, w, h } = ref;
       if (!refHash || w > config.captureSize || h > config.captureSize) {
         return { dist: 64, ratio: 1, validBits: refValidBits ?? 64, x: 0, y: 0, score: 1 };
@@ -519,12 +782,21 @@
       const coarseStep = Math.max(config.slideStep, config.coarseStep);
       const coarseThreshold = Math.min(0.35, matchThresholdForRef(ref) * config.coarseThresholdFactor);
       const coarse = [];
-      const maxX = config.captureSize - w;
-      const maxY = config.captureSize - h;
+      // Effective search region: full window intersected with the caller's
+      // bounds (cursor-centered from findBestMatch, center-constrained from
+      // Phase 2 rotation). No bounds → full window (test/back-compat path).
+      const b = boundsArg || ref._searchBounds || null;
+      const minX = b ? Math.max(0, b.minX) : 0;
+      const maxX = b ? Math.min(config.captureSize - w, b.maxX) : config.captureSize - w;
+      const minY = b ? Math.max(0, b.minY) : 0;
+      const maxY = b ? Math.min(config.captureSize - h, b.maxY) : config.captureSize - h;
+      if (minX > maxX || minY > maxY) return best;
       // ref._noCoarse: skip coarse pass and scan every position at slideStep.
       // Used by Phase 2 rotation to guarantee the exact match position is evaluated —
       // rotated hashes can have very sharp match peaks that the coarse filter misses.
-      const useCoarse = !ref._noCoarse && coarseStep > config.slideStep && (maxX > coarseStep || maxY > coarseStep);
+      // Small regions also skip coarse: a step-1 scan is cheaper than coarse+fine.
+      const regionArea = (maxX - minX + 1) * (maxY - minY + 1);
+      const useCoarse = !ref._noCoarse && coarseStep > config.slideStep && regionArea > 1024;
 
       const scanWindow = (x, y) => {
         const result = dHashDistFromGray(
@@ -549,33 +821,47 @@
       };
 
       if (!useCoarse) {
-        const searchMinX = ref._searchBounds ? Math.max(0, ref._searchBounds.minX) : 0;
-        const searchMaxX = ref._searchBounds ? Math.min(maxX, ref._searchBounds.maxX) : maxX;
-        const searchMinY = ref._searchBounds ? Math.max(0, ref._searchBounds.minY) : 0;
-        const searchMaxY = ref._searchBounds ? Math.min(maxY, ref._searchBounds.maxY) : maxY;
-        for (let y = searchMinY; y <= searchMaxY; y += config.slideStep) {
-          for (let x = searchMinX; x <= searchMaxX; x += config.slideStep) {
+        for (let y = minY; y <= maxY; y += config.slideStep) {
+          for (let x = minX; x <= maxX; x += config.slideStep) {
             scanWindow(x, y);
           }
         }
         return best;
       }
 
-      for (let y = 0; y <= maxY; y += coarseStep) {
-        for (let x = 0; x <= maxX; x += coarseStep) {
+      for (let y = minY; y <= maxY; y += coarseStep) {
+        for (let x = minX; x <= maxX; x += coarseStep) {
           const entry = scanWindow(x, y);
           if (entry.ratio <= coarseThreshold) keepTopCandidate(coarse, entry);
         }
       }
       if (!coarse.length) {
-        // No coarse position passed the ratio threshold — the scene likely contains nothing
-        // matching the ref. The single-seed fallback can miss the true match when it falls
-        // between coarse grid lines (e.g., true match at x=21, coarse step=4, best seed at
-        // x=16 → fine range [12..20] never evaluates x=21). Fall back to a full step-1 scan
-        // so we never silently skip the correct position.
-        for (let y = 0; y <= maxY; y += config.slideStep) {
-          for (let x = 0; x <= maxX; x += config.slideStep) {
-            scanWindow(x, y);
+        // No coarse position passed the ratio threshold. Fall back to a denser
+        // scan so sharp-peaked refs (where dHash rises >2 bits within the
+        // coarse stride) are never silently skipped. Stride 2 guarantees a
+        // sample within 1px of any true match; ±1 refinement around the top
+        // candidates then snaps to the exact pixel. Even the sharpest content
+        // ranks its near-match positions well above random ones, so top-8
+        // coverage is enough. This is the hot path on misses (hovering
+        // background), so the ~4× saving over a step-1 scan matters.
+        // Sharp-peaked refs (see refPeakSharpness) are the exception: their
+        // hash is unrecognizable even 1px off, so they scan at step 1.
+        const fallbackStep = ref.sharpPeak ? config.slideStep : Math.max(config.slideStep, 2);
+        const fallbackTop = [];
+        for (let y = minY; y <= maxY; y += fallbackStep) {
+          for (let x = minX; x <= maxX; x += fallbackStep) {
+            keepTopCandidate(fallbackTop, scanWindow(x, y));
+          }
+        }
+        const refined = new Set();
+        for (const seed of fallbackTop.slice(0, 8)) {
+          for (let y = Math.max(minY, seed.y - 1); y <= Math.min(maxY, seed.y + 1); y++) {
+            for (let x = Math.max(minX, seed.x - 1); x <= Math.min(maxX, seed.x + 1); x++) {
+              const key = y * config.captureSize + x;
+              if (refined.has(key)) continue;
+              refined.add(key);
+              scanWindow(x, y);
+            }
           }
         }
         return best;
@@ -583,8 +869,8 @@
 
       const visited = new Set();
       for (const seed of coarse) {
-        for (let y = Math.max(0, seed.y - coarseStep); y <= Math.min(maxY, seed.y + coarseStep); y += config.slideStep) {
-          for (let x = Math.max(0, seed.x - coarseStep); x <= Math.min(maxX, seed.x + coarseStep); x += config.slideStep) {
+        for (let y = Math.max(minY, seed.y - coarseStep); y <= Math.min(maxY, seed.y + coarseStep); y += config.slideStep) {
+          for (let x = Math.max(minX, seed.x - coarseStep); x <= Math.min(maxX, seed.x + coarseStep); x += config.slideStep) {
             const key = y * config.captureSize + x;
             if (visited.has(key)) continue;
             visited.add(key);
@@ -599,8 +885,8 @@
       // Cost: (2R+1)² positions minus already-visited — cheap relative to a full scan.
       if (ref._refinement) {
         const radius = ref._refinement;
-        for (let y = Math.max(0, best.y - radius); y <= Math.min(maxY, best.y + radius); y++) {
-          for (let x = Math.max(0, best.x - radius); x <= Math.min(maxX, best.x + radius); x++) {
+        for (let y = Math.max(minY, best.y - radius); y <= Math.min(maxY, best.y + radius); y++) {
+          for (let x = Math.max(minX, best.x - radius); x <= Math.min(maxX, best.x + radius); x++) {
             const key = y * config.captureSize + x;
             if (visited.has(key)) continue;
             visited.add(key);
@@ -612,20 +898,33 @@
       return best;
     }
 
-    function evaluateReference(ref, capturePixels, captureGray, skipRotation, sat, sat2) {
+    // cursor: {x, y} within the capture, or null for an unbounded search.
+    function evaluateReference(ref, capturePixels, captureGray, skipPhase2, sat, sat2, cursor) {
       const threshold = matchThresholdForRef(ref);
       const verifyThreshold = verifyThresholdForRef(ref);
+      const baseBounds = cursor ? cursorBounds(ref.w, ref.h, cursor.x, cursor.y) : null;
 
       // Phase 1: dHash sliding window locates the best position.
-      const baseResult = slidingWindowMatch(ref, capturePixels, captureGray);
+      const baseResult = slidingWindowMatch(ref, capturePixels, captureGray, baseBounds);
 
       // NCC verification at the dHash-found position. NCC normalizes for local mean and
       // variance, making it immune to H.264 brightness/contrast shifts that cause dHash
       // near-misses on live streams. When available, NCC can rescue a dHash near-miss.
       let nccScore = null;
+      let nccX = baseResult.x, nccY = baseResult.y;
       if (sat && sat2 && ref.refNCC && ref.w > 0 && ref.h > 0) {
         nccScore = nccScoreAt(captureGray, config.captureSize, sat, sat2,
           baseResult.x, baseResult.y, ref.refNCC, ref.w, ref.h);
+        // Near-miss: dHash may have landed a pixel or two off the true position.
+        // Hill-search a small neighborhood before treating this as a failure.
+        if (nccScore < config.nccMatchThreshold && nccScore >= config.nccRefineMin) {
+          const radius = ref.w * ref.h > config.nccRefineLargeRefArea ? 1 : config.nccRefineRadius;
+          const refined = refineNCC(captureGray, sat, sat2, ref.refNCC, ref.w, ref.h,
+            baseResult.x, baseResult.y, nccScore, radius);
+          nccScore = refined.score;
+          nccX = refined.x;
+          nccY = refined.y;
+        }
       }
 
       const baseVerify = ref.refVerifyValues
@@ -644,10 +943,93 @@
 
       if (baseMatched) {
         return {
-          ...baseResult, angle: 0, threshold,
+          ...baseResult,
+          // If NCC (possibly after refinement) fired the match, its position is
+          // the pixel-aligned one — use it for popup anchoring.
+          x: nccPassed ? nccX : baseResult.x,
+          y: nccPassed ? nccY : baseResult.y,
+          angle: 0, threshold,
           verifyScore: baseVerify ? baseVerify.score : null,
           verifyThreshold, nccScore, matched: true,
         };
+      }
+
+      // Occlusion pass: full-ref scores failed, but the trigger may be partially
+      // covered by another element (tooltip, overlapping card, cursor sprite).
+      // Score each block independently at the (refined) base position and accept
+      // when a strong majority still correlates. Gated on the dHash ratio only —
+      // global NCC is deliberately NOT consulted, because a high-contrast
+      // occluder shifts the window mean and can sink it below zero even at the
+      // exact match position.
+      if (sat && sat2 && ref.refNCC && ref.refNCC.blocks && nccScore !== null &&
+          baseResult.ratio <= config.occlusionMaxRatio) {
+        const blockScores = nccBlockScoresAt(captureGray, config.captureSize, sat, sat2,
+          nccX, nccY, ref.refNCC, ref.w, ref.h);
+        if (blockScores) {
+          const valid = blockScores.filter((b) => b.valid);
+          const passing = valid.filter((b) => b.score >= config.blockNccThreshold);
+          if (valid.length >= config.occlusionMinValidBlocks &&
+              passing.length >= Math.ceil(valid.length * config.occlusionPassFraction)) {
+            const meanPassing = passing.reduce((s, b) => s + b.score, 0) / passing.length;
+            if (meanPassing >= config.occlusionMeanScore) {
+              return {
+                ...baseResult, x: nccX, y: nccY, angle: 0, threshold,
+                verifyScore: baseVerify ? baseVerify.score : null,
+                verifyThreshold, nccScore,
+                occluded: true,
+                blocks: { passed: passing.length, valid: valid.length, meanScore: meanPassing },
+                matched: true,
+              };
+            }
+          }
+        }
+      }
+
+      // Phase 2a: scale sweep. The trigger's art may be rendered by the game at
+      // a different size than captured (hand card vs. inspect view). Each entry
+      // in ref.scaledRefs reuses the SAME 64-bit hash with scaled sample
+      // geometry and scaled NCC stats — the canonical-hash construction makes
+      // the hash scale-invariant, so no re-hashing is needed. dHash locates the
+      // position; NCC at the scaled dims must corroborate (resampling adds a
+      // few bits of hash noise, so dHash alone is held to the tighter rotation-
+      // style threshold AND needs NCC agreement when NCC stats exist).
+      if (!skipPhase2 && ref.scaledRefs && ref.scaledRefs.length) {
+        const scx = cursor ? cursor.x : Math.floor(config.captureSize / 2);
+        const scy = cursor ? cursor.y : Math.floor(config.captureSize / 2);
+        let bestScale = null;
+        for (const sRef of ref.scaledRefs) {
+          const r = slidingWindowMatch(sRef, capturePixels, captureGray,
+            cursorBounds(sRef.w, sRef.h, scx, scy));
+          if (r.validBits < config.minMaskedBits) continue;
+          let ncc = null;
+          if (sat && sat2 && sRef.refNCC) {
+            ncc = nccScoreAt(captureGray, config.captureSize, sat, sat2, r.x, r.y, sRef.refNCC, sRef.w, sRef.h);
+            if (ncc < config.nccMatchThreshold && ncc >= config.nccRefineMin) {
+              const refined = refineNCC(captureGray, sat, sat2, sRef.refNCC, sRef.w, sRef.h, r.x, r.y, ncc, 1);
+              ncc = refined.score;
+              r.x = refined.x;
+              r.y = refined.y;
+            }
+          }
+          const dHashOk = r.ratio <= config.scaleMatchThresholdRatio;
+          const nccOk = ncc === null || ncc >= config.scaleNccConfirm;
+          const nccAlone = ncc !== null && ncc >= config.nccMatchThreshold;
+          if ((dHashOk && nccOk) || nccAlone) {
+            if (!bestScale || (ncc ?? -1) > (bestScale.ncc ?? -1)) {
+              bestScale = { ...r, ncc, scale: sRef.scale, w: sRef.w, h: sRef.h };
+            }
+          }
+        }
+        if (bestScale) {
+          return {
+            dist: bestScale.dist, ratio: bestScale.ratio, validBits: bestScale.validBits,
+            x: bestScale.x, y: bestScale.y, score: bestScale.score,
+            angle: 0, scale: bestScale.scale, matchW: bestScale.w, matchH: bestScale.h,
+            threshold: config.scaleMatchThresholdRatio,
+            verifyScore: null, verifyThreshold: null,
+            nccScore: bestScale.ncc, matched: true,
+          };
+        }
       }
 
       // Phase 2: base hash failed (ratio or verify). Try rotated hashes as fallback.
@@ -662,24 +1044,19 @@
       // ratio as dist/validCount (where validCount is the number of unclipped bits in the
       // clipMask) before comparing to rotationMatchThresholdRatio. This gives a fair ratio
       // even when rotation clips many corner bits.
-      if (!skipRotation && ref.rotatedHashes && ref.rotatedHashes.length) {
+      if (!skipPhase2 && ref.rotatedHashes && ref.rotatedHashes.length) {
         const rotThreshold = config.rotationMatchThresholdRatio;
         let bestRot = null;
         let bestRotAngle = 0;
         let bestRotValidCount = 64;
-        // The capture is always centered on the cursor, and the ref must contain the cursor.
-        // So the ref's top-left is bounded: x ∈ [center-W+1, center], y ∈ [center-H+1, center].
-        // A center-constrained step-1 scan covers ~45% fewer positions than the full range
-        // while guaranteeing the exact embed position is evaluated — critical because rotated
-        // hashes have sharp peaks (dist=0 only at the exact pixel, 22+ at ±2px) that the
-        // coarse filter can't reliably find.
-        const center = Math.floor(config.captureSize / 2);
-        const rotSearchBounds = {
-          minX: Math.max(0, center - ref.w + 1),
-          maxX: Math.min(config.captureSize - ref.w, center),
-          minY: Math.max(0, center - ref.h + 1),
-          maxY: Math.min(config.captureSize - ref.h, center),
-        };
+        // The ref must contain the cursor, so its top-left is bounded to a
+        // ~ref-sized region around it (cursorBounds). A step-1 scan of that
+        // region guarantees the exact embed position is evaluated — critical
+        // because rotated hashes have sharp peaks (dist=0 only at the exact
+        // pixel, 22+ at ±2px) that the coarse filter can't reliably find.
+        const rcx = cursor ? cursor.x : Math.floor(config.captureSize / 2);
+        const rcy = cursor ? cursor.y : Math.floor(config.captureSize / 2);
+        const rotSearchBounds = cursorBounds(ref.w, ref.h, rcx, rcy);
         for (const rotHash of ref.rotatedHashes) {
           const rotRef = Object.assign(Object.create(null), ref, {
             refHash: rotHash.hash,
@@ -732,49 +1109,74 @@
       };
     }
 
-    function findBestMatch(triggers, capturePixels, captureGray) {
+    // opts: { cursorX, cursorY } — cursor position within the capture window.
+    // When provided (the live hover path), two optimizations turn on:
+    //  - each ref's scan is bounded to positions whose bbox contains the cursor
+    //    (cursorBounds), making per-ref cost track ref size, not window size;
+    //  - evaluation stops at the first confident match, checking the most
+    //    recently matched trigger first — repeated hovers over the same
+    //    trigger (reading a popup) become ~O(1) in trigger count.
+    // Without opts (tests, heat-map validation) the search is exhaustive and
+    // results are fully ranked, matching the historical behavior.
+    function findBestMatch(triggers, capturePixels, captureGray, opts) {
       // Build summed-area table once for all NCC calls in this hover event.
       const { sat, sat2 } = buildSAT(captureGray, config.captureSize, config.captureSize);
+      const cursor = opts && Number.isFinite(opts.cursorX) && Number.isFinite(opts.cursorY)
+        ? { x: Math.round(opts.cursorX), y: Math.round(opts.cursorY) }
+        : null;
+      const earlyExit = !!cursor;
 
-      // Pass 1: run Phase 1 (base hash only, no rotation) for every trigger.
+      let ordered = triggers;
+      if (earlyExit && lastMatchedTrigger && triggers.includes(lastMatchedTrigger)) {
+        ordered = [lastMatchedTrigger, ...triggers.filter((t) => t !== lastMatchedTrigger)];
+      }
+
+      // Pass 1: run Phase 1 (base hash only, no rotation/scale) per trigger.
       const ranked = [];
-      for (const trigger of triggers) {
+      let earlyMatch = null;
+      outer:
+      for (const trigger of ordered) {
         if (!trigger.references) continue;
         for (const ref of trigger.references) {
           if (!ref.refHash) continue;
-          const result = evaluateReference(ref, capturePixels, captureGray, /*skipRotation=*/true, sat, sat2);
-          ranked.push({
+          const result = evaluateReference(ref, capturePixels, captureGray, /*skipPhase2=*/true, sat, sat2, cursor);
+          const entry = {
             trigger,
             ref,
             title: trigger.payloads?.[0]?.title || trigger.id,
             ...result,
-          });
+          };
+          ranked.push(entry);
+          if (earlyExit && entry.matched) { earlyMatch = entry; break outer; }
         }
       }
 
       // If Phase 1 already found a match, skip Phase 2 entirely.
-      const phase1Match = ranked.find(e => e.matched);
+      const phase1Match = earlyMatch || ranked.find(e => e.matched);
 
       if (!phase1Match) {
-        // Pass 2: rotation search for rotating triggers whose Phase 1 dist is within
-        // rotationDistWindow bits of the best Phase 1 miss. This is adaptive: when
-        // nothing card-like is under the cursor, best-dist is ~30+ and the window is
-        // empty so Phase 2 cost is zero. When a rotated card is present, the correct
-        // trigger and its nearest competitors are all included regardless of rank.
+        // Pass 2: rotation/scale search for opted-in triggers whose Phase 1 dist
+        // is within rotationDistWindow bits of the best Phase 1 miss. This is
+        // adaptive: when nothing card-like is under the cursor, best-dist is
+        // ~30+ and the window is empty so Phase 2 cost is zero. When a rotated
+        // or rescaled card is present, the correct trigger and its nearest
+        // competitors are all included regardless of rank.
         // rotationCandidateMax is a hard cap to bound worst-case cost.
-        const sortedRotating = ranked
-          .filter(e => e.ref.rotatedHashes && e.ref.rotatedHashes.length)
+        const sortedPhase2 = ranked
+          .filter(e => (e.ref.rotatedHashes && e.ref.rotatedHashes.length) ||
+                       (e.ref.scaledRefs && e.ref.scaledRefs.length))
           .sort((a, b) => a.dist - b.dist);
-        const bestDist = sortedRotating[0]?.dist ?? Infinity;
+        const bestDist = sortedPhase2[0]?.dist ?? Infinity;
         const distCutoff = bestDist + config.rotationDistWindow;
-        const rotatingMisses = sortedRotating
+        const phase2Misses = sortedPhase2
           .filter(e => e.dist <= distCutoff)
           .slice(0, config.rotationCandidateMax);
 
-        for (const entry of rotatingMisses) {
-          const result = evaluateReference(entry.ref, capturePixels, captureGray, /*skipRotation=*/false, sat, sat2);
+        for (const entry of phase2Misses) {
+          const result = evaluateReference(entry.ref, capturePixels, captureGray, /*skipPhase2=*/false, sat, sat2, cursor);
           // Overwrite the Phase 1 result for this entry with the full Phase 1+2 result.
           Object.assign(entry, result);
+          if (earlyExit && entry.matched) break;
         }
       }
 
@@ -800,9 +1202,15 @@
             verifyThreshold: ranked[0].verifyThreshold,
             nccScore: ranked[0].nccScore ?? null,
             angle: ranked[0].angle ?? 0,
+            scale: ranked[0].scale ?? 1,
+            matchW: ranked[0].matchW ?? ranked[0].ref.w,
+            matchH: ranked[0].matchH ?? ranked[0].ref.h,
+            occluded: ranked[0].occluded ?? false,
+            blocks: ranked[0].blocks ?? null,
             matched: ranked[0].matched,
           }
         : null;
+      if (best && best.matched) lastMatchedTrigger = best.trigger;
       return {
         best,
         candidates: ranked.slice(0, 3).map((entry) => ({
@@ -815,6 +1223,9 @@
           verifyThreshold: entry.verifyThreshold,
           nccScore: entry.nccScore ?? null,
           angle: entry.angle ?? 0,
+          scale: entry.scale ?? 1,
+          occluded: entry.occluded ?? false,
+          blocks: entry.blocks ?? null,
           matched: entry.matched,
           score: entry.score,
         })),
@@ -837,6 +1248,9 @@
       buildSAT,
       buildRefNCC,
       nccScoreAt,
+      nccBlockScoresAt,
+      refineNCC,
+      refPeakSharpness,
       slidingWindowMatch,
       evaluateReference,
       findBestMatch,
@@ -844,8 +1258,11 @@
       computeRotatedHashes: (px, w, h, angles) =>
         computeRotatedHashes(px, w, h, angles, config.canonicalSize),
       anglesForRotation,
+      scalePixels,
+      scalesForSchema,
+      cursorBounds,
     };
   }
 
-  return { DEFAULTS, createMatcher, rotatePixels, computeRotatedHashes, anglesForRotation };
+  return { DEFAULTS, createMatcher, rotatePixels, computeRotatedHashes, anglesForRotation, scalePixels, scalesForSchema };
 });

@@ -22,7 +22,15 @@
     return;
   }
 
-  const CAPTURE_SIZE = 160;
+  // The capture window is dynamic: it starts at BASE_CAPTURE_SIZE and grows
+  // (in 16px steps, capped at MAX_CAPTURE_SIZE) to fit the largest reference
+  // in the active trigger set — see updateCaptureSize(). Larger windows cost
+  // more per hover (the sliding-window scan is O(size²)), so we only pay for
+  // what the profile actually needs.
+  const BASE_CAPTURE_SIZE = 160;
+  const MAX_CAPTURE_SIZE = 320;
+  const CAPTURE_MARGIN = 32;           // slide room around the largest ref
+  let CAPTURE_SIZE = BASE_CAPTURE_SIZE;
   const CAPTURE_INTERVAL_MS = 100;     // throttle mouse-driven captures (10Hz)
   const HEARTBEAT_MS = 500;
   const MIN_VIDEO_SIZE = 100;
@@ -37,7 +45,7 @@
   // size before hashing, so small refs produce equally discriminative hashes.
   const CANONICAL_SIZE = MatcherCore.DEFAULTS.canonicalSize;
   const FIRST_RUN_KEY = "streamGenie_first_run_shown";
-  const matcher = MatcherCore.createMatcher({ captureSize: CAPTURE_SIZE });
+  let matcher = MatcherCore.createMatcher({ captureSize: CAPTURE_SIZE });
 
   // --- Profile config -------------------------------------------------------
 
@@ -419,6 +427,10 @@
       captureCanvas.width = CAPTURE_SIZE;
       captureCanvas.height = CAPTURE_SIZE;
       captureCtx = captureCanvas.getContext("2d", { willReadFrequently: true });
+    } else if (captureCanvas.width !== CAPTURE_SIZE) {
+      // Capture window was resized by updateCaptureSize().
+      captureCanvas.width = CAPTURE_SIZE;
+      captureCanvas.height = CAPTURE_SIZE;
     }
     return captureCtx;
   }
@@ -445,7 +457,43 @@
   // stalling the main thread and making captures appear to lag behind the cursor.
 
   const _allBitMask = matcher.allBitMask;
-  const captureGrayBuffer = matcher.createGrayBuffer();
+  let captureGrayBuffer = matcher.createGrayBuffer();
+
+  // Capture size a ref of max dimension d needs: base window when it fits,
+  // otherwise the next 16px step that gives it CAPTURE_MARGIN of slide room,
+  // capped at MAX_CAPTURE_SIZE.
+  function captureSizeForDim(d) {
+    if (d + CAPTURE_MARGIN <= BASE_CAPTURE_SIZE) return BASE_CAPTURE_SIZE;
+    return Math.min(MAX_CAPTURE_SIZE, Math.ceil((d + CAPTURE_MARGIN) / 16) * 16);
+  }
+
+  // Fit the capture window to the largest active reference. Recreating the
+  // matcher is cheap — all per-ref data (hashes, NCC stats, rotation hashes)
+  // is capture-size independent.
+  function updateCaptureSize() {
+    let maxDim = 0;
+    for (const t of TRIGGERS) {
+      if (!t.references) continue;
+      for (const ref of t.references) {
+        if (!ref.refHash) continue;
+        maxDim = Math.max(maxDim, ref.w || 0, ref.h || 0);
+        // Scaled-up variants need window room too.
+        if (ref.scaledRefs) {
+          for (const s of ref.scaledRefs) maxDim = Math.max(maxDim, s.w, s.h);
+        }
+      }
+    }
+    const size = captureSizeForDim(maxDim);
+    if (size === CAPTURE_SIZE) return;
+    CAPTURE_SIZE = size;
+    matcher = MatcherCore.createMatcher({ captureSize: CAPTURE_SIZE });
+    captureGrayBuffer = matcher.createGrayBuffer();
+    if (captureCanvas) {
+      captureCanvas.width = CAPTURE_SIZE;
+      captureCanvas.height = CAPTURE_SIZE;
+    }
+    console.log(`[overlay/content] capture window set to ${CAPTURE_SIZE}px (largest ref ${maxDim}px)`);
+  }
 
   function dHashFromPixels(pixels, srcW, sx, sy, sw, sh) {
     return matcher.dHashFromPixels(pixels, srcW, sx, sy, sw, sh);
@@ -467,8 +515,8 @@
     return matcher.verifyThresholdForRef(ref);
   }
 
-  function findBestMatch(capturePixels, captureGray) {
-    return matcher.findBestMatch(TRIGGERS, capturePixels, captureGray);
+  function findBestMatch(capturePixels, captureGray, opts) {
+    return matcher.findBestMatch(TRIGGERS, capturePixels, captureGray, opts);
   }
 
   // --- Profile loading ------------------------------------------------------
@@ -487,6 +535,13 @@
           continue;
         }
 
+        // Inherit trigger-level matching schemas onto the ref — rehashRef only
+        // sees the ref. (Previously only loadRefImages did this, so CDN-loaded
+        // profile triggers silently lost their rotation schema.)
+        ref.rotates = ref.rotates ?? !!trigger.rotates;
+        ref.rotation = ref.rotation || trigger.rotation || null;
+        ref.scale = ref.scale || trigger.scale || null;
+
         const img = new Image();
         img.crossOrigin = "anonymous";
         img.onload = () => {
@@ -495,6 +550,7 @@
           ref.origH = img.naturalHeight;
           const finish = () => {
             rehashRef(ref);
+            updateCaptureSize();
             console.log(`[overlay/content] reference loaded: ${ref.file || 'data-url'} (${ref.origW}x${ref.origH})`);
             updateDebugPanelStatus();
           };
@@ -693,7 +749,9 @@
     }
     ref.w = w;
     ref.h = h;
-    if (w < MIN_REF_PX || h < MIN_REF_PX || w > CAPTURE_SIZE || h > CAPTURE_SIZE) {
+    // Limit is the MAX capture size, not the current one — updateCaptureSize()
+    // grows the window to fit large refs after rehashing.
+    if (w < MIN_REF_PX || h < MIN_REF_PX || w > MAX_CAPTURE_SIZE || h > MAX_CAPTURE_SIZE) {
       ref.refHash = null;
       ref.refBitMask = null;
       ref.refValidBits = 0;
@@ -718,7 +776,13 @@
       const maskCtx = maskCanvas.getContext("2d");
       maskCtx.clearRect(0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
       if (ref.maskImg) {
-        maskCtx.imageSmoothingEnabled = false;
+        // Unlike the ref image (which needs floor-sampling to stay bit-exact
+        // with scene hashing), the mask benefits from smoothing: each canonical
+        // mask pixel becomes an area average, so downstream ≥128 alpha checks
+        // are true majority-coverage tests instead of whichever single native
+        // pixel nearest-neighbor happened to land on. Thin painted strokes and
+        // brush edges stop flipping bit validity arbitrarily.
+        maskCtx.imageSmoothingEnabled = true;
         maskCtx.drawImage(ref.maskImg, 0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
       } else {
         maskCtx.fillStyle = "#fff";
@@ -745,6 +809,7 @@
     // Native-resolution pixels: needed for NCC stats and rotation hashes.
     // Render once and reuse for both — avoids a second canvas draw when rotating.
     let nativePx = null;
+    let nativeMaskPx = null;
     if (ref.refHash) {
       const nativeTmp = document.createElement("canvas");
       nativeTmp.width = w; nativeTmp.height = h;
@@ -754,18 +819,24 @@
       nativePx = nCtx.getImageData(0, 0, w, h).data;
 
       // Render mask at native size so NCC only correlates unmasked pixels.
-      let nativeMaskPx = null;
       if (ref.maskDataUrl && ref.maskImg) {
         const nMaskTmp = document.createElement("canvas");
         nMaskTmp.width = w; nMaskTmp.height = h;
         const nMaskCtx = nMaskTmp.getContext("2d");
-        nMaskCtx.imageSmoothingEnabled = false;
+        // Smoothing on for the same reason as the canonical mask draw above:
+        // buildRefNCC treats alpha ≥ 128 as active, i.e. majority coverage.
+        nMaskCtx.imageSmoothingEnabled = true;
         nMaskCtx.drawImage(ref.maskImg, 0, 0, w, h);
         nativeMaskPx = nMaskCtx.getImageData(0, 0, w, h).data;
       }
       ref.refNCC = matcher.buildRefNCC(nativePx, w, h, nativeMaskPx);
+      // Pixel-art/dithered refs lose their hash even 1px off-position and need
+      // the denser fallback scan (see matcher slidingWindowMatch).
+      ref.sharpPeak = matcher.refPeakSharpness(nativePx, w, h, ref.refHash, ref.refBitMask)
+        > matcher.config.sharpPeakBits;
     } else {
       ref.refNCC = null;
+      ref.sharpPeak = false;
     }
 
     // Pre-compute rotated hashes if the trigger opts into rotation-aware matching.
@@ -780,6 +851,31 @@
     } else {
       ref.rotatedHashes = null;
     }
+
+    // Pre-compute scaled variants if the trigger opts into scale-aware
+    // matching. The 64-bit hash and its mask bits are scale-invariant (they
+    // live in canonical 32×32 space) and are shared by reference; only the
+    // window geometry and the NCC stats differ per scale.
+    ref.scaledRefs = null;
+    const scaleFactors = matcher.scalesForSchema(ref.scale);
+    if (scaleFactors && nativePx) {
+      const variants = [];
+      for (const s of scaleFactors) {
+        const sw = Math.round(w * s), sh = Math.round(h * s);
+        if (sw < MIN_REF_PX || sh < MIN_REF_PX || sw > MAX_CAPTURE_SIZE || sh > MAX_CAPTURE_SIZE) continue;
+        const spx = matcher.scalePixels(nativePx, w, h, sw, sh);
+        const smask = nativeMaskPx ? matcher.scalePixels(nativeMaskPx, w, h, sw, sh) : null;
+        variants.push({
+          scale: s, w: sw, h: sh,
+          refHash: ref.refHash,
+          refBitMask: ref.refBitMask,
+          refValidBits: ref.refValidBits,
+          refNCC: matcher.buildRefNCC(spx, sw, sh, smask),
+          sharpPeak: ref.sharpPeak,
+        });
+      }
+      if (variants.length) ref.scaledRefs = variants;
+    }
   }
 
   function rehashAllTriggers() {
@@ -787,6 +883,7 @@
       if (!t.references) continue;
       for (const ref of t.references) rehashRef(ref);
     }
+    updateCaptureSize();
     updateDebugPanelStatus();
   }
 
@@ -800,6 +897,7 @@
 
       ref.rotates = !!trigger.rotates;         // legacy flag
       ref.rotation = trigger.rotation || null; // structured rotation schema
+      ref.scale = trigger.scale || null;       // structured scale schema
 
       const img = new Image();
       img.onload = () => {
@@ -808,6 +906,7 @@
         ref.origH = img.naturalHeight;
         const finish = () => {
           rehashRef(ref);
+          updateCaptureSize();
           updateDebugPanelStatus();
         };
         if (ref.maskDataUrl) {
@@ -831,6 +930,7 @@
         id: trigger.id,
         rotates: !!trigger.rotates,
         rotation: trigger.rotation || null,
+        scale: trigger.scale || null,
         payloads: trigger.payloads,
         references: trigger.references.map(({ dataUrl, maskDataUrl, file, w, h, srcW, srcH }) => ({ dataUrl, maskDataUrl, file, w, h, srcW, srcH })),
       };
@@ -863,6 +963,8 @@
     const triggerPayload = {
       id:      trigger.id,
       rotates: !!trigger.rotates,
+      rotation: trigger.rotation || null,
+      scale:   trigger.scale || null,
       payloads: trigger.payloads,
     };
     if (mode === "add" || mode === "update") {
@@ -1013,13 +1115,13 @@
     const refSec = document.createElement("div");
     refSec.style.cssText = "margin-bottom:16px;";
     refSec.appendChild(editorLabel("Reference Image"));
-    const refTooBig = meta.cropW > CAPTURE_SIZE || meta.cropH > CAPTURE_SIZE;
+    const refTooBig = meta.cropW > MAX_CAPTURE_SIZE || meta.cropH > MAX_CAPTURE_SIZE;
     const refMetaEl = document.createElement("div");
     refMetaEl.style.cssText = "font-size:10px;margin-top:4px;";
     if (refTooBig) {
       refMetaEl.innerHTML =
         `<span style="color:#f5b000">${meta.cropW}×${meta.cropH} px — too large to match</span>` +
-        `<br><span style="color:#adadb8">Max size is ${CAPTURE_SIZE}×${CAPTURE_SIZE} px (the hover capture window). ` +
+        `<br><span style="color:#adadb8">Max size is ${MAX_CAPTURE_SIZE}×${MAX_CAPTURE_SIZE} px (the hover capture window). ` +
         `Re-capture a smaller crop of this image.</span>`;
     } else {
       refMetaEl.style.color = "#adadb8";
@@ -1229,8 +1331,9 @@
     freePanel.appendChild(freePanelInner);
     rotSec.appendChild(freePanel);
 
-    // Size warning for large refs at free rotation
-    const ROTATE_SAFE = Math.floor(CAPTURE_SIZE / 1.366); // ~117px
+    // Size warning for large refs at free rotation. Based on the capture size
+    // this ref will induce (the window grows to fit large refs).
+    const ROTATE_SAFE = Math.floor(captureSizeForDim(Math.max(meta.cropW, meta.cropH)) / 1.366);
     const rotateWarnEl = document.createElement("div");
     rotateWarnEl.style.cssText = "font-size:10px;color:#f5b000;margin:4px 0 0;display:none;";
     rotateWarnEl.textContent =
@@ -1238,6 +1341,37 @@
       `Under ${ROTATE_SAFE}px works more reliably when rotating.`;
     rotSec.appendChild(rotateWarnEl);
     modal.appendChild(rotSec);
+
+    // ── Scale UI ───────────────────────────────────────────────────────────────
+    // Opt-in sweep for triggers whose art the game renders at different sizes
+    // (hand card vs. inspect view). Default range 0.75×–1.5× is deliberately
+    // not user-tunable yet — one checkbox keeps the contribution flow simple.
+    const initialScale = sourceTrigger?.scale || null;
+    const scaleSec = document.createElement("div");
+    scaleSec.style.cssText = "margin-bottom:16px;";
+    scaleSec.appendChild(editorLabel("Size Variation"));
+    const scaleRow = document.createElement("label");
+    scaleRow.style.cssText = "display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:#efeff1;";
+    const scaleCheck = document.createElement("input");
+    scaleCheck.type = "checkbox";
+    scaleCheck.checked = !!initialScale;
+    const scaleLbl = document.createElement("span");
+    scaleLbl.textContent = "This appears at different sizes in-game (match 0.75×–1.5×)";
+    scaleRow.appendChild(scaleCheck);
+    scaleRow.appendChild(scaleLbl);
+    scaleSec.appendChild(scaleRow);
+    const scaleHint = document.createElement("div");
+    scaleHint.style.cssText = "color:#adadb8;font-size:10px;margin-top:4px;";
+    scaleHint.textContent = "Capture the LARGEST appearance — smaller sizes are derived from it automatically.";
+    scaleSec.appendChild(scaleHint);
+    modal.appendChild(scaleSec);
+    function getScaleObject() {
+      if (!scaleCheck.checked) return null;
+      // Preserve an existing custom range if the trigger already had one.
+      return initialScale && Number.isFinite(Number(initialScale.min))
+        ? initialScale
+        : { min: 0.75, max: 1.5, step: 1.12 };
+    }
 
     // Preview animation: rotate the ref image through the configured angle range.
     let _animTimer = null;
@@ -1516,7 +1650,7 @@
 
     function validate() {
       if (refTooBig) {
-        showToast(`Reference is ${meta.cropW}×${meta.cropH} — larger than the ${CAPTURE_SIZE}px capture window. Re-capture a smaller crop.`, "warn");
+        showToast(`Reference is ${meta.cropW}×${meta.cropH} — larger than the ${MAX_CAPTURE_SIZE}px capture window. Re-capture a smaller crop.`, "warn");
         return false;
       }
       if (payloadStates.every(p => !p.title.trim() && !p.text.trim())) {
@@ -1543,11 +1677,13 @@
         popupOffset: { x: p.ox, y: p.oy },
       }));
       const rotationObj = getRotationObject();
+      const scaleObj = getScaleObject();
       if (isProfileEdit || isReview) {
         return {
           id: sourceTrigger.id,
           rotates: !!rotationObj,
           rotation: rotationObj,
+          scale: scaleObj,
           payloads,
           references: (sourceTrigger.references || []).map((ref, idx) => ({
             file: ref.file ?? null,
@@ -1563,6 +1699,7 @@
         id: isEdit ? opts.trigger.id : "user-" + Date.now(),
         rotates: !!rotationObj,
         rotation: rotationObj,
+        scale: scaleObj,
         payloads,
         references: isEdit ?
           (opts.trigger.references || []).map(
@@ -2574,10 +2711,16 @@
     const result = captureRegion(currentVideo, coords.x, coords.y);
     if (!result) return;
 
+    // Cursor position within the capture window — usually the center, but not
+    // when the capture clamps at a video edge. Bounds every ref's scan.
+    const cursorInCapX = Math.round(coords.x - result.sx);
+    const cursorInCapY = Math.round(coords.y - result.sy);
+
     // Single getImageData read — all matching runs against this array.
     const capturePixels = captureCtx.getImageData(0, 0, CAPTURE_SIZE, CAPTURE_SIZE).data;
     matcher.fillGrayBuffer(capturePixels, captureGrayBuffer);
-    const matchResult = findBestMatch(capturePixels, captureGrayBuffer);
+    const matchResult = findBestMatch(capturePixels, captureGrayBuffer,
+      { cursorX: cursorInCapX, cursorY: cursorInCapY });
     const best = matchResult.best;
     const threshold = best ? best.threshold : MATCH_THRESHOLD_RATIO;
     const verifyThreshold = best ? best.verifyThreshold : null;
@@ -2594,10 +2737,14 @@
         verifyThreshold,
         nccScore: best.nccScore ?? null,
         angle: best.angle ?? 0,
+        scale: best.scale ?? 1,
+        occluded: best.occluded ?? false,
+        blocks: best.blocks ?? null,
         candidates: matchResult.candidates,
       };
       showPopups(best.trigger.payloads || [], event.clientX, event.clientY, best.trigger,
-        { x: best.x, y: best.y, w: best.ref.w, h: best.ref.h },
+        // matchW/H differ from ref.w/h when a Phase-2 scale match fired.
+        { x: best.x, y: best.y, w: best.matchW ?? best.ref.w, h: best.matchH ?? best.ref.h },
         { sx: result.sx, sy: result.sy,
           scaleX: coords.scaleX, scaleY: coords.scaleY,
           rectLeft: coords.rectLeft, rectTop: coords.rectTop,
@@ -2619,10 +2766,6 @@
       } : null;
       hidePopups();
     }
-
-    // Cursor position within the 160×160 capture window.
-    const cursorInCapX = Math.round(coords.x - result.sx);
-    const cursorInCapY = Math.round(coords.y - result.sy);
 
     renderDebugPanel({
       clientX: event.clientX,
@@ -2771,6 +2914,11 @@
     if (!debugPanel || debugPanel.style.display === "none") return;
     const displayCanvas = document.getElementById("stream-overlay-debug-canvas");
     if (!displayCanvas) return;
+    if (displayCanvas.width !== captureCanvas.width) {
+      // Capture window is dynamic; keep the debug canvas in sync (CSS scales it to 160px).
+      displayCanvas.width = captureCanvas.width;
+      displayCanvas.height = captureCanvas.height;
+    }
     const dctx = displayCanvas.getContext("2d");
     dctx.drawImage(captureCanvas, 0, 0);
 
@@ -2795,9 +2943,14 @@
         ? ` ncc=${lastMatchInfo.nccScore.toFixed(2)}`
         : "";
       const angleText = lastMatchInfo.angle ? ` @${lastMatchInfo.angle}°` : "";
+      const scaleText = lastMatchInfo.scale && lastMatchInfo.scale !== 1
+        ? ` s=${lastMatchInfo.scale}×` : "";
+      const occText = lastMatchInfo.occluded && lastMatchInfo.blocks
+        ? ` occ=${lastMatchInfo.blocks.passed}/${lastMatchInfo.blocks.valid}`
+        : "";
       matchLine = lastMatchInfo.noMatch
         ? `<span style="color:#adadb8">best: ${lastMatchInfo.dist}/${lastMatchInfo.validBits} (${Math.round(lastMatchInfo.ratio * 100)}%)<=${Math.round(lastMatchInfo.threshold * 100)}%${angleText}${verifyText}${nccText} "${lastMatchInfo.title}"</span>`
-        : `<span style="color:#00f593">MATCH "${lastMatchInfo.title}" ${lastMatchInfo.dist}/${lastMatchInfo.validBits} (${Math.round(lastMatchInfo.ratio * 100)}%)<=${Math.round(lastMatchInfo.threshold * 100)}%${angleText}${verifyText}${nccText}</span>`;
+        : `<span style="color:#00f593">MATCH "${lastMatchInfo.title}" ${lastMatchInfo.dist}/${lastMatchInfo.validBits} (${Math.round(lastMatchInfo.ratio * 100)}%)<=${Math.round(lastMatchInfo.threshold * 100)}%${angleText}${scaleText}${verifyText}${nccText}${occText}</span>`;
     }
     const candidateLines = (lastMatchInfo?.candidates || [])
       .map((c, idx) => {
@@ -2944,8 +3097,9 @@
 
     const scaleX = snapshot.width / r.width, scaleY = snapshot.height / r.height;
     const srcW = Math.round(dispW * scaleX), srcH = Math.round(dispH * scaleY);
-    const ROTATE_SAFE = Math.floor(CAPTURE_SIZE / 1.366); // ~117px — fits at ±30° rotation
-    const tooBig   = srcW > CAPTURE_SIZE || srcH > CAPTURE_SIZE;
+    // Rotation-safe bound tracks the capture size this crop would induce.
+    const ROTATE_SAFE = Math.floor(captureSizeForDim(Math.max(srcW, srcH)) / 1.366);
+    const tooBig   = srcW > MAX_CAPTURE_SIZE || srcH > MAX_CAPTURE_SIZE;
     const marginal = !tooBig && (srcW > ROTATE_SAFE || srcH > ROTATE_SAFE);
     const color = tooBig ? "#ff3860" : marginal ? "#f5b000" : "#00f593";
     selection.style.borderColor = color;
@@ -2955,7 +3109,7 @@
     sizeLabel.style.background = color;
     sizeLabel.style.color = tooBig ? "#fff" : "#18181b";
     sizeLabel.textContent = `${srcW}×${srcH}` +
-      (tooBig   ? ` — too large (max ${CAPTURE_SIZE})` :
+      (tooBig   ? ` — too large (max ${MAX_CAPTURE_SIZE})` :
        marginal ? ` — corners clip when rotating` : "");
   }
 
