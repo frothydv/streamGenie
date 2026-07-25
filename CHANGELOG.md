@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [0.12.0] — 2026-07-23
+
+### Added
+- **Auto-recrop rescue for masked triggers** — when a mask paints a small icon
+  inside a loose crop, the fixed 8×8 dHash grid falls mostly in the dead margins
+  and yields < 16 valid bits, silently killing the trigger (this was why masked
+  Guildrun triggers never fired while an unmasked one did). `rehashRef` now
+  detects this and recrops the image + mask to the mask's bounding box before
+  hashing, so the icon fills the frame and matching works. Only rescues refs that
+  would otherwise be dead; working refs keep their exact geometry.
+
+### Fixed
+- **"Run Test Match" now runs the real matching** — the editor's check button
+  previously used a separate simplified scan (native-dim hash — 24–41/64 bits
+  different from runtime — no verify / rotation / scale / occlusion) and silently
+  fell back to unmasked when a mask had < 16 bits, so it could thumbs-up triggers
+  that never fired live. It now builds the exact trigger that would be saved and
+  runs it through the real `rehashRef` + `evaluateReference` on a capture window
+  cut from the captured image — a green result means the live matcher actually
+  fires on those pixels.
+- **Never save an unchecked trigger** — the submit gate now compares the current
+  mask/scale/rotation against what the test confirmed; any edit after a check
+  invalidates it and requires a re-run. Mask edits, the scale toggle, and the
+  rotation controls all flag the test stale live.
+
 ## [0.11.1] — 2026-07-05
 
 ### Fixed

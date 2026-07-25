@@ -735,18 +735,62 @@
     }
   }
 
+  // Count valid dHash bits a mask yields when its (sx,sy,sw,sh) sub-rect (orig-image
+  // px) is drawn to the canonical grid. Mirrors rehashRef's smoothed canonical mask
+  // draw so the prediction matches what hashing actually produces.
+  function maskValidBitsForRect(maskImg, sx, sy, sw, sh) {
+    const c = document.createElement("canvas");
+    c.width = CANONICAL_SIZE; c.height = CANONICAL_SIZE;
+    const cx = c.getContext("2d");
+    cx.clearRect(0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
+    cx.imageSmoothingEnabled = true;
+    cx.drawImage(maskImg, sx, sy, sw, sh, 0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
+    const px = cx.getImageData(0, 0, CANONICAL_SIZE, CANONICAL_SIZE).data;
+    return maskBitsFromPixels(px, CANONICAL_SIZE, 0, 0, CANONICAL_SIZE, CANONICAL_SIZE).validBits;
+  }
+
+  // Bounding box (orig-image px) of a mask's opaque pixels, or null if empty.
+  function maskBbox(maskImg, ow, oh) {
+    const c = document.createElement("canvas");
+    c.width = ow; c.height = oh;
+    const cx = c.getContext("2d");
+    cx.imageSmoothingEnabled = false;
+    cx.drawImage(maskImg, 0, 0, ow, oh);
+    const a = cx.getImageData(0, 0, ow, oh).data;
+    let x0 = ow, y0 = oh, x1 = -1, y1 = -1;
+    for (let y = 0; y < oh; y++) for (let x = 0; x < ow; x++) {
+      if (a[(y * ow + x) * 4 + 3] >= 128) {
+        if (x < x0) x0 = x; if (x > x1) x1 = x;
+        if (y < y0) y0 = y; if (y > y1) y1 = y;
+      }
+    }
+    if (x1 < 0) return null;
+    return { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+  }
+
   // Rescale a reference entry to the current stream resolution and recompute its hash.
   // The reference is always drawn to a CANONICAL_SIZE×CANONICAL_SIZE intermediate
   // canvas so the hash quality is resolution-independent. The sliding-window search
   // still uses the native w×h for spatial positioning.
   function rehashRef(ref) {
     if (!ref.sourceImg) return;
-    let w = ref.origW, h = ref.origH;
-    if (currentVideo && currentVideo.videoWidth && ref.srcW) {
-      const scale = currentVideo.videoWidth / ref.srcW;
-      w = Math.max(1, Math.round(ref.origW * scale));
-      h = Math.max(1, Math.round(ref.origH * scale));
+    const ow = ref.origW, oh = ref.origH;
+    // Source sub-rect (orig-image px) to hash. Normally the whole crop, but when a
+    // mask paints only a small icon inside a loose crop, the fixed 8×8 dHash grid
+    // falls mostly in the dead margins and yields < MIN_MASKED_BITS valid bits —
+    // silently killing the trigger. Recrop to the mask bounding box so the icon
+    // fills the frame and enough gradient pairs survive. Only rescues refs that
+    // would otherwise be dead; working refs keep their exact geometry.
+    let sx = 0, sy = 0, sw = ow, sh = oh;
+    if (ref.maskDataUrl && ref.maskImg &&
+        maskValidBitsForRect(ref.maskImg, 0, 0, ow, oh) < MIN_MASKED_BITS) {
+      const bb = maskBbox(ref.maskImg, ow, oh);
+      if (bb && bb.w >= MIN_REF_PX && bb.h >= MIN_REF_PX) { sx = bb.x; sy = bb.y; sw = bb.w; sh = bb.h; }
     }
+    let videoScale = 1;
+    if (currentVideo && currentVideo.videoWidth && ref.srcW) videoScale = currentVideo.videoWidth / ref.srcW;
+    const w = Math.max(1, Math.round(sw * videoScale));
+    const h = Math.max(1, Math.round(sh * videoScale));
     ref.w = w;
     ref.h = h;
     // Limit is the MAX capture size, not the current one — updateCaptureSize()
@@ -766,7 +810,7 @@
     tmp.width = CANONICAL_SIZE; tmp.height = CANONICAL_SIZE;
     const ctx = tmp.getContext("2d");
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(ref.sourceImg, 0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
+    ctx.drawImage(ref.sourceImg, sx, sy, sw, sh, 0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
     const px = ctx.getImageData(0, 0, CANONICAL_SIZE, CANONICAL_SIZE).data;
     ref.refHash = dHashFromPixels(px, CANONICAL_SIZE, 0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
     if (ref.maskDataUrl) {
@@ -783,7 +827,7 @@
         // pixel nearest-neighbor happened to land on. Thin painted strokes and
         // brush edges stop flipping bit validity arbitrarily.
         maskCtx.imageSmoothingEnabled = true;
-        maskCtx.drawImage(ref.maskImg, 0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
+        maskCtx.drawImage(ref.maskImg, sx, sy, sw, sh, 0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
       } else {
         maskCtx.fillStyle = "#fff";
         maskCtx.fillRect(0, 0, CANONICAL_SIZE, CANONICAL_SIZE);
@@ -815,7 +859,7 @@
       nativeTmp.width = w; nativeTmp.height = h;
       const nCtx = nativeTmp.getContext("2d");
       nCtx.imageSmoothingEnabled = false;
-      nCtx.drawImage(ref.sourceImg, 0, 0, w, h);
+      nCtx.drawImage(ref.sourceImg, sx, sy, sw, sh, 0, 0, w, h);
       nativePx = nCtx.getImageData(0, 0, w, h).data;
 
       // Render mask at native size so NCC only correlates unmasked pixels.
@@ -826,7 +870,7 @@
         // Smoothing on for the same reason as the canonical mask draw above:
         // buildRefNCC treats alpha ≥ 128 as active, i.e. majority coverage.
         nMaskCtx.imageSmoothingEnabled = true;
-        nMaskCtx.drawImage(ref.maskImg, 0, 0, w, h);
+        nMaskCtx.drawImage(ref.maskImg, sx, sy, sw, sh, 0, 0, w, h);
         nativeMaskPx = nMaskCtx.getImageData(0, 0, w, h).data;
       }
       ref.refNCC = matcher.buildRefNCC(nativePx, w, h, nativeMaskPx);
@@ -1143,7 +1187,9 @@
     maskHint.style.cssText = "color:#adadb8;font-size:11px;line-height:1.4;margin-bottom:8px;";
     maskHint.textContent = "Paint what should count as the match. Ignored background is tinted red. Mouse wheel changes brush size.";
     maskSec.appendChild(maskHint);
-    const maskEditor = buildMaskEditor(dataUrl, initialMaskDataUrl);
+    // Assigned to invalidateCheck() once the Match Test exists; mask edits then force a re-test.
+    let maskOnChange = null;
+    const maskEditor = buildMaskEditor(dataUrl, initialMaskDataUrl, () => { if (maskOnChange) maskOnChange(); });
     destroyMaskEditor = maskEditor.destroy;
     maskSec.appendChild(maskEditor.el);
     modal.appendChild(maskSec);
@@ -1451,7 +1497,13 @@
     // ── Heat-map match test ─────────────────────────────────────────────────
     // Available only when wider capture was provided (fresh capture flow).
     // When present, the submit button is gated on at least one passing test.
-    let heatMapPassed = !meta.wideDataUrl; // no gate if no wide capture
+    // Fingerprint of the config the Match Test last validated. Save is blocked unless
+    // the current mask/scale/rotation still matches this exactly — an unchecked (or
+    // edited-after-check) trigger can never be submitted.
+    let checkedFingerprint = null;
+    function configFingerprint() {
+      return JSON.stringify([maskEditor.getMaskDataUrl(), getScaleObject(), getRotationObject()]);
+    }
 
     function hmLoadImage(src) {
       return new Promise((resolve, reject) => {
@@ -1461,15 +1513,6 @@
         img.src = src;
       });
     }
-    function hmHashDist(a, b, mask) {
-      let d = 0;
-      for (let i = 0; i < 64; i++) {
-        if (mask && !mask[i]) continue;
-        if (a[i] !== b[i]) d++;
-      }
-      return d;
-    }
-
     if (meta.wideDataUrl) {
       const hmSec = document.createElement("div");
       hmSec.style.cssText = "margin-bottom:16px;";
@@ -1501,150 +1544,147 @@
       hmSec.appendChild(hmRunBtn);
       modal.appendChild(hmSec);
 
+      // Load a reference exactly as loadRefImages does and hash it via the real
+      // rehashRef (canonical hash, mask, verify, NCC, rotation, scaledRefs — recrop
+      // included). Resolves to the runtime-shaped ref ready for evaluateReference.
+      function prepareRef(refSpec) {
+        return new Promise((resolve) => {
+          const ref = {
+            dataUrl: refSpec.dataUrl, maskDataUrl: refSpec.maskDataUrl,
+            rotates: refSpec.rotates, rotation: refSpec.rotation, scale: refSpec.scale,
+            srcW: refSpec.srcW, srcH: refSpec.srcH,
+          };
+          const img = new Image();
+          img.onload = () => {
+            ref.sourceImg = img;
+            ref.origW = img.naturalWidth; ref.origH = img.naturalHeight;
+            const finish = () => { rehashRef(ref); resolve(ref); };
+            if (ref.maskDataUrl) {
+              const mImg = new Image();
+              mImg.onload = () => { ref.maskImg = mImg; finish(); };
+              mImg.onerror = finish;
+              mImg.src = ref.maskDataUrl;
+            } else finish();
+          };
+          img.onerror = () => resolve(ref);
+          img.src = ref.dataUrl;
+        });
+      }
+
       async function runHeatMap() {
         hmRunBtn.disabled = true;
         hmRunBtn.textContent = "Running…";
         hmStatus.textContent = ""; hmStatus.style.color = "#adadb8";
         try {
-          // Load wide capture
-          const wideImgEl = await hmLoadImage(meta.wideDataUrl);
-          const wideCanvas2 = document.createElement("canvas");
-          wideCanvas2.width = wideImgEl.naturalWidth; wideCanvas2.height = wideImgEl.naturalHeight;
-          const wCtx2 = wideCanvas2.getContext("2d");
-          wCtx2.drawImage(wideImgEl, 0, 0);
-          const widePx = wCtx2.getImageData(0, 0, wideCanvas2.width, wideCanvas2.height).data;
-          const wideW = wideCanvas2.width, wideH = wideCanvas2.height;
+          // Build the EXACT trigger that would be saved, then run it through the real
+          // runtime matching path against the captured wide image. A green result means
+          // the live matcher (rehashRef + evaluateReference: dHash+NCC+verify, occlusion,
+          // scale sweep, rotation) actually fires on these pixels — not an approximation.
+          const trigger = buildTrigger();
+          const refSpec = trigger.references[0];
+          refSpec.dataUrl = dataUrl;                        // the crop being edited
+          refSpec.maskDataUrl = maskEditor.getMaskDataUrl();
+          refSpec.srcW = meta.videoW; refSpec.srcH = meta.videoH;
+          refSpec.rotates = !!trigger.rotates;
+          refSpec.rotation = trigger.rotation || null;
+          refSpec.scale = trigger.scale || null;
 
-          // Build ref hash at native crop dimensions (not resampled to canonical 32×32).
-          // Both the crop and the wide canvas are at the same video-pixel scale, so
-          // dHashFromPixels samples floor(cx * winW / 32) in each — identical positions.
-          // Resampling to 32×32 first shifts those sample positions via drawImage rounding.
-          const winW0 = meta.cropW || CANONICAL_SIZE;
-          const winH0 = meta.cropH || CANONICAL_SIZE;
-          const cropImgEl = await hmLoadImage(dataUrl);
-          const cc = document.createElement("canvas");
-          cc.width = winW0; cc.height = winH0;
-          const cCtx = cc.getContext("2d");
-          cCtx.imageSmoothingEnabled = false;
-          cCtx.drawImage(cropImgEl, 0, 0, winW0, winH0); // 1:1 — exact pixel copy
-          const cropPx = cCtx.getImageData(0, 0, winW0, winH0).data;
-          const refHash = matcher.dHashFromPixels(cropPx, winW0, 0, 0, winW0, winH0);
-
-          // Build mask bits from current mask editor state
-          let refMaskResult = null;
-          let maskPixelsForNCC = null;
-          const curMaskUrl = maskEditor.getMaskDataUrl();
-          if (curMaskUrl) {
-            const mImgEl = await hmLoadImage(curMaskUrl);
-            const mc = document.createElement("canvas");
-            mc.width = winW0; mc.height = winH0;
-            const mCtx = mc.getContext("2d");
-            mCtx.imageSmoothingEnabled = false;
-            mCtx.drawImage(mImgEl, 0, 0, winW0, winH0);
-            const mPx = mCtx.getImageData(0, 0, winW0, winH0).data;
-            const mr = matcher.maskBitsFromPixels(mPx, winW0, 0, 0, winW0, winH0);
-            if (mr.validBits >= 16) { refMaskResult = mr; maskPixelsForNCC = mPx; }
+          const ref = await prepareRef(refSpec);
+          if (!ref.refHash) {
+            hmStatus.style.color = "#ff5c5c";
+            hmStatus.textContent = `No match: mask leaves only ${ref.refValidBits} usable bits (need ${MIN_MASKED_BITS}). Paint a larger area or crop tighter.`;
+            checkedFingerprint = null;
+            return;
           }
-          const refMaskBits = refMaskResult?.bits || matcher.allBitMask;
-          const refValidBits = refMaskResult?.validBits || 64;
 
-          // Build ref NCC stats (mask-aware so masked regions don't skew correlation).
-          const refNCC = matcher.buildRefNCC(
-            new Uint8Array(cropPx), winW0, winH0,
-            maskPixelsForNCC ? new Uint8Array(maskPixelsForNCC) : null
-          );
-          // Build SAT once for the wide capture so NCC at candidate positions is O(1).
-          const wideGrayBuf = matcher.fillGrayBuffer(new Uint8Array(widePx));
-          const { sat: wideSat, sat2: wideSat2 } = matcher.buildSAT(wideGrayBuf, wideW, wideH);
+          // Capture window the live matcher would use for this ref.
+          let maxDim = Math.max(ref.w || 0, ref.h || 0);
+          if (ref.scaledRefs) for (const s of ref.scaledRefs) maxDim = Math.max(maxDim, s.w, s.h);
+          const checkSize = captureSizeForDim(maxDim);
 
-          // winW/winH already defined as winW0/winH0 above.
-          const winW = winW0;
-          const winH = winH0;
-          // Stride 1: every pixel position is checked so the exact reference location
-          // is guaranteed to be evaluated. Stride-4 was a live-matching optimisation
-          // that is wrong here — rotated card edges cause 10+ bit flips over a 3px
-          // offset, so the coarse-only scan can produce bestDist=13 while directDist=0.
-          const STRIDE = 1;
-          // Use the correct per-ref threshold — masked refs use the stricter masked ratio.
-          const thresholdRatio = refValidBits < 64 ? matcher.config.maskedMatchThresholdRatio : matcher.config.matchThresholdRatio;
-          const threshold   = Math.ceil(thresholdRatio * refValidBits);
-          const closeThresh = threshold + 3; // amber "nearly matched" zone
+          // Wide captured image (video-pixel scale).
+          const wideImgEl = await hmLoadImage(meta.wideDataUrl);
+          const wc = document.createElement("canvas");
+          wc.width = wideImgEl.naturalWidth; wc.height = wideImgEl.naturalHeight;
+          const wctx = wc.getContext("2d"); wctx.drawImage(wideImgEl, 0, 0);
+          const widePx = wctx.getImageData(0, 0, wc.width, wc.height).data;
+          const wideW = wc.width, wideH = wc.height;
 
-          // Diagnostic: direct dist at the expected crop position (should be ≈ 0).
-          const diagCropX = meta.wideCropX || 0, diagCropY = meta.wideCropY || 0;
-          const diagFits = diagCropX + winW <= wideW && diagCropY + winH <= wideH;
-          const diagDist = diagFits
-            ? hmHashDist(matcher.dHashFromPixels(widePx, wideW, diagCropX, diagCropY, winW, winH), refHash, refMaskBits)
-            : -1;
-          console.log(`[heatmap] wide=${wideW}×${wideH} win=${winW}×${winH} stride=${STRIDE} crop@(${diagCropX},${diagCropY}) directDist=${diagDist} threshold=${threshold} masked=${refValidBits < 64}`);
-
-          // Full scan: dHash at every position, NCC at dHash-passing positions.
-          // NCC is the secondary filter live matching uses, so only dHash+NCC confirmed
-          // positions show green. dHash-only passes (NCC filtered) show amber.
-          const results = [];
-          for (let ty = 0; ty + winH <= wideH; ty += STRIDE) {
-            for (let tx = 0; tx + winW <= wideW; tx += STRIDE) {
-              const winHash = matcher.dHashFromPixels(widePx, wideW, tx, ty, winW, winH);
-              const dist = hmHashDist(winHash, refHash, refMaskBits);
-              let nccScore = null;
-              if (dist <= threshold) {
-                nccScore = matcher.nccScoreAt(wideGrayBuf, wideW, wideSat, wideSat2, tx, ty, refNCC, winW, winH);
-              }
-              results.push({ tx, ty, dist, nccScore });
+          // Cut a checkSize window centered on the icon (where the cursor sits on hover).
+          const cx = (meta.wideCropX || 0) + (meta.cropW || 0) / 2;
+          const cy = (meta.wideCropY || 0) + (meta.cropH || 0) / 2;
+          const winLeft = Math.max(0, Math.min(Math.round(cx - checkSize / 2), Math.max(0, wideW - checkSize)));
+          const winTop  = Math.max(0, Math.min(Math.round(cy - checkSize / 2), Math.max(0, wideH - checkSize)));
+          const cap = new Uint8ClampedArray(checkSize * checkSize * 4);
+          for (let y = 0; y < checkSize; y++) {
+            const sy = winTop + y; if (sy >= wideH) break;
+            for (let x = 0; x < checkSize; x++) {
+              const sx = winLeft + x; if (sx >= wideW) break;
+              const si = (sy * wideW + sx) * 4, di = (y * checkSize + x) * 4;
+              cap[di] = widePx[si]; cap[di + 1] = widePx[si + 1]; cap[di + 2] = widePx[si + 2]; cap[di + 3] = 255;
             }
           }
-          const bestResult = results.length ? results.reduce((m, r) => r.dist < m.dist ? r : m) : null;
-          console.log(`[heatmap] scanned ${results.length} windows, best dist=${bestResult?.dist?.toFixed(1)} at (${bestResult?.tx},${bestResult?.ty})`);
+          const cursorX = Math.max(0, Math.min(checkSize - 1, Math.round(cx) - winLeft));
+          const cursorY = Math.max(0, Math.min(checkSize - 1, Math.round(cy) - winTop));
 
-          // Render overlay on top of the wide capture image.
-          // Green  = dHash passes AND NCC confirms (would fire in live matching).
-          // Amber  = dHash passes but NCC rejects (filtered in live matching).
-          // Yellow = near-miss (closeThresh zone, dHash only).
-          const dispW = hmImg.offsetWidth  || hmImg.naturalWidth;
+          // The real per-reference firing decision, identical to live matching.
+          const checkMatcher = MatcherCore.createMatcher({ captureSize: checkSize });
+          const gray = checkMatcher.createGrayBuffer();
+          checkMatcher.fillGrayBuffer(cap, gray);
+          const { sat, sat2 } = checkMatcher.buildSAT(gray, checkSize, checkSize);
+          const r = checkMatcher.evaluateReference(ref, cap, gray, false, sat, sat2, { x: cursorX, y: cursorY });
+
+          // Overlay: purple = original crop, green = where the matcher fired.
+          const dispW = hmImg.offsetWidth || hmImg.naturalWidth;
           const dispH = hmImg.offsetHeight || hmImg.naturalHeight;
           hmOverlay.width = dispW; hmOverlay.height = dispH;
           const scX = dispW / wideW, scY = dispH / wideH;
           const oCtx = hmOverlay.getContext("2d");
           oCtx.clearRect(0, 0, dispW, dispH);
-
-          let matchCount = 0, filteredCount = 0;
-          for (const { tx, ty, dist, nccScore } of results) {
-            const dHashPassed = dist <= threshold;
-            const nccPassed = nccScore !== null && nccScore >= matcher.config.nccMatchThreshold;
-            if (dHashPassed && nccPassed) {
-              oCtx.fillStyle = "rgba(0,245,147,0.35)"; matchCount++;
-            } else if (dHashPassed) {
-              oCtx.fillStyle = "rgba(245,140,0,0.25)"; filteredCount++; // NCC rejects this
-            } else if (dist <= closeThresh) {
-              oCtx.fillStyle = "rgba(245,176,0,0.15)";
-            } else { continue; }
-            oCtx.fillRect(tx * scX, ty * scY, winW * scX, winH * scY);
+          if (r.matched) {
+            const mw = r.matchW ?? ref.w, mh = r.matchH ?? ref.h;
+            oCtx.fillStyle = "rgba(0,245,147,0.35)";
+            oCtx.fillRect((winLeft + r.x) * scX, (winTop + r.y) * scY, mw * scX, mh * scY);
           }
-          // Purple outline at the original crop position
           oCtx.strokeStyle = "#bf94ff"; oCtx.lineWidth = 2;
-          oCtx.strokeRect(
-            (meta.wideCropX || 0) * scX, (meta.wideCropY || 0) * scY,
-            (meta.cropW || WIN) * scX, (meta.cropH || WIN) * scY
-          );
+          oCtx.strokeRect((meta.wideCropX || 0) * scX, (meta.wideCropY || 0) * scY, (meta.cropW || 0) * scX, (meta.cropH || 0) * scY);
 
-          const filterNote = filteredCount > 0 ? ` (${filteredCount} amber = dHash only, filtered by NCC)` : "";
-          const diagLine = `[diag: win=${winW}×${winH} wide=${wideW}×${wideH} directDist=${diagDist} bestDist=${bestResult?.dist?.toFixed(1)} threshold=${threshold}]`;
-          if (matchCount > 0) {
+          const detail = `bits=${ref.refValidBits} ratio=${r.ratio?.toFixed(2)} ncc=${r.nccScore == null ? "–" : r.nccScore.toFixed(2)} verify=${r.verifyScore == null ? "–" : r.verifyScore.toFixed(2)}${r.scale && r.scale !== 1 ? ` scale=${r.scale}×` : ""}${r.angle ? ` rot=${r.angle}°` : ""}`;
+          if (r.matched) {
             hmStatus.style.color = "#00f593";
-            hmStatus.textContent = `Match found (${matchCount} window${matchCount > 1 ? "s" : ""})${filterNote} — looks good!`;
-            heatMapPassed = true;
+            hmStatus.textContent = `Match confirmed — trigger fires on the captured image. (${detail})`;
+            checkedFingerprint = configFingerprint();
           } else {
             hmStatus.style.color = "#ff5c5c";
-            hmStatus.textContent = `No match. ${diagLine}`;
-            heatMapPassed = false;
+            hmStatus.textContent = `No match — trigger would NOT fire. (${detail})`;
+            checkedFingerprint = null;
           }
         } catch (err) {
           hmStatus.style.color = "#ff5c5c";
           hmStatus.textContent = `Error: ${err.message}`;
+          checkedFingerprint = null;
+        } finally {
+          hmRunBtn.disabled = false;
+          hmRunBtn.textContent = "Run Test Match";
         }
-        hmRunBtn.disabled = false;
-        hmRunBtn.textContent = "Run Test Match";
       }
+
+      // Any mask/scale/rotation edit invalidates the last test: the saved trigger must
+      // always be one the Match Test has confirmed on its current config.
+      function invalidateCheck() {
+        const wasChecked = checkedFingerprint !== null;
+        checkedFingerprint = null;
+        if (wasChecked) {
+          hmStatus.style.color = "#f5b000";
+          hmStatus.textContent = "Trigger changed — rerun Test Match to confirm it fires.";
+        }
+      }
+      maskOnChange = invalidateCheck;
+      scaleCheck.addEventListener("change", invalidateCheck);
+      for (const radio of Object.values(modeRadios)) radio.addEventListener("change", invalidateCheck);
+      [minInput, maxInput, stepInput, baseInput].forEach(el => el.addEventListener("input", invalidateCheck));
+      fineCheck.addEventListener("change", invalidateCheck);
+
       hmRunBtn.onclick = runHeatMap;
     }
 
@@ -1661,8 +1701,10 @@
         showToast("Your mask is fully erased — paint at least some pixels to match.", "warn");
         return false;
       }
-      if (!heatMapPassed) {
-        showToast("Run the Match Test first and confirm a green match before submitting.", "warn");
+      // Airtight gate: the current mask/scale/rotation must exactly match what the
+      // Match Test confirmed. Unchecked, or edited-after-check, can never be submitted.
+      if (meta.wideDataUrl && configFingerprint() !== checkedFingerprint) {
+        showToast("Run the Match Test on the current trigger — it must confirm a match before submitting.", "warn");
         return false;
       }
       return true;
@@ -2053,7 +2095,9 @@
     return { el: area, updatePreview };
   }
 
-  function buildMaskEditor(imageUrl, initialMaskDataUrl) {
+  function buildMaskEditor(imageUrl, initialMaskDataUrl, onChange) {
+    // Fired after any committed mask edit so callers can invalidate stale state.
+    const notifyChange = () => { if (onChange) onChange(); };
     const state = {
       brushShape: "round",
       brushMode: "erase",
@@ -2324,6 +2368,7 @@
       state.polygonHover = null;
       refreshSummary();
       scheduleRender(true, true);
+      notifyChange();
     }
 
     function clearMask() {
@@ -2333,6 +2378,7 @@
       state.polygonHover = null;
       refreshSummary();
       scheduleRender(true, true);
+      notifyChange();
     }
 
     function applyPolygon() {
@@ -2352,6 +2398,7 @@
       state.polygonHover = null;
       refreshSummary();
       scheduleRender(true, true);
+      notifyChange();
     }
 
     brushBtn.onclick = () => {
@@ -2448,9 +2495,11 @@
     }, { passive: false });
 
     function stopPainting() {
+      const wasPainting = state.painting;
       state.painting = false;
       if (summaryDirty) refreshSummary();
       scheduleRender(false, true);
+      if (wasPainting) notifyChange();
     }
     document.addEventListener("mouseup", stopPainting);
 
