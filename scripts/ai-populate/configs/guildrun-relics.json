@@ -1,0 +1,11 @@
+{
+  "gameId": "guildrun",
+  "gameName": "Guildrun",
+  "wikiListingUrl": "https://guildrunwiki.com/relics/",
+  "prefix": "Relic_",
+  "install": "C:/Program Files (x86)/Steam/steamapps/common/Guildrun Demo/Guildrun_Data",
+  "assetsFile": "sharedassets1.assets",
+  "outDir": "./out/guildrun-relics",
+  "dilate": 4,
+  "skipValidate": false
+}
