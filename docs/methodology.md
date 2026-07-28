@@ -76,6 +76,23 @@ method is the only reliable proxy: it runs the icon through a real codec at
 real quality (CRF 23). For final confidence, test against an actual captured
 stream frame.
 
+## srcW/srcH must reflect on-screen size, not atlas size
+
+Extracted sprites are 128×128 in the game's texture atlas — NOT 128px on
+screen. The extension computes the search window as
+`spriteWidth × (videoWidth / srcW)`. Setting `srcW: 1920` made the base
+window 128px at 1080p — 2-3× too large for on-screen relic icons (40-70px).
+The scale sweep's minimum (0.4×128=51px) barely reached sidebar icons and
+missed smaller ones.
+
+**Fix:** set `srcW: 3840, srcH: 2160` so the base window halves to 64px at
+1080p (realistic for pick-screen icons). Widen scale to 0.3–2.5×, covering
+19–160px — includes sidebar (40px), pick-screen (64px), tooltip (96px).
+
+VOD-crop references don't have this problem because the crop dimensions ARE
+the on-screen pixel size. Extracted sprites need the srcW/srcH adjustment
+to bridge the atlas-to-screen coordinate gap.
+
 ## Resolution floor
 
 At 360p the icons are 20-32px — too small for any matcher (the proof's 360p

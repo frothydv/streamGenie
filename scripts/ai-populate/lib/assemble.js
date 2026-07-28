@@ -71,8 +71,8 @@ function main() {
     triggers.push({
       id: triggerId,
       payloads: [{ title: r.name, text: r.description || '', popupOffset: { x: 0, y: 0 }, image: null }],
-      references: [{ file: refFilename, w: 96, h: 96, srcW: 1920, srcH: 1080, maskDataUrl }],
-      scale: { min: 0.4, max: 2.0, step: 1.1 },
+      references: [{ file: refFilename, w: 96, h: 96, srcW: 3840, srcH: 2160, maskDataUrl }],
+      scale: { min: 0.3, max: 2.5, step: 1.1 },
       rotation: { mode: 'none' },
     });
   }
