@@ -13,9 +13,8 @@ Builds Stream Genie profiles from wiki data + extracted game icons.
 ## Usage
 
 ```bash
-# Full pipeline for Guildrun relics
-node scripts/ai-populate/run.js --game guildrun --wiki-url https://guildrunwiki.com/ \
-  --category relics --install "C:/Program Files (x86)/Steam/steamapps/common/Guildrun Demo"
+# Full pipeline (reads a per-game config):
+node scripts/ai-populate/run.js --config scripts/ai-populate/configs/guildrun-relics.json
 
 # Or run steps individually:
 node scripts/ai-populate/lib/wiki-scrape.js --url https://guildrunwiki.com/relics/ --out /tmp/wiki_relics.json
@@ -46,9 +45,11 @@ review-tier, ~0.3% dead on Guildrun relics.
 
 ## Generalization
 
-- **MediaWiki wikis** (Fandom, wiki.gg): use `--engine mediawiki` — the API
-  provides infobox data (name, icon filename, description) deterministically.
-- **Custom wikis** (like guildrunwiki.com): use `--engine custom` with a
-  per-site scraper config.
-- **Image sources**: `unity-extract` for Unity games; wiki images for MediaWiki;
-  VOD crops as universal fallback.
+- **MediaWiki wikis** (Fandom, wiki.gg): the API provides infobox data
+  (name, icon filename, description) deterministically. A MediaWiki adapter
+  is planned but not yet implemented — for now, custom wikis work via
+  `wiki-scrape.js` with per-site regex tweaks.
+- **Image sources**: `unity-extract` for Unity games; wiki images for
+  MediaWiki (not yet wired); VOD crops as universal fallback.
+- See `docs/methodology.md` for the empirical findings that drove these
+  design choices (mask dilation, hard-edge compositing, scale sweep).
